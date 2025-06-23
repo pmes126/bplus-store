@@ -1,0 +1,10 @@
+[package]
+name = "bplus_tree"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+#serde = ["serde"]        # Enable serde support when the `serde` feature is enabled
+[dependencies]
+#serde = { version = "1.0", optional = true, features = ["derive"] }
