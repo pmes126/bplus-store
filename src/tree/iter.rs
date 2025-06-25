@@ -12,24 +12,24 @@ impl<K: Ord + Clone, V: Clone> Iterator for BPlusTreeRangeIter<K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(node) = &self.current_node {
+        while let Some(node) = &self.current_node.clone() {
 
             if let Node::Leaf { keys, values, next } = node.borrow_mut().as_leaf_mut()? {
                 while self.index < keys.len() {
-                    let key = &keys[self.current_index];
+                    let key = &keys[self.index];
                     if key >= &self.end_bound {
                         self.current_node = None;
                         return None;
                     }
 
-                    let result = (key.clone(), values[self.current_index].clone());
-                    self.current_index += 1;
+                    let result = (key.clone(), values[self.index].clone());
+                    self.index += 1;
                     return Some(result);
                 }
 
                 // Finished current leaf: move to next
                 self.current_node = next.clone();
-                self.current_index = 0;
+                self.index = 0;
             } else {
                 // Should never happen, defensive exit
                 return None;

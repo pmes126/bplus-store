@@ -11,6 +11,9 @@ static DEGREE: usize = 4; // B+ tree degree
 #[derive(Debug)]
 pub struct BPlusTree<K: Ord + Clone + Default, V: Clone> {
     root: NodeRef<K, V>,
+    leaf_count: usize, // number of leaf nodes
+    height: usize, // height of the tree
+    size: usize, // number of keys in the tree
 }
 
 // BPlusTree implementation
@@ -22,6 +25,9 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
                 values: vec![],
                 next: None,
             })),
+            leaf_count: 0,
+            height: 1,
+            size: 0,
         }
     }
 
@@ -34,6 +40,7 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
                 values: vec![value],
                 next: None,
             }));
+            self.height = 1;
             return;
         }
         // Insert into the B+ tree  
@@ -44,7 +51,10 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
                 keys: vec![new_key],
                 children: vec![old_root, new_node],
             }));
+            self.height += 1;
         }
+        self.leaf_count += 1; // New root means we have at least one more leaf
+        self.size += 1        // Update size
     }
 
     // Inserts a key-value pair into the B+ tree iteratively.
@@ -195,6 +205,13 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
             // If the child is not found, we return None
             Node::Internal { keys, children } => {
                 let idx = keys.binary_search(key).unwrap_or_else(|x| x);
+                if idx >= children.len() {
+                    // If the key is greater than all keys, we go to the last child
+                    if let Some(last_child) = children.last_mut() {
+                        return self.delete_inner(last_child, key, false);
+                    }
+                    return None; // Key not found
+                }
                 let result = self.delete_inner(&mut children[idx], key, false);
 
                 if let Some((Some(new_child), true, deleted)) = result {
@@ -318,9 +335,10 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
     // This function assumes that the children at `idx` and `idx + 1` are underflowed
     // and need to be merged.
     fn merge_children(&self, idx: usize, keys: &mut Vec<K>, children: &mut Vec<NodeRef<K, V>>) {
-        let (left, right) = (&children[idx], &children[idx + 1]);
+        let (left, right) = (&children[idx].clone(), &children[idx + 1].clone());
         let mut left_node = left.borrow_mut();
         let mut right_node = right.borrow_mut();
+
 
         match (&mut *left_node, &mut *right_node) {
             (
@@ -367,48 +385,45 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
 
     // Returns the number of keys in the B+ tree.
     pub fn len(&self) -> usize {
-        self.root.borrow().len()
+        self.size
     }
 
     // Returns the height of the B+ tree.
     pub fn height(&self) -> usize {
-        self.root.borrow().height()
+        self.height
     }
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range(&self, start: &K, end: &K) -> impl Iterator<Item = (K, V)> {
-        let current = self.root.clone();
+    pub fn search_range(&self, start: &K, end: &K) -> Option<impl Iterator<Item = (K, V)>> {
+        let mut current = self.root.clone();
 
         loop {
-            let node = current.borrow();
-            match &*node {
-                Node::Internal { keys, children } => {
-                    let idx = keys.binary_search(start).unwrap_or_else(|x| x);
-                    if idx < keys.len() && keys[idx] == *start {
-                        // Found exact match, return iterator from this leaf
-                        return BPlusTreeRangeIter {
+            let index_opt = {
+                let node = current.borrow();
+                match &*node {
+                    Node::Internal { keys, children } => {
+                        let mut i = 0;
+                        while i < keys.len() && start >= keys.get(i).unwrap() {
+                            i += 1;
+                        }
+                        Some(children[i].clone()) // defer assignment
+                    }
+                    Node::Leaf { keys, .. } => {
+                        let index = keys.iter().position(|k| k >= &start).unwrap_or(keys.len());
+                        return Some(BPlusTreeRangeIter {
                             current_node: Some(current.clone()),
-                            index: idx,
+                            index,
                             end_bound: end.clone(),
-                        };
-                    } else if idx < children.len() {
-                        // Descend to the child node
-                        current = children[idx].clone();
-                    } else {
-                        // No child found, return empty iterator
-                        return BPlusTreeRangeIter {
-                            current_node: None,
-                            index: 0,
-                            end_bound: end.clone(),
-                        };
+                        });
                     }
                 }
-                Node::Leaf { .. } => break,
-            }
+            };
+            current = index_opt.unwrap();
         }
     }
 
+    /// Clears the B+ tree, removing all keys and values.
     pub fn clear(&mut self) {
         self.root = Rc::new(RefCell::new(Node::Leaf {
             keys: vec![],
