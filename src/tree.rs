@@ -147,18 +147,17 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
             let node = node.borrow();
             match &*node {
                 Node::Internal { keys, children } => {
-                    let mut i = 0;
-                    while i < keys.len() && key >= &keys[i] {
-                        i += 1;
-                    }
+                    let i = match keys.binary_search(&key) {
+                        Ok(i) => i + 1,
+                        Err(i) => i,
+                    };
                     current_id = children[i];
                 }
                 Node::Leaf { keys, values, .. } => {
-                    if let Some(i) = keys.iter().position(|k| k == key) {
-                        return Some(values[i].clone());
-                    } else {
-                        return None;
-                    }
+                    match keys.binary_search(&key) {
+                        Ok(i) => return Some(values[i].clone()),
+                        Err(_i) => return None, // Key not found
+                    };
                 }
             }
         }
@@ -167,6 +166,9 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
     pub fn search_range(&self, start: &K, end: &K) -> Option<impl Iterator<Item = (K, V)>> {
+        if start > end {
+            return None; // Invalid range
+        }
         let mut current_id = self.root_id.clone();
 
         loop {
@@ -175,14 +177,17 @@ impl<K: Ord + Clone + Default, V: Clone> BPlusTree<K, V> {
 
             match &*node_borrow {
                 Node::Internal { keys, children } => {
-                    let mut i = 0;
-                    while i < keys.len() && start >= &keys[i] {
-                        i += 1;
-                    }
+                    let i = match keys.binary_search(&start) {
+                        Ok(i) => i + 1,
+                        Err(i) => i,
+                    };
                     current_id = children[i];
                 }
                 Node::Leaf { keys, .. } => {
-                    let start_index = keys.iter().position(|k| k >= &start).unwrap_or(keys.len());
+                    let start_index = keys.binary_search(&start).unwrap_or(
+                        keys.len(),
+                    );
+
                     return Some(BPlusTreeRangeIter {
                         storage: &self.storage,
                         current_id: Some(current_id),
