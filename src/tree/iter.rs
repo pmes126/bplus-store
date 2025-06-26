@@ -1,41 +1,44 @@
 // src/tree/iter.rs
 
-use crate::node::{Node, NodeRef};
+use crate::node::{Node};
+use crate::storage::in_memory::InMemoryStorage;
 
-pub struct BPlusTreeRangeIter<K, V> {
-    pub(super) current_node: Option<NodeRef<K, V>>,
+pub struct BPlusTreeRangeIter<'a, K, V> {
+    pub(super) storage: &'a InMemoryStorage<K, V>,
+    pub(super) current_id: Option<u64>,
     pub(super) index: usize,
-    pub(super) end_bound: K,
+    pub(super) start: K,
+    pub(super) end: K,
 }
 
-impl<K: Ord + Clone, V: Clone> Iterator for BPlusTreeRangeIter<K, V> {
+// Implementation of the BPlusTreeRangeIter
+impl<'a, K: Ord + Clone, V: Clone> Iterator for BPlusTreeRangeIter<'a, K, V> {
     type Item = (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(node) = &self.current_node.clone() {
-
-            if let Node::Leaf { keys, values, next } = node.borrow_mut().as_leaf_mut()? {
-                while self.index < keys.len() {
-                    let key = &keys[self.index];
-                    if key >= &self.end_bound {
-                        self.current_node = None;
-                        return None;
+        while let Some(node) = &self.current_id {
+            let node = self.storage.load(*node);
+            let node_borrow = node.borrow();
+            match &*node_borrow {
+                Node::Leaf { keys, values, next } => {
+                    while self.index < keys.len() {
+                        let key = &keys[self.index];
+                        if *key >= self.end { // Stop if the key is beyond the end of the range
+                            return None;
+                        }
+                        let val = &values[self.index];
+                        self.index += 1;
+                        if key >= &self.start { // Return the key-value pair if it is within the
+                            // range
+                            return Some((key.clone(), val.clone()));
+                        }
                     }
-
-                    let result = (key.clone(), values[self.index].clone());
-                    self.index += 1;
-                    return Some(result);
+                    self.current_id = *next;
+                    self.index = 0;
                 }
-
-                // Finished current leaf: move to next
-                self.current_node = next.clone();
-                self.index = 0;
-            } else {
-                // Should never happen, defensive exit
-                return None;
+                _ => return None,
             }
         }
-
         None
     }
 }

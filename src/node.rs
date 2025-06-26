@@ -1,22 +1,23 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub type NodeRef<K, V> = Rc<RefCell<Node<K, V>>>;
+pub type NodeId = u64;
+pub type NodeRef<K, V> = Rc<RefCell<Node<K, V, u64>>>;
 
 #[derive(Debug, Clone)]
-pub enum Node<K, V> {
+pub enum Node<K, V, NodeId> {
     Internal {
         keys: Vec<K>,
-        children: Vec<NodeRef<K, V>>,
+        children: Vec<NodeId>,
     },
     Leaf {
         keys: Vec<K>,
         values: Vec<V>,
-        next: Option<NodeRef<K, V>>,
+        next: Option<NodeId>,
     },
 }
 
-impl<K, V> Node<K, V> {
+impl<K, V, NodeId> Node<K, V, u64> {
     pub fn as_leaf_mut(&mut self) -> Option<&mut Node<K, V>> {
         match self {
             Node::Leaf { .. } => Some(self),
