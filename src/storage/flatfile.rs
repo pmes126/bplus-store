@@ -1,17 +1,19 @@
-use std::{fs::File, io::{self, Read, Write, Seek, SeekFrom}, collections::HashMap};
-use bincode;
 use crate::bplustree::{Node, NodeId};
 use crate::storage::NodeStorage;
+use bincode;
+use serde::{Serialize, de::DeserializeOwned};
+use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom, Result}, collections::HashMap};
 
 const PAGE_SIZE: usize = 4096;
 
+#[derive(Debug)]
 struct OffSetEntry {
     offset: u64,
-    length: u32,
+    length: u64,
 }
 
 #[derive(Debug)]
-struct FlatFile<K, V> {
+pub struct FlatFile<K, V> {
     file: File,
     index: HashMap<NodeId, OffSetEntry>, // node_id -> file offset
     next_offset: u64,
@@ -20,13 +22,13 @@ struct FlatFile<K, V> {
 
 // Implement a constructor for FlatFile
 impl<K, V> FlatFile<K, V> {
-    fn new<P: AsRef<Path>>(path: P) -> Option<Self> {
-        let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+    fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let mut file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
         // Initialize the file and read existing entries
-        Option::from(
+        Ok(
             Self {
-                file,
                 next_offset: file.seek(SeekFrom::End(0))?,
+                file,
                 index: HashMap::new(),
                 _marker: std::marker::PhantomData,
             }
@@ -35,12 +37,12 @@ impl<K, V> FlatFile<K, V> {
 }
 
 // Implement the NodeStorage trait for FlatFile
-impl<K, V> NodeStorage for FlatFile<K, V>
+impl<K, V> NodeStorage<K, V> for FlatFile<K, V>
 where K: Serialize + DeserializeOwned + Ord + Clone,
       V: Serialize + DeserializeOwned + Clone,
 {
     // Read a node from the flat file by its ID
-    fn read_node(&mut self, id: NodeId) -> Node<K, V> {
+    fn read_node(&mut self, id: NodeId) -> Result<Node<K, V, NodeId>> {
         let entry = self.index.get(&id).expect("Missing offset entry");
         self.file.seek(SeekFrom::Start(entry.offset)).unwrap();
 
@@ -51,37 +53,43 @@ where K: Serialize + DeserializeOwned + Ord + Clone,
 
         // Read the serialized data
         let mut buf = vec![0u8; length as usize];
-        self.file.read_exact(&mut buf).unwrap();
-        bincode::deserialize(&buf).unwrap()
+        self.file.read_exact(&mut buf)?;
+        let val = bincode::deserialize(&buf);
+        return val.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // Write a node to the flat file and update the index
-    fn write_node(&mut self, id: NodeId, node: &Node<K, V>) {
+    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> Result<()> {
         let data = bincode::serialize(node).unwrap();
-        let length = data.len() as u32;
-        let offset = self.file_end;
+        let length = data.len() as u64;
+        let offset = self.next_offset;
 
-        self.file.seek(SeekFrom::Start(offset)).unwrap();
+        self.file.seek(SeekFrom::Start(offset))?;
         // Write the length of the serialized data
-        self.file.write_all(&length.to_le_bytes()).unwrap();
+        self.file.write_all(&length.to_le_bytes())?;
         // Pad data to next multiple of PAGE_SIZE
         let mut padded_data = data;
         let total_len = padded_data.len() + 4; // include length prefix
+        // Calculate padding length - this handles the case where total_len is already a multiple
+        // of PAGE_SIZE
         let pad_len = (PAGE_SIZE - (total_len % PAGE_SIZE)) % PAGE_SIZE;
         padded_data.extend(vec![0u8; pad_len]);
         // Write the serialized data
-        self.file.write_all(&padded_data).unwrap();
-        self.file.flush().unwrap();
+        self.file.write_all(&padded_data)?;
+        self.file.flush()?;
 
-        self.index.insert(id, OffsetEntry { offset, length });
-        self.file_end += length + pad_len as u64;
+        self.index.insert(id, OffSetEntry { offset, length });
+        self.next_offset += length + pad_len as u64; // Update the next offset
+        Ok(())
     }
 
-    // Delete a node from the flat file by its ID
-    fn delete_node(&mut self, id: NodeId) {
-        if let Some(entry) = self.index.remove(&id) {
-            // Mark the space as free (could implement a more sophisticated free list)
-            // For simplicity, we just remove the entry from the index
-        }
+    // Flush the file to ensure all changes are written
+    fn flush(&mut self) -> Result<()> {
+        self.file.flush()
+    }
+
+    // Get the root node ID (not implemented, just a placeholder)
+    fn get_root(&self) -> Result<u64> {
+        Ok(0) // Placeholder, should return the actual root node ID
     }
 }

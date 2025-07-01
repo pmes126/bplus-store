@@ -1,11 +1,14 @@
 pub mod cache;
 pub mod flatfile;
 
-pub use cache::CacheLayer;
+use crate::bplustree::{Node, NodeId};
 pub use flatfile::FlatFile;
+pub use lru::LruCache;
+pub use std::io::Result;
 
-trait NodeStorage<K, V> {
-    fn read_node(&mut self, id: NodeId) -> io::Result<Node<K, V>>;
-    fn write_node(&mut self, id: NodeId, node: &Node<K, V>) -> io::Result<()>;
-    fn delete_node(&mut self, id: NodeId);
+pub trait NodeStorage<K, V> {
+    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> Result<()>;
+    fn read_node(&mut self, id: NodeId) -> Result<Node<K, V, NodeId>>;
+    fn flush(&mut self) -> Result<()>;
+    fn get_root(&self) -> Result<u64>;
 }

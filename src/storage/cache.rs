@@ -1,21 +1,21 @@
 use lru::LruCache;
-use crate::bplustree::Node;
-use crate::storage::{NodeStorage, FlatFile};
+use crate::bplustree::{Node, NodeId};
+use crate::storage::{NodeStorage};
 use std::io;
-use std::NonZerosize;
+use std::num::NonZeroUsize;
 
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
-struct CacheLayer<K, V, B: BackendStorage<K, V>> {
+pub struct CacheLayer<K, V, B: NodeStorage<K, V>> {
     backend: B,
-    cache: LruCache<NodeId, Node<K, V>>,
+    cache: LruCache<NodeId, Node<K, V, NodeId>>,
 }
 
 // Implement the initialization for CacheLayer with a specified capacity and backend storage.
 impl<K, V, B> CacheLayer<K, V, B>
 where
-    K: serde::Serialize + serde::de::DeserializeOwned + Clone,
-    V: serde::Serialize + serde::de::DeserializeOwned + Clone,
-    B: BackendStorage<K, V>,
+    K: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
+    V: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
+    B: NodeStorage<K, V>,
 {
     fn new(capacity: usize, backend: B) -> Self {
         Self {
@@ -28,26 +28,34 @@ where
 // Implement the NodeStorage trait
 impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     where
-    K: serde::Serialize + serde::de::DeserializeOwned + Clone,
-    V: serde::Serialize + serde::de::DeserializeOwned + Clone,
+    K: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
+    V: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
+    B: NodeStorage<K, V>,
 {
-    fn read_node(&mut self, id: u64) -> io::Result<Node<K, V>> {
+    fn read_node(&mut self, id: u64) -> io::Result<Node<K, V, NodeId>> {
         if let Some(node) = self.cache.get(&id) {
-            return Ok(node.clone())
+
+            return Ok(node.clone());
         }
-        let node = self.backend.get_node(id)?;
+        let node = self.backend.read_node(id)?;
         self.cache.put(id, node.clone());
         Ok(node)
     }
 
-    fn write_node(&mut self, id: NodeId, node: &Node<K, V>) -> io::Result<()> {
-        self.cache.put(id, node.clone());
+    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> io::Result<()> {
+        self.cache.put(id, node.clone()).ok_or(io::Error::new(
+            io::ErrorKind::Other,
+            "Cache write failed: cache is full or node already exists",
+        ));
         self.backend.write_node(id, node)
     }
     
-    fn delete_node(&mut self, id: NodeId) {
-        self.cache.pop(&id);
-        self.backend.delete_node(id);
+    fn flush(&mut self) -> io::Result<()> {
+        self.backend.flush()
+    }
+
+    fn get_root(&self) -> io::Result<u64> {
+        self.backend.get_root()
     }
 }
             
