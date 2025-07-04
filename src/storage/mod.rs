@@ -1,9 +1,7 @@
 pub mod cache;
 pub mod flatfile;
 
-use crate::bplustree::{Node, NodeId};
-pub use flatfile::FlatFile;
-pub use lru::LruCache;
+pub use crate::bplustree::{Node, NodeId};
 pub use std::io::Result;
 
 pub trait NodeStorage<K, V> {

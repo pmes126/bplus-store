@@ -1,6 +1,6 @@
-pub use crate::bplustree::Node;
-pub use crate::storage::NodeStorage;
-pub use crate::bplustree::BPlusTreeRangeIter;
+use crate::bplustree::Node;
+use crate::storage::NodeStorage;
+use crate::bplustree::BPlusTreeRangeIter;
 use serde::{Deserialize, Serialize};
 use std::io::Result;
 
@@ -14,6 +14,7 @@ pub struct BPlusTree<K, V, S: NodeStorage<K, V>> {
     max_keys: usize,
     min_keys: usize,
     storage: S,
+    phantom: std::marker::PhantomData<(K, V)>,
 }
 
 // BPlusTree implementation
@@ -37,6 +38,7 @@ where
             order,
             max_keys: order - 1,
             min_keys: (order + 1) / 2,
+            phantom: std::marker::PhantomData,
         }
     }
 
@@ -58,7 +60,7 @@ where
             match node {
                 Node::Internal { keys, children } => {
                     let idx = match keys.binary_search(&key) {
-                        Ok(i) => i + 1,
+                        Ok(i) => i,
                         Err(_) => return Ok(None), // Key not found
                     };
                     id = children[idx];
@@ -80,13 +82,11 @@ where
 
         // Find insertion point
         loop {
-            let node_res = self.storage.read_node(current_id)?;
-            let node =  node_res.borrow();
-            let node_borrow = node..borrow();
-            match &*node_borrow {
+            let node = self.storage.read_node(current_id)?;
+            match node {
                 Node::Internal { keys, children } => {
                     let i = match keys.binary_search(&key) {
-                        Ok(i) => i + 1,
+                        Ok(i) => i,
                         Err(i) => i,
                     };
                     path.push((current_id, i));
@@ -97,23 +97,18 @@ where
         }
         // We have found the leaf node, update a copy of the leaf node and insert it back with a
         // new id retaining COW semantics.
-        let leaf_node = self.storage.read_node(current_id);
-        let mut leaf = leaf_node.borrow_mut();
-        if let Node::Leaf { keys, values, .. } = &mut *leaf {
+        let leaf_node = self.storage.read_node(current_id)?;
+        let mut leaf = leaf_node;
+        if let Node::Leaf { ref mut keys, ref mut values, mut next} = leaf {
             match keys.binary_search(&key) {
                 Ok(i) => {
                     values[i] = value; // Replace existing value
-                    return;
                 }
                 Err(i) => {
                     keys.insert(i, key.clone());
                     values.insert(i, value);
-                    self.size += 1;
                 }
             }
-        }
-        // Handle overflow
-        if let Node::Leaf { keys, values, next } = &mut *leaf {
             if keys.len() > self.max_keys {
                 let mid = keys.len() / 2;
                 let right_keys = keys.split_off(mid);
@@ -121,19 +116,24 @@ where
                 let new_leaf = Node::Leaf {
                     keys: right_keys,
                     values: right_values,
-                    next: next.take(),
+                    next: next.take(), // Retain the next pointer
                 };
-                // Write the updated leaf node to storage
-                self.storage.write_node(self.next_id, leaf);
-                self.next_id += 1;
                 // Write the new leaf node to storage
-                new_leaf.next = Some(self.next_id);
-                self.storage.write_node(self.next_id, new_leaf);
+                self.storage.write_node(self.next_id, &new_leaf)?;
+                self.next_id += 1;
+                // Write the updated leaf node back to storage
+                let new_leaf_id = self.next_id;
+                self.storage.write_node(new_leaf_id, &mut leaf)?;
                 self.next_id += 1;
                 // Propagate the split upwards.
-                self.insert_into_parent(path, key, new_leaf_id);
+                self.insert_into_parent(path, key, new_leaf_id)?;
+            } else {
+                // Write the updated leaf node back to storage
+                self.storage.write_node(self.next_id, &leaf)?;
+                self.next_id += 1;
             }
         }
+        Ok(())
     }
     // insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
@@ -142,40 +142,54 @@ where
         mut path: Vec<(u64, usize)>,
         mut key: K,
         mut new_child_id: u64,
-    ) {
+    ) -> Result<()> {
         while let Some((parent_id, insert_pos)) = path.pop() {
-            let node = self.storage.read_node(parent_id);
-            let mut node_borrow = node.borrow_mut();
-            if let Node::Internal { keys, children } = &mut *node_borrow {
-                keys.insert(insert_pos, key.clone());
-                children.insert(insert_pos + 1, new_child_id);
-
-                if keys.len() <= self.max_keys {
-                    self.storage.write_node(self.next_id, node_borrow);
-                    self.next_id += 1;
-                    return;
+            let mut node = self.read_node(parent_id)?;
+            match node {
+                Node::Leaf { .. } => {
+                    // We should never reach a leaf node here, as we are inserting into the parent
+                    // of a leaf node.
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Reached a leaf node while trying to insert into parent",
+                    ));
                 }
+                Node::Internal { ref mut keys, ref mut children  } => {
+                    keys.insert(insert_pos, key.clone());
+                    children.insert(insert_pos + 1, new_child_id);
 
-                // Node is overflowed, we need to split it
-                let mid = keys.len() / 2;
-                let right_keys = keys.split_off(mid + 1);
-                let right_children = children.split_off(mid + 1);
-                let split_key_for_parent = keys.pop().unwrap();
+                    if keys.len() <= self.max_keys {
+                        self.storage.write_node(self.next_id, &node)?;
+                        self.next_id += 1;
+                        return Ok(())
+                    } else {
+                        // Node is overflowed, we need to split it
+                        let mid = keys.len() / 2;
+                        let right_keys = keys.split_off(mid + 1);
+                        let right_children = children.split_off(mid + 1);
+                        let split_key_for_parent = keys.pop().unwrap_or_else(|| {
+                                // If the split key is None, it means we are splitting the root node
+                                // and we need to create a new root.
+                                key.clone()
+                            });
 
-                let new_internal = Node::Internal {
-                    keys: right_keys,
-                    children: right_children,
-                };
-                // Write the new internal node to storage
-                let new_internal_id = self.storage.write_node(self.next_id, new_internal);
-                self.next_id += 1;
-                // Write the split internal node to storage
-                self.storage.write_node(self.next_id, node_borrow);
-                self.next_id += 1;
+                        let new_internal = Node::Internal {
+                            keys: right_keys,
+                            children: right_children,
+                        };
+                        // Write the new internal node to storage
+                        let new_internal_id = self.next_id;
+                        self.storage.write_node(new_internal_id, &new_internal);
+                        self.next_id += 1;
+                        // Write the split internal node to storage
+                        self.storage.write_node(self.next_id, &node)?;
+                        self.next_id += 1;
 
-                key = split_key_for_parent;
-                new_child_id = new_internal_id;
-                continue;
+                        key = split_key_for_parent;
+                        new_child_id = new_internal_id;
+                        continue;
+                    }
+                }
             }
         }
 
@@ -185,44 +199,29 @@ where
             children: vec![old_root, new_child_id],
         };
         // Write the new root node to storage
-        self.storage.write_node(self.next_id, new_root);
+        self.storage.write_node(self.next_id, &new_root);
+        self.root_id = self.next_id;
         self.next_id += 1;
-        self.height += 1;
-    }
-
-    // Returns true if the B+ tree is empty.
-    pub fn is_empty(&self) -> bool {
-        self.storage.is_empty()
-    }
-
-    // Returns the number of keys in the B+ tree.
-    pub fn len(&self) -> usize {
-        self.size
-    }
-
-    // Returns the height of the B+ tree.
-    pub fn height(&self) -> usize {
-        self.height
+        Ok(())
     }
 
     // Search for a key and return the value if exists
-    pub fn search(&self, key: &K) -> Option<V> {
+    pub fn search(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
         loop {
-            let node = self.storage.load(current_id);
-            let node = node.borrow();
-            match &*node {
+            let node = self.storage.read_node(current_id)?;
+            match node {
                 Node::Internal { keys, children } => {
                     let i = match keys.binary_search(&key) {
-                        Ok(i) => i + 1,
-                        Err(i) => i,
+                        Ok(i) => i,
+                        Err(_i) => return Ok(None), // Key not found
                     };
                     current_id = children[i];
                 }
                 Node::Leaf { keys, values, .. } => {
                     match keys.binary_search(&key) {
-                        Ok(i) => return Some(values[i].clone()),
-                        Err(_i) => return None, // Key not found
+                        Ok(i) => return Ok(Some(values[i].clone())),
+                        Err(_i) => return Ok(None), // Key not found
                     };
                 }
             }
@@ -231,17 +230,16 @@ where
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range(&self, start: &K, end: &K) -> Option<impl Iterator<Item = (K, V)>> {
+    pub fn search_range(&mut self, start: &K, end: &K) -> Result<Option<BPlusTreeRangeIter<K, V, S>>> {
         if start > end {
-            return None; // Invalid range
+            return Ok(None); // Invalid range
         }
         let mut current_id = self.root_id.clone();
 
         loop {
-            let node = self.storage.load(current_id);
-            let node_borrow = node.borrow();
+            let node = self.storage.read_node(current_id)?;
 
-            match &*node_borrow {
+            match node {
                 Node::Internal { keys, children } => {
                     let i = match keys.binary_search(&start) {
                         Ok(i) => i + 1,
@@ -255,178 +253,74 @@ where
                         keys.len(), // If not found the iterator will skip to the next leaf node
                     );
 
-                    return Some(BPlusTreeRangeIter {
-                        storage: &self.storage,
+                    return Ok(Some(BPlusTreeRangeIter {
+                        storage: self.storage,
                         current_id: Some(current_id),
                         index: start_index,
                         start: start.clone(),
                         end: end.clone(),
-                    });
+                        phantom: std::marker::PhantomData,
+                    }));
                 }
             }
         }
     }
 
     // Delete and handle underflow of leaf nodes
-    pub fn delete(&mut self, key: &K) -> Option<V> {
+    pub fn delete(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
         // Stack to keep track of parent nodes and the index of the child in the parent
         let mut parent_stack: Vec<(u64, usize)> = vec![];
 
         loop {
-            let node = self.storage.load(current_id);
-            let node_borrow = node.borrow();
-            match &*node_borrow {
+            let node = self.storage.read_node(current_id)?;
+            match node {
                 Node::Internal { keys, children } => {
                     let i = match keys.binary_search(&key) {
-                        Ok(i) => i + 1,
-                        Err(i) => i,
+                        Ok(i) => i,
+                        Err(_) => return Ok(None), // Key not found
                     };
                     parent_stack.push((current_id, i));
                     current_id = children[i];
                 }
-                Node::Leaf { .. } => {
-                    break; // Found the leaf node
-                }
-            }
-        }
-        // We have found the leaf node
-        // Need to borrow the node mutably and re-match to leaf to remove the key
-        let node = self.storage.load(current_id);
-        let mut node_mut = node.borrow_mut();
-        let mut ret_val: Option<V> = None;
-        if let Node::Leaf { keys, values, .. } = &mut *node_mut {
-            match keys.binary_search(&key) {
-                Ok(i) => {
-                    keys.remove(i);
-                    values.remove(i);
-                    ret_val = Some(values.remove(i));
-                    self.storage.delete_node(current_id);
-                    self.size -= 1;
-                }
-                Err(_i) => {}
-            }
-            // Check if the leaf node is underflowed
-            if keys.len() < self.min_keys && !parent_stack.is_empty() {
-                self.handle_leaf_underflow(&mut parent_stack, current_id);
-            }
-        }
-        return ret_val;
-    }
-
-    // Handle underflow of leaf nodes
-    fn handle_leaf_underflow(&mut self, parent_stack: &mut Vec<(u64, usize)>, child_id: u64) {
-        // If the leaf node is underflowed, we need to either merge or borrow from a sibling
-        while let Some((parent_id, index_in_parent)) = parent_stack.pop_back() {
-            let parent = self.storage.load(parent_id);
-            let mut child = self.storage.load(child_id);
-            let mut parent_mut = parent.borrow_mut();
-
-            if let Node::Internal { keys, children } = &mut *parent_mut {
-                let (sibling_index, is_left) = if index_in_parent > -1 {
-                    index_in_parent - 1
-                } else {
-                    index_in_parent + 1
-                };
-
-                // Retrieve the sibling node
-                if let Some(&sibling_id) = children.get(sibling_index) {
-                    let sibling = self.storage.read_node(sibling_id);
-                    let mut sibling_mut = sibling.borrow_mut();
-                    let mut child_mut = child.borrow_mut();
-
-                    match (&mut under_node, &mut sibling_node) {
-                        (Node::Leaf(under_leaf), Node::Leaf(sibling_leaf)) => {
-                            // Handle borrowing from sibling leaf nodes
-                            if is_left && sibling_leaf.entries.len() > self.min_keys {
-                                let borrowed = sibling_leaf.entries.pop().unwrap();
-                                under_leaf.entries.insert(0, borrowed);
-                            } else if !is_left && sibling_leaf.entries.len() > self.min_keys {
-                                let borrowed = sibling_leaf.entries.remove(0);
-                                under_leaf.entries.push(borrowed);
-                                // merge into the siblings and update the parent node
-                            } else {
-                                if is_left {
-                                    sibling_leaf.entries.extend(under_leaf.entries.drain(..));
-                                    sibling_leaf.next = under_leaf.next;
-                                    parent_node.children.remove(sibling_id);
-                                    parent_node.keys.remove(sibling_id);
-                                    self.storage.write_node(self.next_id, sibling_leaf);
-                                    self.next_id += 1;
-                                    self.storage.write_node(self.next_id, parent_node);
-                                    self.next_id += 1;
-                                } else {
-                                    under_leaf.entries.extend(sibling_leaf.entries.drain(..));
-                                    under_leaf.next = sibling_leaf.next;
-                                    parent_node.children.remove(sibling_id);
-                                    parent_node.keys.remove(sibling_id);
-                                    self.storage.write_node(self.next_id, under_leaf);
-                                    self.next_id += 1;
-                                    self.storage.write_node(self.next_id, parent_node);
-                                    self.next_id += 1;
-                                }
+                Node::Leaf {mut keys, mut values, .. } => {
+                    match keys.binary_search(&key) {
+                        Ok(i) => {
+                            let ret_val = Some(values[i].clone());
+                            keys.remove(i);
+                            values.remove(i);
+                            // Check if the leaf node is underflowed
+                            if keys.len() < self.min_keys && !parent_stack.is_empty() {
+                                // Handle underflow by borrowing from the parent or merging
+                                //self.handle_leaf_underflow(&mut parent_stack, current_id)?;
                             }
+                            return Ok(ret_val)
                         }
-                        (Node::Internal(under_internal), Node::Internal(sibling_internal)) => {
-                            // Handle borrowing from sibling internal nodes
-                            if is_left && sibling_internal.keys.len() > self.min_keys {
-                                let borrowed_key = sibling_internal.keys.pop().unwrap();
-                                under_internal.keys.insert(0, borrowed_key);
-                                under_internal.children.insert(0, sibling_internal.children.pop().unwrap());
-                            } else if !is_left && sibling_internal.keys.len() > self.min_keys {
-                                let borrowed_key = sibling_internal.keys.remove(0);
-                                under_internal.keys.push(borrowed_key);
-                                under_internal.children.push(sibling_internal.children.remove(0));
-                            } else {
-                                // Merge into the siblings and update the parent node
-                                if is_left {
-                                    sibling_internal.keys.append(&mut under_internal.keys);
-                                    sibling_internal.children.append(&mut under_internal.children);
-                                    parent_mut.children.remove(index_in_parent);
-                                    parent_mut.keys.remove(sibling_index);
-                                    self.storage.write_node(sibling_id, &Node::Internal(sibling_internal.clone()));
-                                } else {
-                                    under_internal.keys.append(&mut sibling_internal.keys);
-                                    under_internal.children.append(&mut sibling_internal.children);
-                                    parent_mut.children.remove(sibling_index);
-                                    parent_mut.keys.remove(index_in_parent);
-                                    self.storage.write_node(parent_id, &Node::Internal(under_internal.clone()));
-                                }
-                            }
+                        Err(_i) => {
+                            return Ok(None); // Key not found
                         }
-                        _ => break,
                     }
-                } 
-                // If underflow has reached the root and the root has only one child, we can discard it and update the root
-                if parent_id == self.root && parent_node.children.len() == 1 {
-                    self.root = parent_node.children[0];
-                    break;
                 }
-
-                child_id = parent_id;
             }
         }
     }
+
     // Set the root of the B+ tree
     pub fn set_root(&mut self, root: NodeId) {
-        self.root = root;
-        self.storage.set_root(root);
+        self.root_id = root;
+        //self.storage.set_root(root);
     }
 
-    pub fn create_from_storage(storage: S) -> Self {
-        let root = storage.get_root();
-        let next_id = storage.get_next_id();
-        let order = storage.get_order();
-        let max_keys = order - 1;
-        let min_keys = (order + 1) / 2;
+    //pub fn create_from_storage(storage: S) -> Result<Self> {
+    //    let root = storage.get_root()?;
 
-        Self {
-            root,
-            next_id,
-            order,
-            max_keys,
-            min_keys,
-            storage,
-        }
-    }
+    //    //Ok(Self {
+    //    //    root_id: root,
+    //    //    next_id: storage.get_next_id()?,
+    //    //    order: storage.get_order()?,
+    //    //    max_keys : storage.get_order()? - 1,
+    //    //    min_keys : (storage.get_order()? + 1) / 2,
+    //    //    storage,
+    //    //})
+    //}
 }
