@@ -1,7 +1,7 @@
 use crate::bplustree::Node;
 use crate::storage::NodeStorage;
 use crate::bplustree::BPlusTreeRangeIter;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use std::io::Result;
 
 pub type NodeId = u64; // Type for node IDs
@@ -20,8 +20,8 @@ pub struct BPlusTree<K, V, S: NodeStorage<K, V>> {
 // BPlusTree implementation
 impl<K, V, S> BPlusTree<K, V, S>
 where
-    K: Serialize + for<'a>Deserialize<'a> + Ord + Clone,
-    V: Serialize + for<'a>Deserialize<'a> + Clone,
+    K: Serialize + DeserializeOwned + Ord + Clone,
+    V: Serialize + DeserializeOwned + Clone,
     S: NodeStorage<K, V>,
 {
     pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>> {
@@ -112,7 +112,7 @@ where
         // We have found the leaf node, update a copy of the leaf node and insert it back with a
         // new id retaining COW semantics.
         let mut leaf_node = self.read_node(current_id)?;
-        match leaf_node.take() {
+        match leaf_node.take() { // take the node so that it is accessible in the context below
             Some(mut node) => {
                 match &mut node {
                     Node::Leaf { keys, values, next} => {
@@ -179,7 +179,8 @@ where
     ) -> Result<()> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut node = self.read_node(parent_id)?;
-            match node.take() {
+            match node.take() { // with take the node belongs to the context below, so we can
+                // modify it
                 Some(mut node) => match &mut node {
                     Node::Leaf { .. } => {
                         // We should never reach a leaf node here, as we are inserting into the parent
@@ -207,7 +208,6 @@ where
                                     // and we need to create a new root.
                                     key.clone()
                                 });
-
                             let new_internal = Node::Internal {
                                 keys: right_keys,
                                 children: right_children,
@@ -369,4 +369,28 @@ where
     //    //    storage,
     //    //})
     //}
+    //
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::flatfile::FlatFile;
+    use std::io::Result;
+
+    #[test]
+    fn write_and_read_node() -> Result<()> {
+        let file_path = "test_flatfile.bin";
+        let storage = FlatFile::<u64, String>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FlatFile<u64, String>>::new(storage, 4)?;
+        let key = 1u64;
+        let value = "a".to_string();
+        tree_root.insert(key, value.clone())?;
+        let res = tree_root.search(&key)?;
+        assert!(res.is_some(), "Node should be read successfully");
+        assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        Ok(())
+    }
+}
+

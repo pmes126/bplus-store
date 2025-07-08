@@ -23,7 +23,7 @@ pub struct FlatFile<K, V> {
 
 // Implement a constructor for FlatFile
 impl<K, V> FlatFile<K, V> {
-    fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+    pub fn new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let mut file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
         // Initialize the file and read existing entries
         Ok(
@@ -39,7 +39,8 @@ impl<K, V> FlatFile<K, V> {
 
 // Implement the NodeStorage trait for FlatFile
 impl<K, V> NodeStorage<K, V> for FlatFile<K, V>
-where K: Serialize + DeserializeOwned + Ord + Clone,
+    where
+      K: Serialize + DeserializeOwned + Ord + Clone,
       V: Serialize + DeserializeOwned + Clone,
 {
     // Read a node from the flat file by its ID
@@ -70,14 +71,15 @@ where K: Serialize + DeserializeOwned + Ord + Clone,
             val.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
        } else {
            // If the entry does not exist, return None
-           return Ok(None);
+           Ok(None)
        }
 
     }
 
     // Write a node to the flat file and update the index
     fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> Result<()> {
-        let data = bincode::serialize(node).unwrap();
+        let data = bincode::serialize(node)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let length = data.len() as u64;
         let offset = self.next_offset;
 
@@ -108,5 +110,95 @@ where K: Serialize + DeserializeOwned + Ord + Clone,
     // Get the root node ID (not implemented, just a placeholder)
     fn get_root(&self) -> Result<u64> {
         Ok(0) // Placeholder, should return the actual root node ID
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_and_read_node() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        let node = Node::Leaf { 
+            keys: vec![1u64, 2, 3],
+            values: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            next: None,
+        };
+        let node_id: NodeId = 1;
+        storage.write_node(node_id, &node)?;
+        let read_node = storage.read_node(1)?;
+        assert!(read_node.is_some(), "Node should be read successfully");
+        assert_eq!(read_node.unwrap(), node);
+        Ok(())
+    }
+    #[test]
+    fn read_non_existent_node() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        let read_node = storage.read_node(999)?;
+        assert!(read_node.is_none(), "Reading a non-existent node should return None");
+        Ok(())
+    }
+    #[test]
+    fn write_multiple_nodes() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        for i in 1..=100 {
+            let node = Node::Leaf { 
+                keys: vec![i],
+                values: vec![format!("value_{}", i)],
+                next: None,
+            };
+            storage.write_node(i, &node)?;
+            let read_node = storage.read_node(i)?;
+            assert!(read_node.is_some(), "Node {} should be read successfully", i);
+            assert_eq!(read_node.unwrap(), node, "Node {} read does not match written", i);
+        }
+        Ok(())
+    }
+    #[test]
+    fn write_and_read_large_node() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        let large_node = Node::Leaf { 
+            keys: vec![1u64; 10000], // 10000 keys
+            values: vec!["large_value".to_string(); 10000], // 10000 values
+            next: None,
+        };
+        let node_id: NodeId = 2;
+        storage.write_node(node_id, &large_node)?;
+        let read_node = storage.read_node(node_id)?;
+        assert!(read_node.is_some(), "Large node should be read successfully");
+        assert_eq!(read_node.unwrap(), large_node);
+        Ok(())
+    }
+    #[test]
+    fn write_and_read_multiple_large_nodes() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        for i in 1..=10 {
+            let large_node = Node::Leaf { 
+                keys: vec![i; 1000], // 1000 keys
+                values: vec![format!("value_{}", i); 1000], // 1000 values
+                next: None,
+            };
+            storage.write_node(i, &large_node)?;
+            let read_node = storage.read_node(i)?;
+            assert!(read_node.is_some(), "Large node {} should be read successfully", i);
+            assert_eq!(read_node.unwrap(), large_node, "Node {} read does not match written", i);
+        }
+        Ok(())
+    }
+    #[test]
+    fn write_and_read_empty_node() -> Result<()> {
+        let mut storage = FlatFile::<u64, String>::new("test_flatfile.bin").unwrap();
+        let empty_node = Node::Leaf { 
+            keys: vec![],
+            values: vec![],
+            next: None,
+        };
+        let node_id: NodeId = 3;
+        storage.write_node(node_id, &empty_node)?;
+        let read_node = storage.read_node(node_id)?;
+        assert!(read_node.is_some(), "Empty node should be read successfully");
+        assert_eq!(read_node.unwrap(), empty_node);
+        Ok(())
     }
 }

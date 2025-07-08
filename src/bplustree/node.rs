@@ -1,11 +1,8 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 
 pub type NodeId = u64;
-pub type NodeRef<K, V> = Rc<RefCell<Node<K, V, u64>>>;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Node<K, V, NodeId> {
     Internal {
         keys: Vec<K>,
