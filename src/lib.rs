@@ -1,4 +1,5 @@
 //! B+ Tree library crate
 
-mod storage;
-mod bplustree;
+pub(crate) mod storage;
+pub(crate) mod bplustree;
+pub(crate) mod layout;

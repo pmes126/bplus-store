@@ -1,8 +1,6 @@
-use serde::{Deserialize, Serialize};
-
 pub type NodeId = u64;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+/// In-memory representation of a node
 pub enum Node<K, V, NodeId> {
     Internal {
         keys: Vec<K>,
@@ -15,22 +13,23 @@ pub enum Node<K, V, NodeId> {
     },
 }
 
-impl<K, V, NodeId> Node<K, V, NodeId> {
-    pub fn as_leaf_mut(&mut self) -> Option<&mut Node<K, V, NodeId>> {
-        match self {
-            Node::Leaf { .. } => Some(self),
-            _ => None,
-        }
-    }
+
+impl<K, V> Node<K, V, NodeId>
+where 
+    K: Copy + Ord,
+    V: Copy,
+{
     pub fn is_empty(&self) -> bool {
         match self {
             Node::Internal { keys, children } => keys.is_empty() && children.is_empty(),
             Node::Leaf { keys, values, next: _ } => keys.is_empty() && values.is_empty(),
         }
     }
+
     pub fn is_leaf(&self) -> bool {
         matches!(self, Node::Leaf { .. })
     }
+
     pub fn is_internal(&self) -> bool {
         matches!(self, Node::Internal { .. })
     }

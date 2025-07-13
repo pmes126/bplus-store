@@ -1,11 +1,11 @@
 use lru::LruCache;
 use crate::bplustree::{Node, NodeId};
-use crate::storage::{NodeStorage};
+use crate::storage::{KeyCodec, ValueCodec, PageStorage, NodeStorage};
 use std::io;
 use std::num::NonZeroUsize;
 
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
-pub struct CacheLayer<K, V, B: NodeStorage<K, V>> {
+pub struct CacheLayer<K, V, B: PageStorage> {
     backend: B,
     cache: LruCache<NodeId, Node<K, V, NodeId>>,
 }
@@ -13,9 +13,9 @@ pub struct CacheLayer<K, V, B: NodeStorage<K, V>> {
 // Implement the initialization for CacheLayer with a specified capacity and backend storage.
 impl<K, V, B> CacheLayer<K, V, B>
 where
-    K: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
-    V: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
-    B: NodeStorage<K, V>,
+    K: KeyCodec + Clone,
+    V: KeyCodec + Clone,
+    B: PageStorage,
 {
     fn new(capacity: usize, backend: B) -> Self {
         Self {
@@ -28,9 +28,9 @@ where
 // Implement the NodeStorage trait
 impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     where
-    K: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
-    V: serde::Serialize + for<'de> serde::Deserialize <'de> + Clone,
-    B: NodeStorage<K, V>,
+    K: KeyCodec,
+    V: ValueCodec,
+    B: PageStorage,
 {
     fn read_node(&mut self, id: u64) -> io::Result<Option<Node<K, V, NodeId>>> {
         if let Some(node) = self.cache.get(&id) {
@@ -50,14 +50,11 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         self.cache.put(id, node.clone()).ok_or(io::Error::other(
             "Cache write failed: cache is full or node already exists",
         ))?;
+        // Write the node to the backend storage
         self.backend.write_node(id, node)
     }
     
     fn flush(&mut self) -> io::Result<()> {
         self.backend.flush()
-    }
-
-    fn get_root(&self) -> io::Result<u64> {
-        self.backend.get_root()
     }
 } 
