@@ -1,15 +1,20 @@
 use crate::bplustree::Node;
-use crate::storage::flatfile::FlatFile;
+use crate::storage::ValueCodec;
+use crate::storage::KeyCodec;
+use crate::storage::{NodeStorage, MetadataStorage, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::metadata::Metadata;
 use crate::bplustree::BPlusTreeRangeIter;
-use serde::{de::DeserializeOwned, Serialize};
 use std::io::Result;
 
 pub type NodeId = u64; // Type for node IDs
 
 #[derive(Debug)]
-pub struct BPlusTree<K, V, S: NodeStorage<K, V>> {
+pub struct BPlusTree<K, V, S: NodeStorage<K, V>> 
+where
+    K: KeyCodec + Ord,
+    V: ValueCodec,
+    {
     root_id: NodeId,
-    next_id: NodeId,
     order: usize,
     max_keys: usize,
     min_keys: usize,
@@ -20,9 +25,9 @@ pub struct BPlusTree<K, V, S: NodeStorage<K, V>> {
 // BPlusTree implementation
 impl<K, V, S> BPlusTree<K, V, S>
 where
-    K: Serialize + DeserializeOwned + Ord + Clone,
-    V: Serialize + DeserializeOwned + Clone,
-    S: NodeStorage<K, V>,
+    K: KeyCodec + Ord,
+    V: ValueCodec,
+    S: NodeStorage<K, V> + MetadataStorage,
 {
     pub fn new(mut storage: S, order: usize) -> Result<BPlusTree<K, V, S>> {
         let root_node = Node::Leaf {
@@ -30,13 +35,31 @@ where
             values: vec![],
             next: None,
         };
-        let init_id = 0; // Initialize the root node ID
-        storage.write_node(init_id, &root_node)?;
-
+        if order < 2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Order must be at least 2",
+            ));
+        } 
+        // Initialize the root node ID
+        let init_id = storage.write_node(&root_node)?;
+        let metadata_1 = Metadata {
+            root_node_id: init_id,
+            txn_id: 1, // Initial transaction ID
+            checksum: 0, // Placeholder for checksum
+            order: order as u8,
+        };
+        let metadata_2 = Metadata {
+            root_node_id: init_id,
+            txn_id: 0, // Initial transaction ID
+            checksum: 0, // Placeholder for checksum
+            order: order as u8,
+        };
+        storage.write_meta(METADATA_PAGE_1, &metadata_1)?;
+        storage.write_meta(METADATA_PAGE_2, &metadata_2)?;
 
         Ok(Self {
             root_id: init_id,
-            next_id: init_id + 1, // Next ID for new nodes
             storage,
             order,
             max_keys: order - 1,
@@ -45,14 +68,32 @@ where
         })
     }
 
+    pub fn load(file_path: &str) -> Result<BPlusTree<K, V, S>> {
+        let storage = S::new(file_path)?;
+        let root_id = storage.get_current_root()?;
+        let order = storage.get_order()?;
+        //let order = storage.get_order()?;
+        let max_keys = order - 1;
+        let min_keys = (order + 1).saturating_div(2); // Ensure min_keys is at least 1
+
+        Ok(Self {
+            root_id,
+            storage,
+            order,
+            max_keys,
+            min_keys,
+            phantom: std::marker::PhantomData,
+        })
+    }
+
     // Reads a node from the B+ tree storage, using the cache if available.
-    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V, NodeId>>> {
+    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V>>> {
         self.storage.read_node(id)
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> Result<()> {
-        self.storage.write_node(id, node)
+    fn write_node(&mut self, node: &Node<K, V>) -> Result<()> {
+        self.storage.write_node(node)
     }
 
     // Gets the value associated with a key in the B+ tree.
@@ -136,22 +177,17 @@ where
                                 next: next.take(), // Retain the next pointer
                             };
                             // Write the new leaf node to storage
-                            self.write_node(self.next_id, &new_leaf)?;
-                            self.next_id += 1;
+                            self.write_node(&new_leaf)?;
                             // Write the updated leaf node back to storage
-                            let new_leaf_id = self.next_id;
-                            self.write_node(new_leaf_id, &node)?;
-                            self.next_id += 1;
+                            let new_leaf_id = self.write_node(&node)?;
                             // Propagate the split upwards.
                             self.insert_into_parent(path, key, new_leaf_id)?;
                         } else {
-                            // Write the updated leaf node back to storage
-                            if current_id == self.root_id {
-                                // If this is the root node, we need to update the root_id
-                                self.root_id = self.next_id;
+                            let new_leaf_id = self.write_node(&node)?;
+                            if self.root_id == current_id {
+                                // If we are inserting into the root, we need to update the root ID
+                                self.root_id = new_leaf_id;
                             }
-                            self.write_node(self.next_id, &node)?;
-                            self.next_id += 1;
                         }
                     },
                     _ => {
@@ -199,8 +235,7 @@ where
                         children.insert(insert_pos + 1, new_child_id);
 
                         if keys.len() <= self.max_keys {
-                            self.write_node(self.next_id, &node)?;
-                            self.next_id += 1;
+                            self.write_node(&node)?;
                             return Ok(())
                         } else {
                             // Node is overflowed, we need to split it
@@ -217,12 +252,9 @@ where
                                 children: right_children,
                             };
                             // Write the new internal node to storage
-                            let new_internal_id = self.next_id;
-                            self.write_node(new_internal_id, &new_internal)?;
-                            self.next_id += 1;
+                            let new_internal_id = self.write_node(&new_internal)?;
                             // Write the split internal node to storage
-                            self.write_node(self.next_id, &node)?;
-                            self.next_id += 1;
+                            self.write_node(&node)?;
 
                             key = split_key_for_parent;
                             new_child_id = new_internal_id;
@@ -246,9 +278,8 @@ where
             children: vec![old_root, new_child_id],
         };
         // Write the new root node to storage
-        self.write_node(self.next_id, &new_root)?;
-        self.root_id = self.next_id;
-        self.next_id += 1;
+        let new_root_id = self.write_node(&new_root)?;
+        self.root_id = new_root_id;
         Ok(())
     }
 
@@ -379,14 +410,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::flatfile::FlatFile;
     use std::io::Result;
+    use crate::storage::file_store::FileStore;
 
     #[test]
     fn write_and_read_node() -> Result<()> {
         let file_path = "test_flatfile.bin";
-        let storage = FlatFile::<u64, String>::new(file_path)?;
-        let mut tree_root = BPlusTree::<u64, String, FlatFile<u64, String>>::new(storage, 4)?;
+        let storage = FileStore::<u64, String>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<u64, String>>::new(storage, 4)?;
         let key = 1u64;
         let value = "a".to_string();
         let res = tree_root.insert(key, value.clone());

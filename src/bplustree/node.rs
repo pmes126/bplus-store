@@ -1,7 +1,7 @@
 pub type NodeId = u64;
 
 /// In-memory representation of a node
-pub enum Node<K, V, NodeId> {
+pub enum Node<K, V> {
     Internal {
         keys: Vec<K>,
         children: Vec<NodeId>,
@@ -14,7 +14,7 @@ pub enum Node<K, V, NodeId> {
 }
 
 
-impl<K, V> Node<K, V, NodeId>
+impl<K, V> Node<K, V>
 where 
     K: Copy + Ord,
     V: Copy,

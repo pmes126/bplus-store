@@ -7,7 +7,7 @@ use std::num::NonZeroUsize;
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
 pub struct CacheLayer<K, V, B: PageStorage> {
     backend: B,
-    cache: LruCache<NodeId, Node<K, V, NodeId>>,
+    cache: LruCache<NodeId, Node<K, V>>,
 }
 
 // Implement the initialization for CacheLayer with a specified capacity and backend storage.
@@ -32,7 +32,7 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     V: ValueCodec,
     B: PageStorage,
 {
-    fn read_node(&mut self, id: u64) -> io::Result<Option<Node<K, V, NodeId>>> {
+    fn read_node(&mut self, id: u64) -> io::Result<Option<Node<K, V>>> {
         if let Some(node) = self.cache.get(&id) {
             return Ok(Some(node.clone()));
         }
@@ -46,12 +46,13 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         Ok(node)
     }
 
-    fn write_node(&mut self, id: NodeId, node: &Node<K, V, NodeId>) -> io::Result<()> {
-        self.cache.put(id, node.clone()).ok_or(io::Error::other(
-            "Cache write failed: cache is full or node already exists",
-        ))?;
+    fn write_node(&mut self, node: &Node<K, V>) -> io::Result<u64> {
         // Write the node to the backend storage
-        self.backend.write_node(id, node)
+        let id = self.backend.write_node(node)?;
+        self.cache.put(id, node.clone()).ok_or(io::Error::other(
+            "Cache write failed: cache is full or node already exists", // TODO rethink this error
+            // message
+        ))?;
     }
     
     fn flush(&mut self) -> io::Result<()> {
