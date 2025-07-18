@@ -55,7 +55,7 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
             Ok(node)
         } else {
             // If the node is not found in the backend, return None
-            return Ok(None);
+            Ok(None)
         }
     }
 
@@ -64,7 +64,7 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         let id = self.backend.write_node(node)?;
         self.cache.put(id, node.clone()).ok_or(io::Error::other(
             "Cache write failed: cache is full or node already exists", // TODO rethink this error message
-        ));
+        ))?;
         Ok(id)
     }
     

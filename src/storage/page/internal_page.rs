@@ -49,18 +49,22 @@ impl InternalPage {
     }
 
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError("Failed to convert bytes to InternalPage".to_string()))
+        InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })
     }
 
     // Store according to the layout => [klen][key][ptr] 
     pub fn insert_entry(&mut self, key: &[u8], child: u64) -> Result<(), PageCodecError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull);
+            return Err(PageCodecError::PageFull{
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
         }
 
         let required_space = key.len() + LEN_KEY_SIZE +  CHILD_ID_SIZE; // key_len +
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull);
+            return Err(PageCodecError::PageFull{
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
         }
 
         let data = &mut self.data.blob[..];
@@ -101,7 +105,7 @@ impl InternalPage {
         let key_len_offset = self.header.key_offsets[idx] as usize;
 
         let arr: [u8; LEN_KEY_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_KEY_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError("Failed to read bytes as slice".to_string()))?;
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
 
         let key_length = u16::from_le_bytes(arr);
 
@@ -109,7 +113,7 @@ impl InternalPage {
         let key = &self.data.blob[key_offset..(key_offset + key_length as usize)];
         let child_offset = self.header.free_start as usize + (key_length as usize + LEN_KEY_SIZE);
         let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..(child_offset + CHILD_ID_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError("Failed to read bytes as slice".to_string()))?;
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
 
         let child_ptr = u64::from_le_bytes(arr);
         Ok((key, child_ptr))

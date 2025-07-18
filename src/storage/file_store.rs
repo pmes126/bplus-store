@@ -1,17 +1,11 @@
 use crate::bplustree::Node;
-use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, CodecError, metadata, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2}}};
+use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2}}};
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
 use std::path::Path;
 
 pub struct FileStore<S: PageStorage> {
     store: S,
-}
-
-impl<S: PageStorage> FileStore<S> {
-    pub fn new(store: S) -> Self {
-        FileStore { store }
-    }
 }
 
 impl<S: PageStorage> MetadataStorage for FileStore<S> {
@@ -65,12 +59,11 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     fn get_metadata(&mut self) -> Result<Metadata, std::io::Error> {
         let meta0 = self.read_meta(METADATA_PAGE_1)?;
         let meta1 = self.read_meta(METADATA_PAGE_2)?;
-        let root_node_id = if meta0.data.txn_id > meta1.data.txn_id {
-            meta0.data.root_node_id
+        if meta0.data.txn_id > meta1.data.txn_id {
+            Ok(meta0.data)
         } else {
-            meta1.data.root_node_id
-        };
-        Ok(meta0.data.clone())
+            Ok(meta1.data)
+        }
     }
 }
 
@@ -90,9 +83,9 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec,
         V: ValueCodec,
     {
-        let buf = self.store.read_page(page_id).map_err(|e| CodecError::DecodeFailure(e.to_string()))?;
-        DefaultNodeCodec::decode(&buf).map_err(|e| CodecError::DecodeFailure(e.to_string()))
-            .map_or(Ok(None), |node| {
+        let buf = self.store.read_page(page_id)?;
+        DefaultNodeCodec::decode(&buf).
+            map_or(Ok(None), |node| {
                     Ok(Some(node))
                 }
             )
@@ -103,7 +96,7 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec,
         V: ValueCodec,
     {
-        let buf = DefaultNodeCodec::encode(node).map_err(|e| CodecError::EncodeFailure(e.to_string()))?;
+        let buf = DefaultNodeCodec::encode(node)?;
         let res = self.store.write_page(&buf)?;
         Ok(res)
     }

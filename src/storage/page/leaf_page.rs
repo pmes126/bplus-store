@@ -5,7 +5,6 @@ use crate::storage::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 pub const LEAF_NODE_VERSION: u8 = 0;
-pub const HEADER_SIZE: usize = 12;
 
 // A design for storing leaf nodes based on a Page-Local Heap
 // [HEADER (fixed)]
@@ -66,7 +65,7 @@ impl LeafPage {
     }
 
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        LeafPage::ref_from(buf).ok_or(PageCodecError::FromBytesError("Failed to convert bytes to LeafPage".to_string()))
+        LeafPage::ref_from(buf).ok_or(PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })
     }
 
     pub fn is_full(&self) -> bool {
@@ -77,13 +76,17 @@ impl LeafPage {
     // Insert values according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     pub fn insert_entry(&mut self, key: &[u8], value: &[u8]) -> Result<(), PageCodecError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull);
+            return Err(PageCodecError::PageFull{
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
         }
 
         let required_space = key.len() + value.len() + LEN_VALUE_SIZE * 2; // key_len +
         // value_len
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull);
+            return Err(PageCodecError::PageFull{
+                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            });
         }
         let data = &mut self.data.blob[..];
 
@@ -131,18 +134,20 @@ impl LeafPage {
 
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds("Index out of bounds".to_string()));
+            return Err(PageCodecError::IndexOutOfBounds{
+                msg: "Index out of bounds".to_string(),
+            });
         }
 
         let key_len_offset = self.slots.offsets[idx] as usize;
         let arr: [u8; LEN_VALUE_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_VALUE_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError("Failed to read bytes as slice".to_string()))?;
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })?;
 
         let key_length = u16::from_le_bytes(arr);
 
         let value_len_offset = key_len_offset + LEN_VALUE_SIZE;
         let arr: [u8; LEN_VALUE_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_VALUE_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError("Failed to read bytes as slice".to_string()))?;
+            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
         let value_length = u16::from_le_bytes(arr);
 
         let key_offset = value_len_offset + LEN_VALUE_SIZE;

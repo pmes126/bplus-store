@@ -9,6 +9,7 @@ use crate::bplustree::Node;
 use crate::layout::PAGE_SIZE;
 use crate::storage::metadata::{ Metadata, MetadataPage};
 use std::path::{Path};
+use thiserror::Error;
 use anyhow::Result;
 
 /// Unified storage interface for B+ tree logic
@@ -36,41 +37,26 @@ pub trait PageStorage {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CodecError {
-    SliceTooShort(String),
-    DecodeFailure(String),
-    EncodeFailure(String),
-    FromSliceError(std::array::TryFromSliceError),
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for CodecError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-           CodecError::DecodeFailure(msg) => write!(f, "Decoding failed: {}", msg),
-           CodecError::EncodeFailure(msg) => write!(f, "Encoding failed: {}", msg),
-           CodecError::FromSliceError(msg) => write!(f, "Error in converting from byte slice: {}", msg),
-           CodecError::SliceTooShort(msg) => write!(f, "Slice too short: {}", msg),
-           CodecError::Io(e) => write!(f, "I/O error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for CodecError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CodecError::FromSliceError(e) => Some(e),
-            CodecError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for CodecError {
-    fn from(err: std::io::Error) -> CodecError {
-        CodecError::Io(err)
-    }
+    #[error("Error decoding value: {msg}")]
+    DecodeFailure {
+        msg: String,
+    },
+    #[error("Error encoding value: {msg}")]
+    EncodeFailure {
+        msg: String,
+    },
+    #[error("Error converting from byte slice: {source}")]
+    FromSliceError {
+        #[from]
+        source: std::array::TryFromSliceError,
+    },
+    #[error("IO error: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
 }
 
 /// Trait for node storage operations

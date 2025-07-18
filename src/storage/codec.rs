@@ -81,16 +81,22 @@ where
         match buf[0] {
         1 => {
             // Leaf node
-            let page = LeafPage::from_bytes(buf).map_err(|e| CodecError::DecodeFailure("Failed to get LeafPage from bytes".to_string()))?;
+            let page = LeafPage::from_bytes(buf).
+                map_err(|e| CodecError::DecodeFailure {
+                        msg: e.to_string(),
+                    })?;
             let mut leaf = Node::Leaf {
-                    keys: Vec::with_capacity(page.len() as usize),
-                    values: Vec::with_capacity(page.len() as usize),
+                    keys: Vec::with_capacity(page.len()),
+                    values: Vec::with_capacity(page.len()),
                     next: None,
             };
 
             if let Node::Leaf { keys, values, next } = &mut leaf {
                 for i in 0..page.header.entry_count as usize {
-                    let (key_bytes, value_bytes) = page.get_entry(i).map_err(|e| CodecError::DecodeFailure(e.to_string()))?;
+                    let (key_bytes, value_bytes) = page.get_entry(i).
+                        map_err(|e| CodecError::DecodeFailure {
+                                msg: e.to_string(),
+                            })?;
                     keys.push(K::decode_key(key_bytes));
                     values.push(V::decode_value(value_bytes));
                 }
@@ -100,21 +106,27 @@ where
         }
         0 => {
             // Internal node
-            let page = unsafe { &*(buf.as_ptr() as *const InternalPage) };
+            let page = InternalPage::from_bytes(buf).
+                map_err(|e| CodecError::DecodeFailure {
+                        msg: e.to_string(),
+                    })?;
             let mut internal = Node::Internal {
                 keys: Vec::with_capacity(page.header.entry_count as usize),
                 children: Vec::with_capacity(page.header.entry_count as usize + 1), // +1 for rightmost child
             };
             if let Node::Internal { keys, children } = &mut internal {
                 for i in 0..page.header.entry_count as usize {
-                    let (key_bytes, child_ptr) = page.get_entry(i).map_err(|e| CodecError::DecodeFailure(e.to_string()))?;
+                    let (key_bytes, child_ptr) = page.get_entry(i).
+                        map_err(|e| CodecError::DecodeFailure {
+                                msg: e.to_string(),
+                            })?;
                     keys.push(K::decode_key(key_bytes));
                     children.push(child_ptr);
                 }
             }
             Ok(internal)
         }
-        _ => Err(CodecError::DecodeFailure("Invalid node type tag in page".to_string())),
+        _ => Err(CodecError::DecodeFailure { msg: "Invalid node type tag in page".to_string() })
         }    
     }
 
@@ -126,12 +138,13 @@ where
                 for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
                     let key = key_ref.encode_key();
                     let value = value_ref.encode_value();
-                    page.insert_entry(key.as_ref(), value.as_ref()).map_err(|e| CodecError::EncodeFailure(e.to_string()))?;
+                    page.insert_entry(key.as_ref(), value.as_ref()).
+                        map_err(|e| CodecError::EncodeFailure {
+                                msg: e.to_string(),
+                            })?;
                 }
                 }
-                page.to_bytes().map_err(|e| CodecError::EncodeFailure(e.to_string())).copied()
-                //page.to_bytes()
-                //page.to_bytes().map_err(|e| PageCodecError::EncodeFailure(&e.to_string()))
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
             }
             Node::Internal { keys, children } => {
                 let mut page = InternalPage::new();
@@ -141,9 +154,12 @@ where
     
                 for (key_ref, child_ref) in entries {
                     let key = key_ref.encode_key();
-                    page.insert_entry(key, *child_ref).map_err(|e| CodecError::EncodeFailure(e.to_string()))?;
+                    page.insert_entry(key, *child_ref).
+                        map_err(|e| CodecError::EncodeFailure {
+                                msg: e.to_string(),
+                            })?;
                 }
-                page.to_bytes().map_err(|e| CodecError::EncodeFailure(e.to_string())).copied()
+                page.to_bytes().map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }).copied()
             }   
         }
     }
