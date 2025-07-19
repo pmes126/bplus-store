@@ -178,9 +178,9 @@ where
                                 next: next.take(), // Retain the next pointer
                             };
                             // Write the new leaf node to storage
-                            self.write_node(&new_leaf)?;
+                            let new_leaf_id = self.write_node(&new_leaf)?;
                             // Write the updated leaf node back to storage
-                            let new_leaf_id = self.write_node(&node)?;
+                            let updated_node_id = self.write_node(&node)?;
                             // Propagate the split upwards.
                             self.insert_into_parent(path, key, new_leaf_id)?;
                         } else {
@@ -269,6 +269,8 @@ where
             }
         }
 
+        // If we reach here, it means we have an empty path, which means we need to create a new
+        // root node.
         let old_root = self.root_id;
         let new_root = Node::Internal {
             keys: vec![key],
@@ -386,7 +388,6 @@ where
     // Set the root of the B+ tree
     pub fn set_root(&mut self, root: NodeId) {
         self.root_id = root;
-        //self.storage.set_root(root);
     }
 }
 
@@ -409,6 +410,44 @@ mod tests {
         let res = tree_root.search(&key)?;
         assert!(res.is_some(), "Node should be read successfully");
         assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        Ok(())
+    }
+    
+    #[test]
+    fn write_and_read_nodes() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile.bin";
+        
+        let order = 11; // B+ tree order
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        for i in 0..order - 1 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+            let res = tree_root.search(&key)?;
+            assert!(res.is_some(), "Node should be read successfully");
+            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn write_and_read_nodes_with_overflow() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile.bin";
+        
+        let order = 2; // B+ tree order
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        for i in 0..order*100 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+            let res = tree_root.search(&key)?;
+            assert!(res.is_some(), "Node should be read successfully");
+            assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        }
         Ok(())
     }
 }
