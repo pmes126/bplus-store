@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use crate::bplustree::{Node, TreeError};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
@@ -6,6 +8,11 @@ use crate::bplustree::BPlusTreeRangeIter;
 use anyhow::Result;
 
 pub type NodeId = u64; // Type for node IDs
+
+
+fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
+    println!("{}: {:?}", msg, vec);
+}
 
 /// Result of inserting into a B+ tree node
 pub enum InsertResult<K, N> {
@@ -45,7 +52,7 @@ where
 }
 
 // BPlusTree implementation
-impl<K, V, S> BPlusTree<K, V, S>
+impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
@@ -201,8 +208,9 @@ where
                     match split_res {
                         SplitResult::SplitNodes { left_node, right_node, split_key } => {
                             // We have a split, we need to insert the new leaf node into the parent
-                            let new_leaf_id = self.write_node(&right_node)?;
                             let updated_node_id = self.write_node(&left_node)?;
+                            let new_leaf_id = self.write_node(&right_node)?;
+                            println!("Split leaf node with left: {}, right: {}", updated_node_id, new_leaf_id);
                             let node_split = InsertResult::Split {
                                 left: updated_node_id,
                                 right: new_leaf_id,
@@ -240,10 +248,17 @@ where
         mut leaf_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
         if let Node::Leaf { keys, values, next } = &mut leaf_node {
+            print_vec(keys, "Keys before split");
+            print_vec(values, "Values before split");
             let mid = keys.len() / 2;
             let right_keys = keys.split_off(mid);
             let right_values = values.split_off(mid);
+            print_vec(&right_keys, "Right Keys after split");
+            print_vec(&right_values, "Right values after split");
+            print_vec(keys, "Left Keys after split");
+            print_vec(values, "Left Values after split");
             let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
+            println!("Split key: {:?}", split_key);
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
                 values: right_values,
@@ -254,7 +269,7 @@ where
                 values: values.to_vec(),
                 next: Some(self.write_node(&right_leaf)?), // Link to the new right leaf
             };
-            Ok( SplitResult::SplitNodes { right_node: right_leaf, left_node: left_leaf, split_key: split_key.clone()})
+            Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
         } else {
             Err(TreeError::BackendAny(
                 "Expected a leaf node for splitting".to_string(),
@@ -403,6 +418,7 @@ where
             };
             // Write the new root node to storage
             let new_root_id = self.write_node(&new_root)?;
+            println!("Creating new root node with id: {:?}", new_root_id);
             self.root_id = new_root_id;
             self.height += 1; // Increase the height of the tree
         }
@@ -417,9 +433,15 @@ where
             let node = self.read_node(current_id)?;
             match node {
                 Some(Node::Internal { keys, children }) => {
+                    println!("Searching in internal node with ID: {}", current_id);
+                    print_vec(&keys, "Internal Node Keys in search");
+                    print_vec(&children, "Internal Node Children in search");
+                    // target >= keys[i] means we should go to the (i+1)-th child
+                    // target < keys[i]  (not found) means we should go to the i-th child - descent
+                    // where it would be inserted
                     let i = match keys.binary_search(key) {
-                        Ok(i) => i,
-                        Err(_i) => return Ok(None), // Key not found
+                        Ok(i) => i + 1,
+                        Err(i) => i, 
                     };
                     current_id = children[i];
                 }
@@ -562,9 +584,9 @@ mod tests {
 
     #[test]
     fn write_and_read_nodes_with_overflow() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile.bin";
+        let file_path = "test_flatfile_2.bin";
         
-        let order = 2; // B+ tree order
+        let order = 4; // B+ tree order
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order*100 {

@@ -111,12 +111,14 @@ impl InternalPage {
 
         let key_offset = key_len_offset + LEN_KEY_SIZE; // Move to the start of the key
         let key = &self.data.blob[key_offset..(key_offset + key_length as usize)];
-        let child_offset = self.header.free_start as usize + (key_length as usize + LEN_KEY_SIZE);
+        
+        let child_offset = key_offset + key_length as usize;
         let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..(child_offset + CHILD_ID_SIZE)].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
 
-        let child_ptr = u64::from_le_bytes(arr);
-        Ok((key, child_ptr))
+        let child = u64::from_le_bytes(arr);
+        println!("Internal Decode: key: {:?}, child: {}", key, child);
+        Ok((key, child))
     }
 
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
