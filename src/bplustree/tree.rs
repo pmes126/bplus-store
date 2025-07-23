@@ -695,7 +695,7 @@ mod tests {
     use crate::storage::page_store::PageStore;
 
     #[test]
-    fn write_and_read_node() -> Result<(), anyhow::Error> {
+    fn write_and_read_values() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
         
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
@@ -711,7 +711,7 @@ mod tests {
     }
     
     #[test]
-    fn write_and_read_nodes() -> Result<(), anyhow::Error> {
+    fn write_and_read_values_multiple() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile.bin";
         
         let order = 11; // B+ tree order
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn write_and_read_nodes_with_overflow() -> Result<(), anyhow::Error> {
+    fn write_and_read_values_with_overflow() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_2.bin";
         
         let order = 4; // B+ tree order
@@ -744,6 +744,25 @@ mod tests {
             let res = tree_root.search(&key)?;
             assert!(res.is_some(), "Node should be read successfully");
             assert_eq!(res.unwrap(), value, "Value should match the inserted value");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn write_and_delete_values() -> Result<(), anyhow::Error> {
+        let file_path = "test_flatfile.bin";
+        
+        let order = 11; // B+ tree order
+        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+        let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+        for i in 0..order - 1 {
+            let key = i as u64;
+            let value = format!("value_{}", i);
+            let res = tree_root.insert(key, value.clone());
+            assert!(res.is_ok(), "Node should be inserted successfully");
+            tree_root.delete(&key)?;
+            let res = tree_root.search(&key)?;
+            assert!(res.is_none(), "Node should be deleted successfully");
         }
         Ok(())
     }
