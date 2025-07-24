@@ -122,7 +122,6 @@ impl InternalPage {
         let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..end].try_into().
             map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
         let child = u64::from_le_bytes(arr);
-        println!("Internal Decode: key: {:?}, child: {}", key, child);
         Ok((key, child))
     }
 
