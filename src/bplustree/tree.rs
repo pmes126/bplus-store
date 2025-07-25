@@ -535,23 +535,24 @@ where
                 }
                 // Try merging with the left sibling
                 if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
-                    if children.len() < self.min_internal_keys {
-                        // If the merge resulted in an underflow, we need to continue handling it
+                    // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
+                    if children.len() < self.min_internal_keys && !path.is_empty() {
+                        println!("Merge with left sibling resulted in underflow, revisiting parent node");
                         node = parent_node; // Revisit the parent node
                         continue;
                     } else {
-                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
                     }
                 }
                 // Try merging with right sibling
                 if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
-                    //if children.len() < self.min_internal_keys {
-                    //    // If the merge resulted in an underflow, we need to continue handling it
-                    //    node = parent_node; // Revisit the parent node
-                    //    continue;
-                    //} else {
-                      return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
-                    //}
+                    // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
+                    if children.len() < self.min_internal_keys && !path.is_empty(){
+                        node = parent_node; // Revisit the parent node
+                        continue;
+                    } else {
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
+                    }
                 }
             }
         }
@@ -713,6 +714,7 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
+        println!("Trying to merge with left sibling at index: {}", idx);
         if idx > 0 {
             let left_sibling_id = children[idx - 1];
             let left_sibling = self.read_node(left_sibling_id)?;
@@ -728,7 +730,6 @@ where
                 } else {
                     // If there is only one key left in the parent, we need to remove the parent node
                     self.root_id = merged_node_id; // Update root ID
-                    return Ok(Some(merged_node_id)); // Key deleted
                 }
                 return Ok(Some(merged_node_id));
             }
@@ -743,6 +744,7 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
+        println!("Trying to merge with right sibling at index: {} with children len {}", idx, children.len());
         if idx >= children.len() {
             return Ok(None);
         }
@@ -759,7 +761,6 @@ where
             } else {
                 // If there is only one key left in the parent, we need to remove the parent node
                 self.root_id = merged_node_id; // Update root ID
-                return Ok(Some(merged_node_id)); // Key deleted
             }
             return Ok(Some(merged_node_id));
         }
