@@ -54,7 +54,8 @@ where
     root_id: NodeId,
     order: usize,
     max_keys: usize,
-    min_keys: usize,
+    min_internal_keys: usize,
+    min_leaf_keys: usize,
     storage: S,
     height: usize, // Height of the B+ tree
     phantom: std::marker::PhantomData<(K, V)>,
@@ -102,7 +103,9 @@ where
             storage,
             order,
             max_keys: order - 1,
-            min_keys: (order + 1).saturating_div(2), // Ensure min_keys is at least 1
+            min_internal_keys: (order - 1).saturating_div(2), // Ensure min_internal_keys is at
+            // least 1
+            min_leaf_keys: order.saturating_div(2), // Ensure min_keys is at least 1
             height: 1, // Start with height 1 for the root node
             phantom: std::marker::PhantomData,
         })
@@ -114,14 +117,16 @@ where
         let order = md.order as usize;
         
         let max_keys = order - 1;
-        let min_keys = (order + 1).saturating_div(2); // Ensure min_keys is at least 1
+        let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at
+        let min_leaf_keys = order.saturating_div(2); // Ensure min_keys is at least 1
 
         Ok(Self {
             root_id,
             storage,
             order,
             max_keys,
-            min_keys,
+            min_internal_keys,
+            min_leaf_keys,
             height: 1, //TODO: Load the height from metadata
             phantom: std::marker::PhantomData,
         })
@@ -452,7 +457,7 @@ where
 
     // Delete and handle underflow of leaf nodes
     pub fn delete(&mut self, key: &K) -> Result<DeleteResult> {
-        let (mut path, mut node) = self.get_insertion_path(key)?;
+        let (path, mut node) = self.get_insertion_path(key)?;
 
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
@@ -467,17 +472,20 @@ where
         keys.remove(index);
         values.remove(index);
 
-        let Some((parent_id, idx)) = path.pop() else {
+        // This is the root node
+        if path.is_empty() {
             self.root_id = self.write_node(&node)?;
             return Ok(DeleteResult::Updated);
         };
 
-        if keys.len() >= self.min_keys {
+        // no underflow if the node has enough keys
+        if keys.len() >= self.min_leaf_keys {
             self.write_and_propagate(path, &node)?;
             return Ok(DeleteResult::Updated);
         }
 
-        self.handle_underflow(path, parent_id, idx, node)
+        // handle underflow
+        self.handle_underflow(path, node)
     }
 
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
@@ -506,35 +514,47 @@ where
 
     fn handle_underflow(
         &mut self,
-        path: Vec<(NodeId, usize)>,
-        parent_id: NodeId,
-        idx: usize,
+        mut path: Vec<(NodeId, usize)>,
         mut node: Node<K, V>,
     ) -> Result<DeleteResult> {
-        let Some(mut parent_node) = self.read_node(parent_id)? else {
-            return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
-        };
-        let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
-            return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
-        };
-
-        if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
-                return self.write_and_propagate(path, &node).map(|_| DeleteResult::Updated);
+        while let Some((parent_id, idx)) = path.pop() {
+            println!("Current parent ID: {}, index: {}", parent_id, idx);
+            let Some(mut parent_node) = self.read_node(parent_id)? else {
+                return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
+            };
+            {
+                let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
+                    return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
+                };
+                println!("Children lenght in underflow: {:?}", children.len());
+                if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                }
+                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, children, idx)? {
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                }
+                // Try merging with the left sibling
+                if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
+                    if children.len() < self.min_internal_keys {
+                        // If the merge resulted in an underflow, we need to continue handling it
+                        node = parent_node; // Revisit the parent node
+                        continue;
+                    } else {
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
+                    }
+                }
+                // Try merging with right sibling
+                if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
+                    //if children.len() < self.min_internal_keys {
+                    //    // If the merge resulted in an underflow, we need to continue handling it
+                    //    node = parent_node; // Revisit the parent node
+                    //    continue;
+                    //} else {
+                      return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
+                    //}
+                }
+            }
         }
-
-        if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, children, idx)? {
-            return self.write_and_propagate(path, &node).map(|_| DeleteResult::Updated);
-        }
-
-        // Try merging
-        if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
-            return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
-        }
-
-        if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
-            return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
-        }
-
         Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
     }
 
@@ -545,37 +565,74 @@ where
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
-        if idx > 0 {
-            let left_sibling_id = children[idx - 1];
-            let mut left_sibling = self.read_node(left_sibling_id)?;
-            if let Some(Node::Leaf { keys: ref mut left_keys, values: ref mut left_values, .. }) = left_sibling {
-                if left_keys.len() > self.min_keys {
-                    // Borrow from the left sibling
+        println!("Trying to borrow from left sibling at index: {}", idx);
+        if idx == 0 {
+            return Ok(false);
+        }
+
+        let left_sibling_id = children[idx - 1];
+        let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
+            return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
+        };
+
+        match (&mut left_sibling, &mut *node) {
+            (
+                Node::Leaf { keys: left_keys, values: left_values, .. },
+                Node::Leaf { keys: right_keys, values: right_values, .. },
+            ) => {
+                println!("Trying to borrow from left sibling leaf node");
+                println!("Left sibling keys: {:?}", left_keys);
+                println!("Right sibling keys: {:?}", right_keys);
+                if left_keys.len() > self.min_leaf_keys {
+                    println!("Left sibling has enough keys to borrow from");
                     let borrowed_key = left_keys.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no keys to borrow".to_string())
                     })?;
                     let borrowed_value = left_values.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no values to borrow".to_string())
                     })?;
-                    if let Node::Leaf { keys, values, .. } = node {
-                        keys.insert(0, borrowed_key);
-                        values.insert(0, borrowed_value);
-                    }
-
-                    // Write the updated leaf nodes back to storage
-                    let new_node_id = self.write_node(&node)?;
-                    let left = left_sibling.ok_or_else(|| {
-                        TreeError::BackendAny("Left sibling is None".to_string())
-                    })?;
-                    let new_left_node_id = self.write_node(&left)?;
-        
-                    children[idx - 1] = new_left_node_id;
-                    children[idx] = new_node_id;
-                    return Ok(true);
+                    right_keys.insert(0, borrowed_key);
+                    right_values.insert(0, borrowed_value);
+                } else {
+                    println!("Left sibling has not enough keys to borrow from");
+                    return Ok(false);
                 }
             }
-        }
-        Ok(false)
+            (
+                Node::Internal { keys: left_keys, children: left_children },
+                Node::Internal { keys: right_keys, children: right_children },
+            ) => {
+                println!("Trying to borrow from left internal node");
+                println!("Left sibling keys: {:?}", left_keys);
+                println!("Right sibling keys: {:?}", right_keys);
+                if left_keys.len() > self.min_internal_keys {
+                    println!("internal Left sibling has enough keys to borrow from");
+                    let borrowed_key = left_keys.pop().ok_or_else(|| {
+                        TreeError::BackendAny("Left sibling has no keys to borrow".to_string())
+                    })?;
+                    let borrowed_child = left_children.pop().ok_or_else(|| {
+                        TreeError::BackendAny("Left sibling has no children to borrow".to_string())
+                    })?;
+                    right_keys.insert(0, borrowed_key);
+                    right_children.insert(0, borrowed_child);
+                } else {
+                    println!("Left sibling has not enough keys to borrow from");
+                    return Ok(false);
+                }
+            }
+            _ => {
+                return Err(TreeError::BackendAny(
+                    "Expected matching node types for borrowing".to_string(),
+                ).into());
+            }
+        };
+        let new_node_id = self.write_node(node)?;
+        let new_left_node_id = self.write_node(&left_sibling)?;
+
+        children[idx - 1] = new_left_node_id;
+        children[idx] = new_node_id;
+
+        Ok(true)
     }
 
     fn try_borrow_from_right(
@@ -584,28 +641,69 @@ where
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
-        if idx < children.len() - 1 {
-            let right_sibling_id = children[idx + 1];
-            let mut right_sibling = self.read_node(right_sibling_id)?;
-            if let Some(Node::Leaf { keys: ref mut right_keys, values: ref mut right_values, .. }) = right_sibling {
-                if right_keys.len() > self.min_keys {
+        println!("trying to borrow from right sibling at index: {}", idx);
+        if idx >= children.len() {
+            return Ok(false); // No right sibling to borrow from
+        }   
+        let right_sibling_id = children[idx + 1];
+        let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
+            return Err(TreeError::NodeNotFound("Right sibling not found".to_string()).into());
+        };
+        match (&mut *node, &mut right_sibling) {
+            (
+                Node::Leaf { keys: left_keys, values: left_values, .. },
+                Node::Leaf { keys: right_keys, values: right_values, .. },
+            ) => {
+                println!("Trying to borrow from right leaf node");
+                println!("Left sibling keys: {:?}", left_keys);
+                println!("Right sibling keys: {:?}", right_keys);
+                if right_keys.len() > self.min_leaf_keys {
+                    println!("internal right sibling has enough keys to borrow from");
                     // Borrow from the right sibling
                     let borrowed_key = right_keys.remove(0);
                     let borrowed_value = right_values.remove(0);
-                    if let Node::Leaf { keys, values, .. } = node {
-                        keys.push(borrowed_key);
-                        values.push(borrowed_value);
-                    }
+                    left_keys.push(borrowed_key);
+                    left_values.push(borrowed_value);
                     // Write the updated leaf nodes back to storage
-                    let new_node_id = self.write_node(&node)?;
-                    let new_right_node_id = self.write_node(&right_sibling.unwrap())?;
+                    let new_node_id = self.write_node(node)?;
+                    let new_right_node_id = self.write_node(&right_sibling)?;
                     children[idx + 1] = new_right_node_id;
                     children[idx] = new_node_id;
-                    return Ok(true);
+                    Ok(true)
+                } else {
+                    Ok(false) // Not enough keys to borrow
                 }
             }
+            (
+                Node::Internal { keys: left_keys, children: left_children },
+                Node::Internal { keys: right_keys, children: right_children },
+            ) => {
+                println!("Trying to borrow from right internal node");
+                println!("Left sibling keys: {:?}", left_keys);
+                println!("Right sibling keys: {:?}", right_keys);
+                if right_keys.len() > self.min_internal_keys {
+                    println!("internal right sibling has enough keys to borrow from");
+                    // Borrow from the right sibling
+                    let borrowed_key = right_keys.remove(0);
+                    let borrowed_child = right_children.remove(0);
+                    left_keys.push(borrowed_key);
+                    left_children.push(borrowed_child);
+                    // Write the updated leaf nodes back to storage
+                    let new_node_id = self.write_node(node)?;
+                    let new_right_node_id = self.write_node(&right_sibling)?;
+                    children[idx + 1] = new_right_node_id;
+                    children[idx] = new_node_id;
+                    Ok(true)
+                } else {
+                    Ok(false) // Not enough keys to borrow
+                }
+            }
+        _ => {
+            Err(TreeError::BackendAny(
+                "Expected matching node types for borrowing".to_string(),
+            ).into())
+            }
         }
-        Ok(false)
     }
 
     fn try_merge_with_left(
@@ -620,7 +718,7 @@ where
             let left_sibling = self.read_node(left_sibling_id)?;
             if let Some(mut left) = left_sibling {
                 // Merge the current node with the left sibling
-                let merged_node_id = self.merge_leaf_nodes(&mut left, node)?;
+                let merged_node_id = self.merge_nodes(&mut left, node)?;
                 // Update the parent node
                 children.remove(idx);
                 children[idx - 1] = merged_node_id;
@@ -645,29 +743,30 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
-        if idx < children.len() - 1 {
-            let right_sibling_id = children[idx + 1];
-            let right_sibling = self.read_node(right_sibling_id)?;
-            if let Some(mut right) = right_sibling {
-                // Merge the current node with the right sibling
-                let merged_node_id = self.merge_leaf_nodes(node, &mut right)?;
-                children.remove(idx + 1); // Remove the right sibling
-                children[idx] = merged_node_id;
-                // Update the parent keys
-                if parent_keys.len() > 1 {
-                    parent_keys.remove(idx); // Remove the key at idx
-                } else {
-                    // If there is only one key left in the parent, we need to remove the parent node
-                    self.root_id = merged_node_id; // Update root ID
-                    return Ok(Some(merged_node_id)); // Key deleted
-                }
-                return Ok(Some(merged_node_id));
+        if idx >= children.len() {
+            return Ok(None);
+        }
+        let right_sibling_id = children[idx + 1];
+        let right_sibling = self.read_node(right_sibling_id)?;
+        if let Some(mut right) = right_sibling {
+            // Merge the current node with the right sibling
+            let merged_node_id = self.merge_nodes(node, &mut right)?;
+            children.remove(idx + 1); // Remove the right sibling
+            children[idx] = merged_node_id;
+            // Update the parent keys
+            if parent_keys.len() > 1 {
+                parent_keys.remove(idx); // Remove the key at idx
+            } else {
+                // If there is only one key left in the parent, we need to remove the parent node
+                self.root_id = merged_node_id; // Update root ID
+                return Ok(Some(merged_node_id)); // Key deleted
             }
+            return Ok(Some(merged_node_id));
         }
         Ok(None)
     }
 
-    pub fn merge_leaf_nodes (
+    pub fn merge_nodes (
         &mut self,
         left_node: &mut Node<K, V>,
         right_node: &mut Node<K, V>
@@ -692,9 +791,24 @@ where
                 // Update the parent node with the new node ID
                 Ok(new_node_id)
             },
-            _ => Err(TreeError::BackendAny(
-                "Expected leaf nodes for merging".to_string(),
-            ).into()),
+        (
+            Node::Internal { keys: left_keys, children: left_children },
+            Node::Internal { keys: right_keys, children: right_children },
+        ) => {                
+                if left_keys.len() + right_keys.len() > self.max_keys {
+                    return Err(TreeError::BackendAny(
+                        "Cannot merge internal nodes, total keys exceed max keys".to_string(),
+                    ).into());
+                }
+                left_keys.extend(right_keys.clone());
+                left_children.extend(right_children.clone());
+                let new_node_id = self.write_node(left_node)?;
+                // Update the parent node with the new node ID
+                Ok(new_node_id)
+             },
+        _ => Err(TreeError::BackendAny(
+            "Expected leaf nodes for merging".to_string(),
+        ).into()),
         }
     }
 
