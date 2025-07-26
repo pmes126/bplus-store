@@ -226,17 +226,17 @@ where
         mut leaf_node: Node<K, V>,
     ) -> Result<SplitResult<K, Node<K, V>>> {
         if let Node::Leaf { keys, values, next } = &mut leaf_node {
-            print_vec(keys, "Keys before split");
-            print_vec(values, "Values before split");
+            //print_vec(keys, "Keys before split");
+            //print_vec(values, "Values before split");
             let mid = keys.len() / 2;
             let right_keys = keys.split_off(mid);
             let right_values = values.split_off(mid);
-            print_vec(&right_keys, "Right Keys after split");
-            print_vec(&right_values, "Right values after split");
-            print_vec(keys, "Left Keys after split");
-            print_vec(values, "Left Values after split");
+            //print_vec(&right_keys, "Right Keys after split");
+            //print_vec(&right_values, "Right values after split");
+            //print_vec(keys, "Left Keys after split");
+            //print_vec(values, "Left Values after split");
             let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
-            println!("Split key: {:?}", split_key);
+            //println!("Split key: {:?}", split_key);
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
                 values: right_values,
@@ -291,7 +291,7 @@ where
         }
 
         while let Some((parent_id, insert_pos)) = path.pop() {
-            println!("Updating parent node ID: {}, insert position: {}", parent_id, insert_pos);
+            //println!("Updating parent node ID: {}, insert position: {}", parent_id, insert_pos);
 
             let mut parent_node = self
                 .read_node(parent_id)?
@@ -323,7 +323,7 @@ where
             }
         }
 
-        println!("All parent nodes updated. Final node ID: {}", updated_child_id);
+        //println!("All parent nodes updated. Final node ID: {}", updated_child_id);
         Ok(())
     }
 
@@ -380,13 +380,14 @@ where
 
         self.root_id = self.write_node(&new_root)?;
         self.height += 1;
-        println!("Created new root node: {:?}", self.root_id);
+        //println!("Created new root node: {:?}", self.root_id);
 
         Ok(())
     }
 
     // Search for a key and return the value if exists
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
+        println!("Searching for key: {:?}", key);
         let mut current_id = self.root_id;
         loop {
             let node = self.read_node(current_id)?;
@@ -407,7 +408,7 @@ where
                 Some(Node::Leaf { keys, values, .. }) => {
                     println!("Searching in leaf node with ID: {}", current_id);
                     match keys.binary_search(key) {
-                        Ok(i) => return Ok(Some(values[i].clone())),
+                        Ok(i) => { println!("found at idx {}", i); return Ok(Some(values[i].clone()))},
                         Err(_i) => return Ok(None), // Key not found
                     };
                 }
@@ -468,22 +469,25 @@ where
             return Ok(DeleteResult::NotFound);
         };
 
-        println!("Deleting key: {:?} at index: {}", key, index);
+        println!("Deleting key: {:?} at index: {} at node_id {} ", key, index, path.last().map_or(0, |(id, _)| *id));
         keys.remove(index);
         values.remove(index);
 
         // This is the root node
         if path.is_empty() {
+            println!("We are at the root node");
             self.root_id = self.write_node(&node)?;
             return Ok(DeleteResult::Updated);
         };
 
         // no underflow if the node has enough keys
         if keys.len() >= self.min_leaf_keys {
+            println!("No underflow, writing node back to storage");
             self.write_and_propagate(path, &node)?;
             return Ok(DeleteResult::Updated);
         }
 
+        println!("Keys {:?}, need to handle underflow", keys);
         // handle underflow
         self.handle_underflow(path, node)
     }
@@ -513,7 +517,7 @@ where
                 let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
                     return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
                 };
-                println!("Children lenght in underflow: {:?}", children.len());
+                println!("Children in underflow: {:?}, len {}", children, children.len());
                 if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
@@ -522,10 +526,22 @@ where
                 }
                 // Try merging with the left sibling
                 if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
+                    println!("merged with left new id: {}", merged_id);
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                    if children.len() < self.min_internal_keys && !path.is_empty() {
+                    if children.len() < self.min_internal_keys {
+                         // we are at the root node
+                         if path.is_empty() {
+                            if self.shrink_to_root(children)? {
+                                return Ok(DeleteResult::Underflowed);
+                            } else {
+                                println!("did not shrink root: ");
+                                return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                            }
+                        } else {
+                            println!("Merge with left sibling resulted in underflow, revisiting parent node {}", parent_id);
                             node = parent_node; // Revisit the parent node
                             continue;
+                        }
                     } else {
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
                     }
@@ -533,22 +549,27 @@ where
                 // Try merging with right sibling
                 if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                        println!("Merge with right sibling resulted in underflow, revisiting parent node {}", parent_id);
+                        println!("merged with right new id: {}", merged_id);
                         println!("children {:?}", children);
                         println!("Remaining Path {:?}", path);
-                    if children.len() < self.min_internal_keys && !path.is_empty() {
+                    if children.len() < self.min_internal_keys {
+                        println!("Merge with right sibling resulted in underflow, revisiting parent node {}", parent_id);
+                        if path.is_empty() {
+                           println!("We are at the root node {}", self.root_id);
+                           if self.shrink_to_root(children)? {
+                               println!("shrunk root: new id: {}", self.root_id);
+                               return Ok(DeleteResult::Underflowed);
+                           } else {
+                               println!("did not shrink root: ");
+                               return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                           }
+                        } else {
+                            println!("children are underflowed and the path is not empty");
                             node = parent_node; // Revisit the parent node
                             continue;
+                        }
                     } else {
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
-                    }
-                }
-                if path.is_empty() {
-                    // If we are at the root and the node is underflowed, we need to shrink the tree
-                    if children.len() < self.min_internal_keys {
-                        println!("Root underflow: shrinking tree height");
-                        self.shrink_to_root(children)?;
-                        return Ok(DeleteResult::Underflowed);
                     }
                 }
             }
@@ -556,17 +577,14 @@ where
         Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
     }
 
-    fn shrink_to_root(&mut self, children: &Vec<NodeId>) -> Result<()> {
-        if self.height == 1 {
-            return Ok(()); // No need to shrink if we are already at the root
-        }
-        // shrink the tree if we have only one child at the root
-        if children.len() == 1 {
+    fn shrink_to_root(&mut self, children: &Vec<NodeId>) -> Result<bool> {
+        // shrink the tree if we have only one child at the root and the height is greater than 1
+        if children.len() == 1 && self.height > 1 {
             self.root_id = children[0];
             self.height = self.height.saturating_sub(1);
-            println!("Shrunk tree to root node ID: {}", self.root_id);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
 
@@ -898,8 +916,8 @@ mod tests {
     fn write_and_delete_values() -> Result<(), anyhow::Error> {
         let file_path = "test_flatfile_3.bin";
         
-        let order = 11; // B+ tree order
-        let multiplier = 10_u64; // Number of times to insert and delete
+        let order = 10; // B+ tree order
+        let multiplier = 20_u64; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order as u64*multiplier {
