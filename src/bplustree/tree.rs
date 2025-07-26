@@ -498,19 +498,6 @@ where
         Ok(())
     }
 
-    fn write_and_propagate_merge(
-        &mut self,
-        path: Vec<(NodeId, usize)>,
-        node: &Node<K, V>,
-    ) -> Result<DeleteResult> {
-        let new_node_id = self.write_node(node)?;
-        if path.is_empty() {
-            self.root_id = new_node_id;
-            return Ok(DeleteResult::Updated);
-        }
-        self.propagate_node_update(path, new_node_id)?;
-        Ok(DeleteResult::Updated)
-    }
 
     fn handle_underflow(
         &mut self,
@@ -537,26 +524,49 @@ where
                 if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
                     if children.len() < self.min_internal_keys && !path.is_empty() {
-                        println!("Merge with left sibling resulted in underflow, revisiting parent node");
-                        node = parent_node; // Revisit the parent node
-                        continue;
+                            node = parent_node; // Revisit the parent node
+                            continue;
                     } else {
-                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: merged_id, right: parent_id });
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
                     }
                 }
                 // Try merging with right sibling
                 if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
-                    if children.len() < self.min_internal_keys && !path.is_empty(){
-                        node = parent_node; // Revisit the parent node
-                        continue;
+                        println!("Merge with right sibling resulted in underflow, revisiting parent node {}", parent_id);
+                        println!("children {:?}", children);
+                        println!("Remaining Path {:?}", path);
+                    if children.len() < self.min_internal_keys && !path.is_empty() {
+                            node = parent_node; // Revisit the parent node
+                            continue;
                     } else {
-                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
+                    }
+                }
+                if path.is_empty() {
+                    // If we are at the root and the node is underflowed, we need to shrink the tree
+                    if children.len() < self.min_internal_keys {
+                        println!("Root underflow: shrinking tree height");
+                        self.shrink_to_root(children)?;
+                        return Ok(DeleteResult::Underflowed);
                     }
                 }
             }
         }
         Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
+    }
+
+    fn shrink_to_root(&mut self, children: &Vec<NodeId>) -> Result<()> {
+        if self.height == 1 {
+            return Ok(()); // No need to shrink if we are already at the root
+        }
+        // shrink the tree if we have only one child at the root
+        if children.len() == 1 {
+            self.root_id = children[0];
+            self.height = self.height.saturating_sub(1);
+            println!("Shrunk tree to root node ID: {}", self.root_id);
+        }
+        Ok(())
     }
 
 
@@ -744,8 +754,10 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
     ) -> Result<Option<NodeId>> {
-        println!("Trying to merge with right sibling at index: {} with children len {}", idx, children.len());
-        if idx >= children.len() {
+        println!("Trying to merge with right sibling at index: {}", idx);
+        println!("children: {:?}", children);
+        let right_idx = idx + 1;
+        if right_idx >= children.len() {
             return Ok(None);
         }
         let right_sibling_id = children[idx + 1];
@@ -900,8 +912,7 @@ mod tests {
             let key = i;
             tree_root.delete(&key)?;
             let res = tree_root.search(&key)?;
-            println!("Searching for key: {}, result: {:?}", key, res);
-            assert!(res.is_none(), "Node should be deleted successfully");
+            assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
         }
         Ok(())
     }
@@ -928,7 +939,6 @@ mod tests {
             let key = i;
             tree_root.delete(&key)?;
             let res = tree_root.search(&key)?;
-            println!("Searching for key: {}, result: {:?}", key, res);
             assert!(res.is_none(), "Node should be deleted successfully");
         }
         Ok(())
