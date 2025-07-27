@@ -40,15 +40,14 @@ impl PageStorage for PageStore {
             .create(true)
             .truncate(false)
             .open(path)?;
-        file.set_len(0)?; // Clear the file if it exists
         Ok(Self { file, freed_pages: Vec::new(), next_page_id: INITIAL_PAGE_ID as u64 })
     }
-    fn read_page(&mut self, page_id: u64) -> Result<[u8; PAGE_SIZE], std::io::Error> {
-        let mut buf = [0u8; PAGE_SIZE];
+
+    fn read_page(&mut self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error> {
         let offset = page_id * PAGE_SIZE as u64;
         self.file.seek(SeekFrom::Start(offset))?;
-        self.file.read_exact(&mut buf)?;
-        Ok(buf)
+        self.file.read_exact(target)?;
+        Ok(())
     }
 
     fn write_page(&mut self, data: &[u8]) -> Result<u64, std::io::Error> {
@@ -62,7 +61,8 @@ impl PageStorage for PageStore {
 
     fn write_page_at_offset(&mut self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error> {
         assert_eq!(data.len(), PAGE_SIZE);
-        self.file.seek(SeekFrom::Start(offset))?;
+        let page_offset = offset * PAGE_SIZE as u64;
+        self.file.seek(SeekFrom::Start(page_offset))?;
         self.file.write_all(data)?;
         Ok(offset / PAGE_SIZE as u64)
     }

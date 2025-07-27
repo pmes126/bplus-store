@@ -17,13 +17,27 @@ pub enum Node<K, V> {
 
 impl<K, V> Node<K, V>
 where 
-    K: Copy + Ord,
-    V: Copy,
+    K: Ord,
+    V: Clone,
 {
     pub fn is_empty(&self) -> bool {
         match self {
             Node::Internal { keys, children } => keys.is_empty() && children.is_empty(),
             Node::Leaf { keys, values, next: _ } => keys.is_empty() && values.is_empty(),
+        }
+    }
+    
+    pub fn is_underflowed(&self, min_keys: usize) -> bool {
+        match self {
+            Node::Internal { keys, children } => keys.len() < min_keys,
+            Node::Leaf { keys, values, next: _ } => keys.len() < min_keys,
+        }
+    }
+
+    pub fn get_keys(&self) -> &[K] {
+        match self {
+            Node::Internal { keys, .. } => keys,
+            Node::Leaf { keys, .. } => keys,
         }
     }
 

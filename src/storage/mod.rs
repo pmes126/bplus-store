@@ -19,7 +19,7 @@ pub trait PageStorage {
         Self: Sized;
 
     /// Reads a page by ID into a fixed 4KB buffer
-    fn read_page(&mut self, page_id: u64) -> Result<[u8; PAGE_SIZE], std::io::Error>;
+    fn read_page(&mut self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error>;
 
     /// Writes a full 4KB page to disk and returns the offset
     fn write_page(&mut self, data: &[u8]) -> Result<u64, std::io::Error>;
@@ -104,17 +104,17 @@ where
 
 pub trait MetadataStorage {
     /// Reads metadata from a specific slot
-    fn read_meta(&mut self, slot: u8) -> Result<MetadataPage, std::io::Error>;
+    fn read_metadata(&mut self, slot: u8) -> Result<MetadataPage, std::io::Error>;
 
     /// Writes metadata to a specific slot
-    fn write_meta(&mut self, slot: u8, meta: &MetadataPage) -> Result<(), std::io::Error>;
+    fn write_metadata(&mut self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error>;
 
     /// Reads the current root node ID from metadata
     fn read_current_root(&mut self) -> Result<u64, std::io::Error>;
 
-    /// Commits a new root node ID to the metadata
-    fn commit_root(&mut self, new_root: u64, height: usize) -> Result<(), std::io::Error>;
-
     // Get the current metadata
     fn get_metadata(&mut self) -> Result<Metadata, std::io::Error>;
+    
+    // Commits the provided metadata to the oldest metadata slot and advances the transaction ID
+    fn commit_metadata(&mut self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize) -> Result<(), std::io::Error>;
 }
