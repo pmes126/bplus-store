@@ -47,7 +47,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     }
 
     // Commits a new root page ID to the metadata.
-    fn commit_root(&mut self, new_root: u64) -> Result<(), std::io::Error> {
+    fn commit_root(&mut self, new_root: u64, height: usize) -> Result<(), std::io::Error> {
         // select the lower txn_id metadata page
         let meta0 = self.read_meta(METADATA_PAGE_1)?;
         let meta1 = self.read_meta(METADATA_PAGE_2)?;
@@ -58,7 +58,8 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
                 new_root,
                 meta0.data.txn_id.max(meta1.data.txn_id) + 1, // max txn_id + 1
                 0, // checksum placeholder, should be calculated based on the new root
-                order); // order placeholder, should be set based on the tree's order
+                order,
+                height); // order placeholder, should be set based on the tree's order
 
         self.write_meta(next_slot, &new_meta)?;
         self.store.flush()?;
@@ -106,5 +107,10 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
 
     fn flush(&mut self) -> Result<(), std::io::Error> {
         self.store.flush()
+    }
+
+
+    fn free_node(&mut self, id: u64) -> Result<(), std::io::Error> {
+        self.store.free_page(id)
     }
 }

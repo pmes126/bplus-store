@@ -15,7 +15,8 @@ pub struct Metadata {
     pub root_node_id: NodeId,
     pub txn_id: u64,
     pub checksum: u64,
-    pub order: u8, // Order of the B+ tree
+    pub height: usize,
+    pub order: usize, // Order of the B+ tree
 }
 
 #[repr(C)]
@@ -25,12 +26,13 @@ pub struct MetadataPage {
     pub _padding: [u8; PADDING_SIZE],
 }
 
-pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, order: u8) -> MetadataPage {
+pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, height: usize, order: usize) -> MetadataPage {
     MetadataPage {
         data: Metadata {
             root_node_id: root_id, // Initial root node ID
             txn_id, // Initial transaction ID
             checksum, // Placeholder for checksum
+            height, // Initial height of the B+ tree
             order,
         },
         _padding: [0; PADDING_SIZE],
