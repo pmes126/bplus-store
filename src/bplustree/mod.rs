@@ -1,10 +1,12 @@
 mod node;
 mod tree;
 mod iterator;
+mod epoch;
 
 pub use node::Node;
 pub use node::NodeId;
 pub use iterator::BPlusTreeRangeIter;
+pub use epoch::EpochManager;
 pub use crate::storage::CodecError;
 pub use thiserror::Error;
 

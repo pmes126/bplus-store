@@ -65,4 +65,11 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     fn flush(&mut self) -> io::Result<()> {
         self.backend.flush()
     }
+
+    fn free_node(&mut self, id: u64) -> Result<(), io::Error> {
+        // Remove the node from the cache
+        self.cache.pop(&id);
+        // Free the node in the backend storage
+        self.backend.free_node(id)
+    }
 } 

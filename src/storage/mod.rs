@@ -97,6 +97,9 @@ where
 
     /// Flushes any cached writes to persistent storage
     fn flush(&mut self) -> Result<(), std::io::Error>;
+    
+    /// Frees a node by its ID
+    fn free_node(&mut self, id: u64) -> Result<(), std::io::Error>;
 }
 
 pub trait MetadataStorage {
@@ -110,7 +113,7 @@ pub trait MetadataStorage {
     fn read_current_root(&mut self) -> Result<u64, std::io::Error>;
 
     /// Commits a new root node ID to the metadata
-    fn commit_root(&mut self, new_root: u64) -> Result<(), std::io::Error>;
+    fn commit_root(&mut self, new_root: u64, height: usize) -> Result<(), std::io::Error>;
 
     // Get the current metadata
     fn get_metadata(&mut self) -> Result<Metadata, std::io::Error>;
