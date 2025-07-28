@@ -19,7 +19,7 @@ pub trait PageStorage {
         Self: Sized;
 
     /// Reads a page by ID into a fixed 4KB buffer
-    fn read_page(&mut self, page_id: u64) -> Result<[u8; PAGE_SIZE], std::io::Error>;
+    fn read_page(&mut self, page_id: u64, target: &mut [u8; PAGE_SIZE]) -> Result<(), std::io::Error>;
 
     /// Writes a full 4KB page to disk and returns the offset
     fn write_page(&mut self, data: &[u8]) -> Result<u64, std::io::Error>;

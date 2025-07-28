@@ -129,9 +129,10 @@ where
         let md = storage.get_metadata()?;
         let root_id = md.root_node_id;
         let order = md.order;
+        println!("Loading B+ tree with root ID: {}, order: {}, height {}", root_id, order, md.height);
         
         let max_keys = order - 1;
-        let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at
+        let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 
         let min_leaf_keys = order.saturating_div(2); // Ensure min_keys is at least 1
 
         Ok(Self {
@@ -927,8 +928,6 @@ where
         if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
             self.epoch_mgr.advance(); // Pin new epoch for reclamation
         }
-
-    
         Ok(())
     }
 }

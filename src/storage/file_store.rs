@@ -3,6 +3,7 @@ use crate::storage::{PageStorage, NodeStorage, MetadataStorage, Metadata, codec:
 use crate::layout::{PAGE_SIZE};
 use anyhow::Result;
 use std::path::Path;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 pub struct FileStore<S: PageStorage> {
     store: S,
@@ -19,19 +20,24 @@ impl<S: PageStorage> FileStore<S> {
 
 impl<S: PageStorage> MetadataStorage for FileStore<S> {
     fn read_meta(&mut self, slot: u8) -> Result<MetadataPage, std::io::Error> {
+        println!("Reading metadata from slot {}", slot);
         if slot > METADATA_PAGE_2 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "Invalid metadata slot",
             ));
         }
-        let buf = self.store.read_page(slot as u64)?;
-        Ok(unsafe { std::mem::transmute(buf) })
+        let mut buf = [0u8; PAGE_SIZE];
+        self.store.read_page(slot as u64, &mut buf)?;
+
+        let metadata = MetadataPage::from_bytes(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(*metadata) // Return a COPY of the metadata page
     }
 
     fn write_meta(&mut self, slot: u8, meta: &MetadataPage) -> Result<(), std::io::Error> {
-        let buf: [u8; PAGE_SIZE] = unsafe { std::mem::transmute(*meta) };
-        self.store.write_page_at_offset(slot as u64, &buf)?;
+        let buf = meta.as_bytes();
+        self.store.write_page_at_offset(slot as u64, buf)?;
         Ok(())
     }
 
@@ -69,6 +75,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     fn get_metadata(&mut self) -> Result<Metadata, std::io::Error> {
         let meta0 = self.read_meta(METADATA_PAGE_1)?;
         let meta1 = self.read_meta(METADATA_PAGE_2)?;
+        //println!("Current metadata: txn_id: {}, root_id: {}. order: {}", meta0.data.txn_id, meta0.data.root_node_id, meta0.data.order);
         if meta0.data.txn_id > meta1.data.txn_id {
             Ok(meta0.data)
         } else {
@@ -87,7 +94,8 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         K: KeyCodec,
         V: ValueCodec,
     {
-        let buf = self.store.read_page(page_id)?;
+        let mut buf = [0u8; PAGE_SIZE];
+        self.store.read_page(page_id, &mut buf)?;
         DefaultNodeCodec::decode(&buf).
             map_or(Ok(None), |node| {
                     Ok(Some(node))
