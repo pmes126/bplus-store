@@ -61,7 +61,8 @@ impl PageStorage for PageStore {
 
     fn write_page_at_offset(&mut self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error> {
         assert_eq!(data.len(), PAGE_SIZE);
-        self.file.seek(SeekFrom::Start(offset))?;
+        let page_offset = offset * PAGE_SIZE as u64;
+        self.file.seek(SeekFrom::Start(page_offset))?;
         self.file.write_all(data)?;
         Ok(offset / PAGE_SIZE as u64)
     }

@@ -66,6 +66,7 @@ where
     staged_height: Option<usize>, // Staged height for transactions
     epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
     commit_count: AtomicUsize, // Number of commits made to the tree
+    txn_id: u64, // Slot of metadata storage
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
 }
@@ -91,22 +92,23 @@ where
         } 
         // Initialize the root node ID
         let init_id = storage.write_node(&root_node).map_err(|e| TreeError::BackendAny(e.to_string()))?;
-        let metadata_1 = metadata::new_metadata_page(
+        let init_txn_id = 1; // Initial transaction ID
+        let mut metadata_1 = metadata::new_metadata_page(
             init_id,
-            1, // Initial transaction ID
+            init_txn_id, // Initial transaction ID
             0, // Placeholder for checksum
             1, // Initial height 
             order,
         );
-        let metadata_2 = metadata::new_metadata_page(
+        let mut metadata_2 = metadata::new_metadata_page(
             init_id,
-            0, // Initial transaction ID
+            init_txn_id, // Initial transaction ID
             0, // Placeholder for checksum
             1, // Initial height 
             order,
         );
-        storage.write_meta(METADATA_PAGE_1, &metadata_1)?;
-        storage.write_meta(METADATA_PAGE_2, &metadata_2)?;
+        storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
+        storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 
         Ok(Self {
             root_id: init_id,
@@ -121,15 +123,16 @@ where
             staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
+            txn_id: init_txn_id,     // Initialize transaction ID
             phantom: std::marker::PhantomData,
         })
     }
 
     pub fn load(mut storage: S) -> Result<BPlusTree<K, V, S>, TreeError> {
+        println!("Loading B+ tree with root ID from storage");
         let md = storage.get_metadata()?;
         let root_id = md.root_node_id;
         let order = md.order;
-        println!("Loading B+ tree with root ID: {}, order: {}, height {}", root_id, order, md.height);
         
         let max_keys = order - 1;
         let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 
@@ -147,6 +150,7 @@ where
             staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
+            txn_id: md.txn_id, // Initialize transaction ID from metadata
             phantom: std::marker::PhantomData,
         })
     }
@@ -875,58 +879,84 @@ where
 
     pub fn commit(&mut self) -> Result<()> {
         // Skip if there's no staged root
-        let new_root = match self.staged_root_id {
-            Some(id) => id,
-            None => return Ok(()), // No-op
-        };
+        //let new_root = match self.staged_root_id {
+        //    Some(id) => id,
+        //    None => return Ok(()), // No-op
+        //};
+        let new_root = self.root_id; // Use the current root as the new root
     
-        let new_height = match self.staged_height {
-            Some(height) => height,
-            None => self.height,
-        };
+        //let new_height = match self.staged_height {
+        //    Some(height) => height,
+        //    None => self.height,
+        //};
+        let new_height = self.height; // Use the current root as the new root
     
-        let new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
-        
-        // Load both metadata pages
-        let meta1 = self.storage.read_meta(METADATA_PAGE_1)?;
-        let meta2 = self.storage.read_meta(METADATA_PAGE_2)?;
-    
-        // Pick the one with the lower transaction_id to overwrite
-        let (target_page, current_tx_id) = if meta1.data.txn_id <= meta2.data.txn_id {
-            (METADATA_PAGE_1, meta2.data.txn_id) // Initial transaction ID
-                // o
-        } else {
-            (METADATA_PAGE_2, meta1.data.txn_id) // Initial transaction ID
-        };
-    
-        let safe_epoch = self.epoch_mgr.oldest_active();
-        let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-        for pid in reclaimed {
-            self.storage.free_node(pid)?;
-        }
+        self.storage.flush()?;
 
-        let new_tx_id = current_tx_id + 1;
-    
-        let new_meta = metadata::new_metadata_page(
-            new_root,
-            new_tx_id,
-            0, // TODO: compute checksum if needed
-            new_height,
-            self.order,
-        );
-    
-        self.storage.write_meta(target_page, &new_meta)?;
-    
         // Now commit the new root
         self.root_id = new_root;
         self.height = new_height;
         self.staged_root_id = None;
         self.staged_height = None;
     
+        let target_slot = self.txn_id % 2;
+        self.txn_id += 1; // Increment transaction ID for the next commit
+        println!("Committing B+ tree with txn_id: {}, target_slot: {}", self.txn_id, target_slot);
+        println!("Committing B+ tree with new root: {}, height: {}", new_root, new_height);
+
+        self.storage.commit_metadata(
+            target_slot as u8,
+            self.txn_id,
+            new_root,
+            new_height,
+            self.order,
+        )?;
+
         self.commit_count.fetch_add(1, Ordering::Relaxed);
+
+        let _new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
+        
+        let safe_epoch = self.epoch_mgr.oldest_active();
+        let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
+        for pid in reclaimed {
+            self.storage.free_node(pid)?;
+        }
 
         if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
             self.epoch_mgr.advance(); // Pin new epoch for reclamation
+        }
+        Ok(())
+    }
+
+    pub fn traverse(&mut self) -> Result<Vec<(K, V)>> {
+        let mut result = Vec::new();
+        if self.root_id == 0 {
+            return Ok(result); // Empty tree
+        }
+        let _guard = self.epoch_mgr.pin();
+        self.traverse_internal(self.root_id, &mut result)?;
+        Ok(result)
+    }
+
+    pub fn traverse_internal(
+        &mut self,
+        node_id: NodeId,
+        result: &mut Vec<(K, V)>,
+    ) -> Result<()> {
+        match self.read_node(node_id)? {
+            Some(Node::Internal { keys, children }) => {
+                for (i, child_id) in children.iter().enumerate() {
+                    if i < keys.len() {
+                        self.traverse_internal(*child_id, result)?;
+                    }
+                }
+            }
+            Some(Node::Leaf { keys, values, .. }) => {
+                for (key, value) in keys.iter().zip(values.iter()) {
+                    result.push((key.clone(), value.clone()));
+                }
+            }
+            None => return Err(TreeError::NodeNotFound("Node not found".to_string()).into()),
         }
         Ok(())
     }
@@ -1092,6 +1122,8 @@ mod tests {
     fn commit_and_load_tree() -> Result<()> {
         let file_path = "test_commit_load.bin";
         let order = 4;
+        println!("Initializing B+ tree with order: {}", order);
+        {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
 
@@ -1104,15 +1136,21 @@ mod tests {
 
         // Commit the changes
         tree.commit()?;
+        }
 
         let store_load = FileStore::<PageStore>::new(file_path)?;
         // Load the tree from storage
         let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
 
+        let results = loaded_tree.traverse()?;
+        println!("Traversed {:?} nodes in the loaded tree", results);
         // Verify the loaded tree
         for i in 0..order * 10 {
             let key = i as u64;
             let value = format!("value_{}", i);
+            let res = loaded_tree.search(&key)?;
+            assert!(res.is_some(), "Loaded tree should have the key {}", key);
+            println!("Loaded value for key {}: {}", key, res.as_ref().unwrap());
             assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
         }
 
