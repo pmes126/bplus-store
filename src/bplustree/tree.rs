@@ -14,6 +14,7 @@ use anyhow::Result;
 pub type NodeId = u64; // Type for node IDs
 pub type PathNode = (NodeId, usize); // Type for path nodes (node ID and index in parent)
 
+
 fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
     println!("{}: {:?}", msg, vec);
 }
@@ -69,8 +70,9 @@ where
     txn_id: u64, // Slot of metadata storage
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
-}
 
+
+}
 
 // BPlusTree implementation
 impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
@@ -162,9 +164,7 @@ where
 
     // Writes a node to the B+ tree storage and updates the cache.
     fn write_node(&mut self, node: &Node<K, V>) -> Result<u64> {
-       let res =  self.storage.write_node(node);
-            println!("Writing node: {:?} with ID: {}", node, res.as_ref().unwrap_or(&0));
-        res
+       self.storage.write_node(node)
     }
 
     // should be inserted.
@@ -236,7 +236,6 @@ where
 
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_internal(&mut self, key: K, value: V) -> Result<()> {
-        println!("Inserting key: {:?} value: {:?}", key, value);
         let (path, mut leaf_node) = self.get_insertion_path(&key)?;
     
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -256,7 +255,6 @@ where
         }
     
         if keys.len() > self.max_keys {
-            println!("Leaf node overflow, splitting node with keys: {:?}", keys);
             self.handle_leaf_split(path, leaf_node)
         } else {
             self.write_and_propagate(path, &leaf_node)
@@ -279,7 +277,6 @@ where
             *next = Some(right_id); // Link the left node to the right node
         }
         let left_id = self.write_node(&left_node)?;
-        println!("Splitting leaf node into left: {:?} id: {} right: {:?} id: {}", left_node, left_id, right_node, right_id);
     
         self.propagate_split(path, left_id, right_id, split_key)?;
         Ok(())
@@ -388,7 +385,6 @@ where
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
-                println!("Updating root node with new child ID: {}", updated_child_id);
                 self.root_id = updated_child_id;
                 return Ok(());
             }
@@ -423,7 +419,6 @@ where
             children.insert(insert_pos + 1, right);
             // if there is no further overflow we can just propagate the update and return
             if keys.len() <= self.max_keys {
-                println!("No overflow, propagating update to parent node with keys: {:?}", keys);
                 self.write_and_propagate(path, &node)?;
                 return Ok(());
             }
@@ -434,8 +429,6 @@ where
                 split_key,
             } = self.split_internal_node(node)?;
 
-            println!("self max keys {}", self.max_keys);
-            println!("splitting node into left: {:?} right: {:?}", left_node, right_node);
             left = self.write_node(&left_node)?;
             right = self.write_node(&right_node)?;
             key = split_key;
@@ -449,7 +442,6 @@ where
 
         self.root_id = self.write_node(&new_root)?;
         self.height += 1;
-        println!("Created new root node with ID: {} {:?} and incresed height", self.root_id, new_root);
 
         Ok(())
     }
@@ -466,23 +458,19 @@ where
     // Search for a key and return the value if exists
     pub fn search_internal(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
-        println!("Starting search at root: {}", current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
                     // target >= keys[i] means we should go to the (i+1)-th child
                     // target < keys[i]  (not found) means we should go to the i-th child - descent
                     // where it would be inserted
-                        println!("Searching in internal node for key: {:?} in {:?}",key, keys);
                     let i = match keys.binary_search(key) {
                         Ok(i) => i + 1, // Go to the next child
                         Err(i) => i, // Go to the child where it would be inserted
                     };
-                    println!("Moving to child index: {} with ID: {}", i, children[i]);
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
-                    println!("Searching in leaf node for key: {:?} in {:?}",key, keys);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -548,31 +536,23 @@ where
         let Ok(index) = keys.binary_search(key) else {
             return Ok(DeleteResult::NotFound);
         };
-
+            
         keys.remove(index);
         values.remove(index);
-
-        // This is the root node
-        if path.is_empty() {
-            self.root_id = self.write_node(&node)?;
-            return Ok(DeleteResult::Updated);
-        };
-        // no underflow if the node has enough keys
-        if keys.len() >= self.min_leaf_keys {
+        
+        // no underflow if the node has enough keys or it is the root node
+        if keys.len() >= self.min_leaf_keys || path.is_empty() {
             self.write_and_propagate(path, &node)?;
             return Ok(DeleteResult::Updated);
         }
-        // handle underflow
+
         self.handle_underflow(path, node)
     }
 
     // Writes a node and propagates the update to the parent nodes.
     fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
         let new_node_id = self.write_node(node)?;
-        println!("write and propagate");
-        println!("Writing node with ID: {} path {:?}", new_node_id, path);
         if path.is_empty() {
-            println!("Updating root node with new ID: {}", new_node_id);
             self.root_id = new_node_id;
         } else {
             self.propagate_node_update(path, new_node_id)?;
@@ -580,7 +560,7 @@ where
         Ok(())
     }
 
-
+    // TODO: THIS SHOUlD BE REFACTORED
     // Handles underflow of a node after deletion, trying to borrow from siblings or merge with them.
     fn handle_underflow(
         &mut self,
@@ -595,15 +575,10 @@ where
                 let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
                     return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
                 };
-                if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
-                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
-                }
-                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, children, idx)? {
-                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
-                }
-                // Try merging with the left sibling
-                if let Some(merged_id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
-                    // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
+
+                if node.is_empty() {
+                    // If the node is empty, we can reclaim it
+                    self.remove_node(children, idx)?;
                     if parent_keys.len() < self.min_internal_keys {
                          // we are at the root node
                          if path.is_empty() {
@@ -613,25 +588,39 @@ where
                                 return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                             }
                         } else {
-                            // we are not at the root node, we need to continue handling the
-                            // underflow
-                            node = parent_node; // Revisit the parent node
+                            node = parent_node; // continue handling the underflow
                             continue;
                         }
                     } else {
-                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Merged { left: parent_id, right: merged_id });
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                     }
                 }
-                // Try merging with right sibling
-                if let Some(merged_id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
+
+                if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
+                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                }
+                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, children, idx)? {
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                }
+
+                // Try to merge with left or right sibling
+                let mut merged = None;
+                if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
+                    merged = Some(id);
+                } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
+                    merged = Some(id);
+                }
+                    
+                if let Some(merged_id) = merged {
                     // If the merge resulted in an underflow and we are not at the root, we need to continue handling it
                     if parent_keys.len() < self.min_internal_keys {
+                        // we are at the root node
                         if path.is_empty() {
-                           if self.shrink_to_root(children)? {
-                               return Ok(DeleteResult::Underflowed);
-                           } else {
-                               return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
-                           }
+                            if self.shrink_to_root(children)? {
+                                return Ok(DeleteResult::Underflowed);
+                            } else {
+                                return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                            }
                         } else {
                             node = parent_node; // Revisit the parent node
                             continue;
@@ -646,7 +635,7 @@ where
     }
 
     // Shrinks the tree to the root if it has only one child and the height is greater than 1.
-    fn shrink_to_root(&mut self, children: &Vec<NodeId>) -> Result<bool> {
+    fn shrink_to_root(&mut self, children: &[NodeId]) -> Result<bool> {
         // shrink the tree if we have only one child at the root and the height is greater than 1
         if children.len() == 1 && self.height > 1 {
             self.root_id = children[0];
@@ -730,7 +719,7 @@ where
     ) -> Result<bool> {
         if idx >= children.len() {
             return Ok(false); // No right sibling to borrow from
-        }   
+        }
         let right_sibling_id = children[idx + 1];
         let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Right sibling not found".to_string()).into());
@@ -801,11 +790,11 @@ where
                 // Merge the current node with the left sibling
                 let merged_node_id = self.merge_nodes(&mut left, node)?;
                 // Update the parent node
-                self.remove_node(children, idx)?;
+                self.remove_node(children, idx)?; // remove the right sibling
                 self.replace_node(children, merged_child_idx, merged_node_id)?;
                 // Update the parent keys
                 if parent_keys.len() > 1 {
-                    parent_keys.remove(separator_key_idx); // Remove the separator key at idx - 1
+                    parent_keys.remove(separator_key_idx ); // Remove the separator key at idx - 1
                 }
                 return Ok(Some(merged_node_id));
             }
@@ -826,12 +815,12 @@ where
             return Ok(None);
         }
         let merged_child_idx = idx; // Merged child will replace the current node
-        let right_sibling_id = children[idx + 1];
+        let right_sibling_id = children[right_idx];
         let right_sibling = self.read_node(right_sibling_id)?;
         if let Some(mut right) = right_sibling {
             // Merge the current node with the right sibling
             let merged_node_id = self.merge_nodes(node, &mut right)?;
-            self.remove_node(children, idx + 1)?; // Remove the right sibling
+            self.remove_node(children, right_idx)?; // Remove the right sibling
             self.replace_node(children, merged_child_idx, merged_node_id)?;
             // Update the parent keys
             if parent_keys.len() > 1 {
@@ -925,8 +914,6 @@ where
     
         let target_slot = self.txn_id % 2;
         self.txn_id += 1; // Increment transaction ID for the next commit
-        println!("Committing B+ tree with txn_id: {}, target_slot: {}", self.txn_id, target_slot);
-        println!("Committing B+ tree with new root: {}, height: {}", new_root, new_height);
 
         self.storage.commit_metadata(
             target_slot as u8,
@@ -958,7 +945,6 @@ where
             return Ok(result); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
-        println!("Starting traversal at root: {}", self.root_id);
         self.traverse_internal(self.root_id, &mut result)?;
         Ok(result)
     }
@@ -970,7 +956,6 @@ where
     ) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
-                println!("Traversing internal node with ID: {}, keys: {:?}", node_id, keys);
                 for (i, child_id) in children.iter().enumerate() {
                     if i <= keys.len() {
                         self.traverse_internal(*child_id, result)?;
@@ -1061,9 +1046,9 @@ mod tests {
 
     #[test]
     fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
-        let file_path = "test_flatfile_3.bin";
-        let order = 10; // B+ tree order
-        let multiplier = 10_u64; // Number of times to insert and delete
+        let file_path = "test_lockstep.bin";
+        let order = 3; // B+ tree order
+        let multiplier = 2; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let bound = order as u64*multiplier;
@@ -1076,12 +1061,18 @@ mod tests {
         for i in 0..bound {
             let key = i;
             tree_root.delete(&key)?;
-            let mut rng = thread_rng();
-            let key_rand = rng.gen_range(i..bound);
-            let res = tree_root.search(&(key_rand))?;
-            assert!(res.is_none(), "Key {} should be present res some {}", key, res.is_some());
+            println!("Deleted key: {}", key);
             let res = tree_root.search(&(key))?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
+
+            let mut rng = thread_rng();
+            if bound == i + 1 {
+                return Ok(()); // No more keys to searchc
+            }
+            let key_rand = rng.gen_range(i+1..bound);
+            println!("Searching for key: {}", key_rand);
+            let res = tree_root.search(&(key_rand))?;
+            assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
         }
         Ok(())
     }
@@ -1118,6 +1109,8 @@ mod tests {
         
         let order = 10; // B+ tree order
         let multiplier = 200_u64; // Number of times to insert and delete
+        //let order = 3; // B+ tree order
+        //let multiplier = 2; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree_root = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         for i in 0..order as u64*multiplier {

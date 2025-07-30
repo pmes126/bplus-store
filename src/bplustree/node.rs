@@ -17,8 +17,8 @@ pub enum Node<K, V> {
 
 impl<K, V> Node<K, V>
 where 
-    K: Copy + Ord,
-    V: Copy,
+    K: Ord,
+    V: Clone,
 {
     pub fn is_empty(&self) -> bool {
         match self {
