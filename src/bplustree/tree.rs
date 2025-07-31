@@ -117,9 +117,9 @@ where
             storage,
             order,
             max_keys: order - 1,
-            min_internal_keys: (order - 1).saturating_div(2), // Ensure min_internal_keys is at
-            // least 1
-            min_leaf_keys: order.saturating_div(2), // Ensure min_keys is at least 1
+            min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at
+            // least 2
+            min_leaf_keys: (order-1).div_ceil(2), // Ensure min_keys is at least 1
             height: 1, // Start with height 1 for the root node
             staged_root_id: None, // No staged root initially
             staged_height: None, // No staged height initially
@@ -349,22 +349,30 @@ where
         }
     }
 
+    // Writes a node and propagates the update to the parent nodes.
+    fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
+        let new_node_id = self.write_node(node)?;
+        if path.is_empty() {
+            self.root_id = new_node_id;
+        } else {
+            self.propagate_node_update(path, new_node_id)?;
+        }
+        Ok(())
+    }
+
     // Propagates an update to the parent nodes after a node has been updated or split.
     fn propagate_node_update(
         &mut self,
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
     ) -> Result<()> {
-        if path.is_empty() {
-            self.root_id = updated_child_id;
-            return Ok(());
-        }
+        println!("Propagating update to parent nodes: {:?}", path);
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
                 .read_node(parent_id)?
                 .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
 
-            let Node::Internal { ref mut children, .. } = parent_node else {
+            let Node::Internal { ref mut children, ref keys } = parent_node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node while updating parents".to_string(),
                 )
@@ -380,11 +388,92 @@ where
                 .into());
             }
 
+            println!(
+                "Parent node {} before update: {:?} , {:?}",
+                parent_id,
+                keys,
+                children
+            );
             // Reclaim the original child node and update the child pointer
             self.replace_node(children, insert_pos, updated_child_id)?;
+            println!(
+                "Parent node {} after update: {:?} , {:?}",
+                parent_id,
+                keys,
+                children
+            );
             updated_child_id = self.write_node(&parent_node)?;
 
             if parent_id == self.root_id {
+                println!("Updating root node to: {:?}", updated_child_id);
+                println!("New root: {:?}", parent_node);
+                self.root_id = updated_child_id;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    // Writes a node and propagates the update to the parent nodes.
+    fn write_and_propagate_delete(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>, key: &K) -> Result<()> {
+        let new_node_id = self.write_node(node)?;
+        if path.is_empty() {
+            self.root_id = new_node_id;
+        } else {
+            self.propagate_node_delete(path, new_node_id, key)?;
+        }
+        Ok(())
+    }
+
+    // Propagates an update to the parent nodes after a node has been updated or split.
+    fn propagate_node_delete(
+        &mut self,
+        mut path: Vec<(NodeId, usize)>,
+        mut updated_child_id: NodeId,
+        key: &K,
+    ) -> Result<()> {
+        println!("Propagating update to parent nodes: {:?}", path);
+        while let Some((parent_id, insert_pos)) = path.pop() {
+            let mut parent_node = self
+                .read_node(parent_id)?
+                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
+
+            let Node::Internal { ref mut children, ref mut keys } = parent_node else {
+                return Err(TreeError::BackendAny(
+                    "Expected internal node while updating parents".to_string(),
+                )
+                .into());
+            };
+            if insert_pos >= children.len() {
+                return Err(TreeError::BackendAny(
+                    format!(
+                        "Insert position {} out of bounds for children in node {}",
+                        insert_pos, parent_id
+                    ),
+                )
+                .into());
+            }
+
+            println!(
+                "Parent node {} before update: {:?} , {:?}",
+                parent_id,
+                keys,
+                children
+            );
+            keys.retain(|k| k != key); // Remove the key from the parent node
+            // Reclaim the original child node and update the child pointer
+            self.replace_node(children, insert_pos, updated_child_id)?;
+            println!(
+                "Parent node {} after update: {:?} , {:?}",
+                parent_id,
+                keys,
+                children
+            );
+            updated_child_id = self.write_node(&parent_node)?;
+
+            if parent_id == self.root_id {
+                println!("Updating root node to: {:?}", updated_child_id);
+                println!("New root: {:?}", parent_node);
                 self.root_id = updated_child_id;
                 return Ok(());
             }
@@ -458,12 +547,14 @@ where
     // Search for a key and return the value if exists
     pub fn search_internal(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
+        println!("Searching for key: {:?} starting at node {}", key, current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
                     // target >= keys[i] means we should go to the (i+1)-th child
                     // target < keys[i]  (not found) means we should go to the i-th child - descent
                     // where it would be inserted
+                    println!("Searching at {:?} {:?}", keys, children);
                     let i = match keys.binary_search(key) {
                         Ok(i) => i + 1, // Go to the next child
                         Err(i) => i, // Go to the child where it would be inserted
@@ -471,6 +562,7 @@ where
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
+                    println!("Searching at leaf {:?} {:?}", keys, values);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -528,6 +620,7 @@ where
     }
 
     // Delete and handle underflow of leaf nodes
+    // Every key in an internal node must match the first key in its right child
     pub fn delete_internal(&mut self, key: &K) -> Result<DeleteResult> {
         let (path, mut node) = self.get_insertion_path(key)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
@@ -536,10 +629,10 @@ where
         let Ok(index) = keys.binary_search(key) else {
             return Ok(DeleteResult::NotFound);
         };
-            
+
         keys.remove(index);
         values.remove(index);
-        
+
         // no underflow if the node has enough keys or it is the root node
         if keys.len() >= self.min_leaf_keys || path.is_empty() {
             self.write_and_propagate(path, &node)?;
@@ -547,17 +640,6 @@ where
         }
 
         self.handle_underflow(path, node)
-    }
-
-    // Writes a node and propagates the update to the parent nodes.
-    fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>) -> Result<()> {
-        let new_node_id = self.write_node(node)?;
-        if path.is_empty() {
-            self.root_id = new_node_id;
-        } else {
-            self.propagate_node_update(path, new_node_id)?;
-        }
-        Ok(())
     }
 
     // TODO: THIS SHOUlD BE REFACTORED
@@ -578,36 +660,43 @@ where
 
                 if node.is_empty() {
                     // If the node is empty, we can reclaim it
+                    println!("Reclaiming empty node: {:?}", node);
+                    // REMOVE CHILD FROM PARENT
                     self.remove_node(children, idx)?;
+
                     if parent_keys.len() < self.min_internal_keys {
-                         // we are at the root node
-                         if path.is_empty() {
+                        //println!("parent is underflowed: keys: {:?}, children: {:?}, parent_id {}", parent_keys, children, parent_id);
+                        node = parent_node; // continue handling the underflow
+                        continue;
+                    } else {
+                        println!("Node reclaimed, no underflow parent is: keys: {:?}, children: {:?} parent_id {}", parent_keys, children, parent_id);
+                        if path.is_empty() {
                             if self.shrink_to_root(children)? {
                                 return Ok(DeleteResult::Underflowed);
                             } else {
                                 return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                             }
-                        } else {
-                            node = parent_node; // continue handling the underflow
-                            continue;
-                        }
-                    } else {
-                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                        } 
                     }
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
 
-                if idx > 0 && self.try_borrow_from_left(&mut node, children, idx)? {
-                        return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
+                if idx > 0 && self.try_borrow_from_left(&mut node, parent_keys, children, idx)? {
+                    println!("Try to borrow from left: {:?}", node);
+                    return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
                 if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, children, idx)? {
+                    println!("Try to borrow from left: {:?}", node);
                     return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
 
                 // Try to merge with left or right sibling
                 let mut merged = None;
                 if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
+                    println!("try and merge with left: {:?}", node);
                     merged = Some(id);
                 } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
+                    println!("try and merge with right: {:?}", node);
                     merged = Some(id);
                 }
                     
@@ -637,7 +726,9 @@ where
     // Shrinks the tree to the root if it has only one child and the height is greater than 1.
     fn shrink_to_root(&mut self, children: &[NodeId]) -> Result<bool> {
         // shrink the tree if we have only one child at the root and the height is greater than 1
+        println!("path is empty, checking if we can shrink to root");
         if children.len() == 1 && self.height > 1 {
+            println!("Updating the root in shrink to root to node {}", children[0]);
             self.root_id = children[0];
             self.height = self.height.saturating_sub(1);
             return Ok(true);
@@ -650,6 +741,7 @@ where
     fn try_borrow_from_left(
         &mut self,
         node: &mut Node<K, V>,
+        parent_keys: &mut [K],
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
@@ -657,6 +749,7 @@ where
             return Ok(false);
         }
         let left_sibling_id = children[idx - 1];
+        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
         let Some(mut left_sibling) = self.read_node(left_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Left sibling not found".to_string()).into());
         };
@@ -672,8 +765,9 @@ where
                     let borrowed_value = left_values.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no values to borrow".to_string())
                     })?;
-                    right_keys.insert(0, borrowed_key);
+                    right_keys.insert(0, borrowed_key.clone());
                     right_values.insert(0, borrowed_value);
+                    parent_keys[parent_key_idx] = borrowed_key; // Update the parent key with the borrowed key
                 } else {
                     return Ok(false);
                 }
@@ -689,8 +783,9 @@ where
                     let borrowed_child = left_children.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no children to borrow".to_string())
                     })?;
-                    right_keys.insert(0, borrowed_key);
+                    right_keys.insert(0, borrowed_key.clone());
                     right_children.insert(0, borrowed_child);
+                    parent_keys[parent_key_idx] = borrowed_key; // Update the parent key with the borrowed key
                 } else {
                     return Ok(false);
                 }
@@ -1062,6 +1157,8 @@ mod tests {
             let key = i;
             tree_root.delete(&key)?;
             println!("Deleted key: {}", key);
+            let tree_values = tree_root.traverse()?;
+            println!("Tree values after deletion: {:?}", tree_values);
             let res = tree_root.search(&(key))?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
 
@@ -1070,7 +1167,7 @@ mod tests {
                 return Ok(()); // No more keys to searchc
             }
             let key_rand = rng.gen_range(i+1..bound);
-            println!("Searching for key: {}", key_rand);
+            println!(" test -Searching for key: {}", key_rand);
             let res = tree_root.search(&(key_rand))?;
             assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
         }
