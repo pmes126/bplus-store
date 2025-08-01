@@ -767,7 +767,8 @@ where
                     })?;
                     right_keys.insert(0, borrowed_key.clone());
                     right_values.insert(0, borrowed_value);
-                    parent_keys[parent_key_idx] = borrowed_key; // Update the parent key with the borrowed key
+                    // Update the separator key with the borrowed key - separator should alwasy be the first key of the right child
+                    parent_keys[parent_key_idx] = borrowed_key; 
                 } else {
                     return Ok(false);
                 }
@@ -785,7 +786,8 @@ where
                     })?;
                     right_keys.insert(0, borrowed_key.clone());
                     right_children.insert(0, borrowed_child);
-                    parent_keys[parent_key_idx] = borrowed_key; // Update the parent key with the borrowed key
+                    // Update the parent key with the borrowed key
+                    parent_keys[parent_key_idx] = borrowed_key;
                 } else {
                     return Ok(false);
                 }
@@ -809,12 +811,14 @@ where
     fn try_borrow_from_right(
         &mut self,
         node: &mut Node<K, V>,
+        parent_keys: &mut [K],
         children: &mut [NodeId],
         idx: usize,
     ) -> Result<bool> {
         if idx >= children.len() {
             return Ok(false); // No right sibling to borrow from
         }
+        let parent_key_idx = idx; // The key in the parent node that separates the two children
         let right_sibling_id = children[idx + 1];
         let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
             return Err(TreeError::NodeNotFound("Right sibling not found".to_string()).into());
@@ -828,6 +832,8 @@ where
                     // Borrow from the right sibling
                     let borrowed_key = right_keys.remove(0);
                     let borrowed_value = right_values.remove(0);
+                    let new_separator_key = right_keys[0].clone(); // The first key of the right
+                    // sibling becomes the new separator key
                     left_keys.push(borrowed_key);
                     left_values.push(borrowed_value);
                     // Write the updated leaf nodes back to storage
@@ -835,6 +841,9 @@ where
                     let new_right_node_id = self.write_node(&right_sibling)?;
                     self.replace_node(children, idx, new_node_id)?;
                     self.replace_node(children, idx + 1, new_right_node_id)?;
+                    // Update the separator key with the first key  of the right sibling
+                    parent_keys[parent_key_idx] = new_separator_key.clone(); // Update the parent key with the
+
                     Ok(true)
                 } else {
                     Ok(false) // Not enough keys to borrow
@@ -848,6 +857,7 @@ where
                     // Borrow from the right sibling
                     let borrowed_key = right_keys.remove(0);
                     let borrowed_child = right_children.remove(0);
+                    let new_separator_key = right_keys[0].clone(); // The first key of the right
                     left_keys.push(borrowed_key);
                     left_children.push(borrowed_child);
                     // Write the updated leaf nodes back to storage
@@ -855,6 +865,8 @@ where
                     let new_right_node_id = self.write_node(&right_sibling)?;
                     self.replace_node(children, idx, new_node_id)?;
                     self.replace_node(children, idx + 1, new_right_node_id)?;
+                    // Update the separator key with the first key  of the right sibling
+                    parent_keys[parent_key_idx] = new_separator_key.clone(); // Update the parent key with the
                     Ok(true)
                 } else {
                     Ok(false) // Not enough keys to borrow
