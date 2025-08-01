@@ -614,7 +614,6 @@ where
         self.handle_underflow(path, node)
     }
 
-    // TODO: THIS SHOUlD BE REFACTORED
     // Handles underflow of a node after deletion, trying to borrow from siblings or merge with them.
     fn handle_underflow(
         &mut self,
@@ -630,17 +629,18 @@ where
                     return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
                 };
                 
+                // COULD REMOVE
                 if path.is_empty() && self.shrink_to_root(children)? {
                     return Ok(DeleteResult::Underflowed);
                 }
-
+                // Try borrowing from left or right sibling, on success just propagate the update,
+                // no change in number of keys in the parent node
                 if idx > 0 && self.try_borrow_from_left(&mut node, parent_keys, children, idx)? {
                     return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
                 if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, parent_keys, children, idx)? {
                     return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                 }
-
                 // Try to merge with left or right sibling
                 let mut merged = None;
                 if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx)? {
@@ -648,10 +648,11 @@ where
                 } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx)? {
                     merged = Some(id);
                 }
-
+                // We should have merged with a sibling or borrowed from it otherwise invalid state
                 if merged.is_some() {
                     // the parent node underflowed after merge
                     if parent_keys.len() < self.min_internal_keys {
+                        // handle root node underflow
                         if path.is_empty() {
                            if self.shrink_to_root(children)? {
                                return Ok(DeleteResult::Underflowed);
@@ -659,17 +660,17 @@ where
                                return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                            }
                         }
-                        node = parent_node; // Revisit the parent node
-                        continue; // Continue handling underflow at the parent level
+                        // Continue handling underflow
+                        node = parent_node;
+                        continue;
                     } else {
                         // Parent node didn't overflow, just write the updated parent node
                         return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
                     }
                 }
-                return self.write_and_propagate(path, &parent_node).map(|_| DeleteResult::Updated);
             }
         }
-        Err(TreeError::BackendAny("Leaf underflow couldn't be resolved".to_string()).into())
+        Err(TreeError::BackendAny("Node underflow couldn't be resolved".to_string()).into())
     }
 
     // Shrinks the tree to the root if it has only one child and the height is greater than 1.
@@ -793,15 +794,16 @@ where
                 Node::Internal { keys: left_keys, children: left_children },
                 Node::Internal { keys: right_keys, children: right_children },
             ) => {
-                if right_keys.len() > self.min_internal_keys {
-                    // Borrow from the right sibling
-                    let borrowed_key = right_keys.remove(0);
+                if right_keys.len() > self.min_internal_keys { 
+                    // Steps for Internal node are diffent we need to swap the first key of the
+                    // right sibling with the separator from parent
+                    // 1. Move separator key from parent to the left node
+                    left_keys.push(parent_keys[parent_key_idx].clone());
+                    // 2. Update the parent key with the first key of the right sibling
+                    parent_keys[parent_key_idx] = right_keys.remove(0); 
+                    // 3. Borrow a child from the right sibling
                     let borrowed_child = right_children.remove(0);
-                    let new_separator_key = right_keys[0].clone(); // The first key of the right
-                    left_keys.push(borrowed_key);
                     left_children.push(borrowed_child);
-                    // Update the separator key with the first key  of the right sibling
-                    parent_keys[parent_key_idx] = new_separator_key.clone(); // Update the parent key with the
                 } else {
                     return Ok(false); // Not enough keys to borrow
                 }
@@ -1081,6 +1083,7 @@ where
     ) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
+                println!("Traversing internal node with id: {} keys: {:?}, children {:?}",node_id, keys, children);
                 for (i, child_id) in children.iter().enumerate() {
                     if i <= keys.len() {
                         self.traverse_inner(*child_id, result)?;
@@ -1088,6 +1091,7 @@ where
                 }
             }
             Some(Node::Leaf { keys, values, .. }) => {
+                println!("Traversing leaf node with id: {} keys: {:?}, values {:?}", node_id, keys, values);
                 for (key, value) in keys.iter().zip(values.iter()) {
                     result.push((key.clone(), value.clone()));
                 }
@@ -1169,7 +1173,7 @@ mod tests {
         Ok(())
     }
 
-    //#[test]
+    #[test]
     fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
         let file_path = "test_lockstep.bin";
         let order = 3; // B+ tree order
@@ -1183,10 +1187,13 @@ mod tests {
             let res = tree_root.insert(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
+            println!("Initial state");
+            tree_root.traverse()?;
         for i in 0..bound {
             let key = i;
             tree_root.delete(&key)?;
             let res = tree_root.search(&(key))?;
+            println!("Key {} deleted, search result: {:?}", key, res);
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
 
             let mut rng = thread_rng();
@@ -1194,6 +1201,9 @@ mod tests {
                 return Ok(()); // No more keys to search
             }
             let key_rand = rng.gen_range(i+1..bound);
+            println!("Searching for random key {}", key_rand);
+            let tree_vals = tree_root.traverse()?;
+            println!("Tree values: {:?}", tree_vals);
             let res = tree_root.search(&(key_rand))?;
             assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
         }
