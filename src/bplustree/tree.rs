@@ -732,7 +732,7 @@ where
                     let borrowed_child = left_children.pop().ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no children to borrow".to_string())
                     })?;
-                    right_keys.insert(0, borrowed_key.clone());
+                    right_keys.insert(0, parent_keys[parent_key_idx].clone());
                     right_children.insert(0, borrowed_child);
                     // Update the parent key with the borrowed key
                     parent_keys[parent_key_idx] = borrowed_key;
