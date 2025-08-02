@@ -466,7 +466,7 @@ where
 
         let new_root_id = self.write_node(&new_root)?;
         self.replace_root(new_root_id)?;
-        self.height += 1;
+        self.staged_height = Some(self.height + 1); // Update staged height
 
         Ok(())
     }
@@ -474,7 +474,6 @@ where
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&mut self, key: &K) -> Result<Option<V>> {
         if self.root_id == 0 {
-            println!("Root id {} empty", self.root_id);
             return Ok(None); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
@@ -484,7 +483,6 @@ where
     // Search for a key and return the value if exists
     pub fn search_inner(&mut self, key: &K) -> Result<Option<V>> {
         let mut current_id = self.root_id;
-        println!("Searching for key: {:?} at root id {}", key, current_id);
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
@@ -498,7 +496,6 @@ where
                     current_id = children[i];
                 }
                 Some(Node::Leaf { keys, values, .. }) => {
-                    println!("Searching for key at leaf with keys {:?} values {:?}", keys, values);
                     match keys.binary_search(key) {
                         Ok(i) => return Ok(Some(values[i].clone())),
                         Err(_i) => return Ok(None), // Key not found
@@ -652,7 +649,8 @@ where
         // shrink the tree if we have only one child at the root and the height is greater than 1
         if children.len() == 1 && self.height > 1 {
             self.replace_root(children[0])?;
-            self.height = self.height.saturating_sub(1);
+            self.staged_height = Some(self.height.saturating_sub(1)); // Update staged height
+            //self.height = self.height.saturating_sub(1);
             return Ok(true);
         }
         Ok(false)
@@ -981,10 +979,9 @@ where
 
     fn replace_root(&mut self, new_root_id: NodeId) -> Result<()> {
         // Reclaim the old root node
-        //self.staged_root_id = Some(self.root_id);
-        //self.staged_height = Some(self.height);
-        self.reclaim_node(self.root_id)?;
-        self.root_id = new_root_id;
+        self.staged_root_id = Some(new_root_id);
+        //self.reclaim_node(self.root_id)?;
+        //self.root_id = new_root_id;
         Ok(())
     }
 
@@ -1003,22 +1000,19 @@ where
 
     pub fn commit(&mut self) -> Result<()> {
         // Skip if there's no staged root
-        //let new_root = match self.staged_root_id {
-        //    Some(id) => id,
-        //    None => return Ok(()), // No-op
-        //};
-        let new_root = self.root_id; // Use the current root as the new root
+        let new_root = match self.staged_root_id {
+            Some(id) => id,
+            None => return Ok(()), // No-op
+        };
     
-        //let new_height = match self.staged_height {
-        //    Some(height) => height,
-        //    None => self.height,
-        //};
-        let new_height = self.height; // Use the current root as the new root
+        let new_height = match self.staged_height {
+            Some(height) => height,
+            None => self.height,
+        };
     
+        self.reclaim_node(self.root_id)?;
         self.storage.flush()?;
 
-        //self.reclaim_node(self.root_id)?;
-        println!("Committing new root: {} at height: {}", new_root, new_height);
         // Now commit the new root
         self.root_id = new_root;
         self.height = new_height;
@@ -1070,7 +1064,6 @@ where
     ) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
-                println!("Traversing internal node with id: {} keys: {:?}, children {:?}",node_id, keys, children);
                 for (i, child_id) in children.iter().enumerate() {
                     if i <= keys.len() {
                         self.traverse_inner(*child_id, result)?;
@@ -1078,7 +1071,6 @@ where
                 }
             }
             Some(Node::Leaf { keys, values, .. }) => {
-                println!("Traversing leaf node with id: {} keys: {:?}, values {:?}", node_id, keys, values);
                 for (key, value) in keys.iter().zip(values.iter()) {
                     result.push((key.clone(), value.clone()));
                 }
@@ -1124,7 +1116,7 @@ mod tests {
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let key = 1u64;
         let value = "a".to_string();
-        let res = tree.insert(key, value.clone());
+        let res = tree.insert_and_commit(key, value.clone());
         assert!(res.is_ok(), "Node should be inserted successfully");
         let res = tree.search(&key)?;
         assert!(res.is_some(), "Node should be read successfully");
@@ -1143,7 +1135,7 @@ mod tests {
             let key = i as u64;
             let value = format!("value_{}", i);
             //let res = tree_root.insert(key, value.clone());
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Value should be inserted successfully");
             let res = tree_root.search(&key)?;
             assert!(res.is_some(), "Value should be read successfully");
@@ -1164,7 +1156,7 @@ mod tests {
         for i in 0..order*multiplier {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Value should be inserted successfully");
         }
         for i in 0..order*multiplier {
@@ -1188,16 +1180,14 @@ mod tests {
         for i in 0..bound {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
-            println!("Initial state");
             tree_root.traverse()?;
         for i in 0..bound {
             let key = i;
-            tree_root.delete(&key)?;
+            tree_root.delete_and_commit(&key)?;
             let res = tree_root.search(&(key))?;
-            println!("Key {} deleted, search result: {:?}", key, res);
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
 
             let mut rng = thread_rng();
@@ -1205,9 +1195,7 @@ mod tests {
                 return Ok(()); // No more keys to search
             }
             let key_rand = rng.gen_range(i+1..bound);
-            println!("Searching for random key {}", key_rand);
             let tree_vals = tree_root.traverse()?;
-            println!("Tree values: {:?}", tree_vals);
             let res = tree_root.search(&(key_rand))?;
             assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
         }
@@ -1226,13 +1214,13 @@ mod tests {
         for i in 0..order as u64*multiplier {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
         // Deleting all values
         for i in 0..order as u64*multiplier {
             let key = i;
-            tree_root.delete(&key)?;
+            tree_root.delete_and_commit(&key)?;
             let res = tree_root.search(&key)?;
             assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
         }
@@ -1261,7 +1249,7 @@ mod tests {
         for i in 0..order as u64*multiplier {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
         let mut values_to_delete: Vec<u64> = (0..(order as u64)*multiplier).collect();
@@ -1270,7 +1258,7 @@ mod tests {
 
         for i in values_to_delete {
             let key = i;
-            tree_root.delete(&key)?;
+            tree_root.delete_and_commit(&key)?;
             let res = tree_root.search(&key)?;
             assert!(res.is_none(), "Node should be deleted successfully");
         }
@@ -1288,24 +1276,24 @@ mod tests {
         for i in 0..order - 1 {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
         assert_eq!(tree_root.height, 1, "Height should be 1 after inserting {} nodes", order-1);
         for i in 0..order - 1 {
             let key = i as u64;
-            tree_root.delete(&key)?;
+            tree_root.delete_and_commit(&key)?;
         }
         assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
         for i in 0..iterations {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree_root.insert(key, value.clone());
+            let res = tree_root.insert_and_commit(key, value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
         }
         for i in 0..iterations {
             let key = i as u64;
-            tree_root.delete(&key)?;
+            tree_root.delete_and_commit(&key)?;
         }
         assert_eq!(tree_root.height, 1, "Height should remain 1 after deleting all nodes");
         Ok(())
@@ -1322,10 +1310,10 @@ mod tests {
             let key = format!("key_{}", i);
             let value = format!("value_{}", i);
             let value_updated = format!("value_upd_{}", i);
-            let res = tree.insert(key.clone(), value.clone());
+            let res = tree.insert_and_commit(key.clone(), value.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
             assert_eq!(tree.search(&(key.clone()))?, Some(value));
-            let res = tree.insert(key.clone(), value_updated.clone());
+            let res = tree.insert_and_commit(key.clone(), value_updated.clone());
             assert!(res.is_ok(), "Node should be inserted successfully");
             assert_eq!(tree.search(&(key.clone()))?, Some(value_updated), "Value should be updated for duplicate key");
         }
@@ -1346,7 +1334,7 @@ mod tests {
             for i in 0..iterations {
                 let key = i as u64;
                 let value = format!("value_{}", i);
-                let res = tree.insert(key, value.clone());
+                let res = tree.insert_and_commit(key, value.clone());
                 assert!(res.is_ok(), "Node should be inserted successfully");
             }
 
