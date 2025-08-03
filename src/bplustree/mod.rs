@@ -11,6 +11,7 @@ pub use iterator::BPlusTreeRangeIter;
 pub use epoch::EpochManager;
 pub use crate::storage::CodecError;
 pub use thiserror::Error;
+use anyhow::Result;
 
 #[derive(Debug, Error)]
 pub enum TreeError {
@@ -33,6 +34,7 @@ pub enum TreeError {
     NodeNotFound(String),
 }
 
-pub trait ReclaimSink {
-    fn retire(&mut self, node_id: NodeId) -> Result<(), TreeError>;
+pub trait TxnTracker {
+    fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
+    fn add_new(&mut self, node_id: NodeId) -> Result<()>;
 }

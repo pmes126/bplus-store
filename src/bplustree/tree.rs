@@ -1,12 +1,12 @@
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, TreeError};
 use crate::bplustree::BPlusTreeRangeIter;
 use crate::bplustree::EpochManager;
-use crate::bplustree::ReclaimSink;
+use crate::bplustree::TxnTracker;
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
 use crate::storage::{NodeStorage, MetadataStorage, metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
@@ -50,7 +50,7 @@ where
     K: KeyCodec + Ord,
     V: ValueCodec,
     {
-    root_id: NodeId,
+    root_id: AtomicU64, // Root node ID
     order: usize,
     size: usize,
     max_keys: usize,
@@ -62,11 +62,125 @@ where
     staged_height: Option<usize>, // Staged height for transactions
     epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
     commit_count: AtomicUsize, // Number of commits made to the tree
-    txn_id: u64, // Slot of metadata storage
+    txn_id: AtomicU64, // Slot of metadata storage
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
 
 
+}
+
+pub struct TransactionTracker {
+    pub reclaimed: Vec<NodeId>,
+    pub added: Vec<NodeId>,
+}
+
+impl  TransactionTracker {
+    pub fn new() -> Self {
+        Self { reclaimed: Vec::new(),
+               added: Vec::new() 
+        }
+    }
+}
+
+impl TxnTracker for TransactionTracker {
+    fn reclaim(&mut self, node_id: NodeId) -> Result<()> {
+        self.reclaimed.push(node_id);
+        Ok(())
+    }
+    fn add_new(&mut self, node_id: NodeId) -> Result<()> {
+        self.added.push(node_id);
+        Ok(())
+    }
+}
+
+pub struct SharedBPlusTree<K, V, S>
+where
+    K: KeyCodec + Ord,
+    V: ValueCodec,
+    S: NodeStorage<K, V> + MetadataStorage,
+{
+    inner: Arc<RwLock<BPlusTree<K, V, S>>>,
+}
+
+pub struct WriteResult {
+    pub new_root_id: NodeId,
+    pub reclaimed_nodes: Vec<NodeId>,
+    pub staged_nodes: Vec<NodeId>,
+}
+
+impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
+where
+    K: KeyCodec + Clone + Ord,
+    V: ValueCodec + Clone,
+    S: NodeStorage<K, V> + MetadataStorage,
+{
+    pub fn new(tree: BPlusTree<K, V, S>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(tree)),
+        }
+    }
+
+    pub fn insert_with_root(&mut self, key: K, value: V, root_id: NodeId) -> Result<WriteResult> {
+        let mut collector = TransactionTracker::new();
+        let mut tree = self.inner.write().unwrap();
+        let new_root_id = tree.insert_inner(key, value, root_id, &mut collector)?;
+        let write_res = WriteResult {
+            new_root_id,
+            reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
+            staged_nodes: std::mem::take(&mut collector.added),
+        };
+        return Ok(write_res);
+    }
+
+    pub fn delete_with_root(&mut self, key: &K, root_id: NodeId) -> Result<WriteResult> {
+        let mut collector = TransactionTracker::new();
+        let mut tree = self.inner.write().unwrap();
+        let delete_res = tree.delete_inner(key, root_id, &mut collector)?;
+        let DeleteResult::Deleted(new_root_id) = delete_res else {
+            return Err(anyhow::anyhow!("Failed to delete key: {:?}", key));
+        };
+        let write_res = WriteResult {
+            new_root_id,
+            reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
+            staged_nodes: std::mem::take(&mut collector.added),
+        };
+        Ok(write_res)
+    }
+
+    pub fn search(&self, key: &K) -> Result<Option<V>> {
+        let tree = self.inner.read().unwrap();
+        tree.search(key)
+    }
+
+    pub fn get_root_id(&self) -> NodeId {
+        let tree = self.inner.read().unwrap();
+        tree.root_id.load(Ordering::SeqCst)
+    }
+
+    pub fn get_txn_id(&self) -> NodeId {
+        let tree = self.inner.read().unwrap();
+        tree.txn_id.load(Ordering::SeqCst)
+    }
+
+    pub fn commit(&mut self, new_root_id: NodeId) -> Result<()> {
+        let mut tree = self.inner.write().unwrap();
+        tree.commit(new_root_id);
+        Ok(())
+    }
+
+    pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
+        Arc::clone(&self.inner.read().unwrap().epoch_mgr)
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        let mut tree = self.inner.write().unwrap();
+        tree.storage.flush()?;
+        Ok(())
+    }
+
+    pub fn arc(&self) -> Arc<RwLock<BPlusTree<K, V, S>>> {
+        Arc::clone(&self.inner)
+    }
 }
 
 // BPlusTree implementation
@@ -110,7 +224,7 @@ where
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 
         Ok(Self {
-            root_id: init_id,
+            root_id: AtomicU64::new(init_id),
             storage,
             order,
             size: 0, // Initial size is 0
@@ -123,7 +237,7 @@ where
             staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
-            txn_id: init_txn_id,     // Initialize transaction ID
+            txn_id: AtomicU64::new(init_txn_id), // Initialize transaction ID
             phantom: std::marker::PhantomData,
         })
     }
@@ -140,7 +254,7 @@ where
         let min_leaf_keys = order.saturating_div(2); // Ensure min_keys is at least 1
 
         Ok(Self {
-            root_id,
+            root_id: AtomicU64::new(root_id), // Load root ID from metadata
             storage,
             order,
             size,
@@ -152,19 +266,21 @@ where
             staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
-            txn_id: md.txn_id, // Initialize transaction ID from metadata
+            txn_id: AtomicU64::new(md.txn_id), // Initialize transaction ID
             phantom: std::marker::PhantomData,
         })
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.
-    fn read_node(&mut self, id: NodeId) -> Result<Option<Node<K, V>>> {
+    fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>> {
         self.storage.read_node(id)
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&mut self, node: &Node<K, V>) -> Result<u64> {
-       self.storage.write_node(node)
+    fn write_node(&mut self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64> {
+       let new_id = self.storage.write_node(node)?;
+       tracker.add_new(new_id);
+       Ok(new_id)
     }
 
     // Returns the path of where a key should be inserted.
@@ -231,14 +347,14 @@ where
     }
 
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn insert(&mut self, key: K, value: V, sink: &mut impl ReclaimSink) -> Result<NodeId> {
-        let _guard = self.epoch_mgr.pin();
-        self.insert_inner(key, value, self.root_id, sink)
+    pub fn insert(&mut self, key: K, value: V, track: &mut impl TxnTracker) -> Result<NodeId> {
+        self.insert_inner(key, value, self.root_id.load(Ordering::Relaxed), track)
     }
     
 
     // Inserts a key-value pair into the B+ tree.
-    pub fn insert_inner(&mut self, key: K, value: V, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<NodeId> {
+    pub fn insert_inner(&mut self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
+        let _guard = self.epoch_mgr.pin();
         let (path, mut leaf_node) = self.get_insertion_path(&key, root_id)?;
     
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
@@ -258,9 +374,9 @@ where
         }
     
         if keys.len() > self.max_keys {
-            return self.handle_leaf_split(path, leaf_node, sink);
+            return self.handle_leaf_split(path, leaf_node, track);
         } else {
-           return self.write_and_propagate(path, &leaf_node, sink);
+           return self.write_and_propagate(path, &leaf_node, track);
         }
     }
 
@@ -269,20 +385,20 @@ where
         &mut self,
         path: Vec<(NodeId, usize)>,
         leaf_node: Node<K, V>,
-        sink: &mut impl ReclaimSink
+        track: &mut impl TxnTracker
     ) -> Result<NodeId> {
         let SplitResult::SplitNodes {
             mut left_node,
             right_node,
             split_key,
         } = self.split_leaf_node(leaf_node)?;    
-        let right_id = self.write_node(&right_node)?;
+        let right_id = self.write_node(&right_node, track)?;
         if let Node::Leaf { next, .. } = &mut left_node {
             *next = Some(right_id); // Link the left node to the right node
         }
-        let left_id = self.write_node(&left_node)?;
+        let left_id = self.write_node(&left_node, track)?;
     
-        self.propagate_split(path, left_id, right_id, split_key, sink)
+        self.propagate_split(path, left_id, right_id, split_key, track)
     }
 
     // Splits a leaf node into two nodes and returns the new right node, the left node, and the
@@ -353,13 +469,12 @@ where
     }
 
     // Writes a node and propagates the update to the parent nodes.
-    fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>, sink: &mut impl ReclaimSink) -> Result<NodeId> {
-        let new_node_id = self.write_node(node)?;
+    fn write_and_propagate(&mut self, path: Vec<(u64, usize)>, node: &Node<K, V>, track: &mut impl TxnTracker) -> Result<NodeId> {
+        let new_node_id = self.write_node(node, track)?;
         if path.is_empty() {
-            //self.replace_root(new_node_id)?;
             Ok(new_node_id)
         } else {
-            let new_root = self.propagate_node_update(path, new_node_id, sink)?;
+            let new_root = self.propagate_node_update(path, new_node_id, track)?;
             Ok(new_root)
         }
     }
@@ -369,7 +484,7 @@ where
         &mut self,
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
-        sink: &mut impl ReclaimSink,
+        track: &mut impl TxnTracker,
     ) -> Result<NodeId> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
@@ -392,14 +507,10 @@ where
                 .into());
             }
             // Reclaim the original child node and update the child pointer
-            self.replace_node(children, insert_pos, updated_child_id)?;
-            sink.retire(children[insert_pos])?;
-            updated_child_id = self.write_node(&parent_node)?;
-
-            if parent_id == self.root_id {
-                //self.replace_root(updated_child_id)?;
-                return Ok(updated_child_id);
-            }
+            track.reclaim(children[insert_pos])?;
+            children[insert_pos] = updated_child_id;
+            // Propagate up the path
+            updated_child_id = self.write_node(&parent_node, track)?;
         }
         Ok(updated_child_id) // Return the new root ID
     }
@@ -411,7 +522,7 @@ where
           mut left: NodeId,
           mut right: NodeId,
           mut key: K,
-          sink: &mut impl ReclaimSink,
+          track: &mut impl TxnTracker,
         ) -> Result<NodeId> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
@@ -427,13 +538,13 @@ where
             // Insert the split key and adjust children
             keys.insert(insert_pos, key);
             // Reclaim the original child node
-            self.replace_node(children, insert_pos, left)?;
-            sink.retire(children[insert_pos])?;
+            track.reclaim(children[insert_pos])?;
+            children[insert_pos] = left;
             // Replace and insert the new children
             children.insert(insert_pos + 1, right);
             // if there is no further overflow we can just propagate the update and return
             if keys.len() <= self.max_keys {
-                return self.write_and_propagate(path, &node, sink);
+                return self.write_and_propagate(path, &node, track);
             }
             // Handle internal node split
             let SplitResult::SplitNodes {
@@ -442,8 +553,8 @@ where
                 split_key,
             } = self.split_internal_node(node)?;
 
-            left = self.write_node(&left_node)?;
-            right = self.write_node(&right_node)?;
+            left = self.write_node(&left_node, track)?;
+            right = self.write_node(&right_node, track)?;
             key = split_key;
         }
 
@@ -453,7 +564,7 @@ where
             children: vec![left, right],
         };
 
-        let new_root_id = self.write_node(&new_root)?;
+        let new_root_id = self.write_node(&new_root, track)?;
         //self.replace_root(new_root_id)?;
         //self.staged_height = Some(self.height + 1); // Update staged height
 
@@ -461,16 +572,14 @@ where
     }
 
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn search(&mut self, key: &K) -> Result<Option<V>> {
-        if self.root_id == 0 {
-            return Ok(None); // Empty tree
-        }
-        let _guard = self.epoch_mgr.pin();
-        self.search_inner(key, self.root_id)
+    pub fn search(&self, key: &K) -> Result<Option<V>> {
+        self.search_inner(key, self.root_id.load(Ordering::Relaxed))
     }
     
+
     // Search for a key and return the value if exists
-    pub fn search_inner(&mut self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+        let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
         loop {
             match self.read_node(current_id)? {
@@ -497,15 +606,12 @@ where
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range(&mut self, start: &K, end: &K) -> Result<Option<BPlusTreeRangeIter<K, V, S>>> {
-        if self.root_id == 0 {
-            return Ok(None); // Empty tree
-        }
+    pub fn search_range(&mut self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeRangeIter<K, V, S>>> {
         if start > end {
             return Ok(None); // Invalid range
         }
         let _guard = self.epoch_mgr.pin();
-        let mut current_id = self.root_id;
+        let mut current_id = root_id;
         loop {
             match self.read_node(current_id)? {
                 Some(Node::Internal { keys, children }) => {
@@ -536,15 +642,18 @@ where
     }
 
     // Deletes a key from the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn delete(&mut self, key: &K, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<NodeId> {
-        let _guard = self.epoch_mgr.pin();
-        self.delete_inner(key, root_id, sink)?;
-        Ok(self.root_id)
+    pub fn delete(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
+       let res = self.delete_inner(key, root_id, track)?;
+       let DeleteResult::Deleted(new_root_id) = res else {
+           return Err(TreeError::BackendAny("Key not found for deletion".to_string()).into());
+       };
+       return Ok(new_root_id);
     }
 
     // Delete and handle underflow of leaf nodes
     // Every key in an internal node must match the first key in its right child
-    fn delete_inner(&mut self, key: &K, root_id: NodeId, sink: &mut impl ReclaimSink) -> Result<DeleteResult<NodeId>> {
+    pub fn delete_inner(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
+        let _guard = self.epoch_mgr.pin();
         let (path, mut node) = self.get_insertion_path(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
             return Err(TreeError::BackendAny("Expected leaf node".to_string()).into());
@@ -558,11 +667,11 @@ where
 
         // no underflow if the node has enough keys or it is the root node
         if keys.len() >= self.min_leaf_keys || path.is_empty() {
-            let new_root_id = self.write_and_propagate(path, &node, sink)?;
+            let new_root_id = self.write_and_propagate(path, &node, track)?;
             return Ok(DeleteResult::Deleted(new_root_id));
         }
 
-        let new_root_id = self.handle_underflow(path, node, sink)?;
+        let new_root_id = self.handle_underflow(path, node, track)?;
         self.size = self.size.saturating_sub(1); // Decrement the size of the tree
         Ok(DeleteResult::Deleted(new_root_id))
     }
@@ -572,7 +681,7 @@ where
         &mut self,
         mut path: Vec<(NodeId, usize)>,
         mut node: Node<K, V>,
-        sink: &mut impl ReclaimSink,
+        track: &mut impl TxnTracker,
     ) -> Result<NodeId> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.read_node(parent_id)? else {
@@ -590,17 +699,17 @@ where
                 }
                 // Try borrowing from left or right sibling, on success just propagate the update,
                 // no change in number of keys in the parent node
-                if idx > 0 && self.try_borrow_from_left(&mut node, parent_keys, children, idx)? {
-                    return self.write_and_propagate(path, &parent_node, sink);
+                if idx > 0 && self.try_borrow_from_left(&mut node, parent_keys, children, idx, track)? {
+                    return self.write_and_propagate(path, &parent_node, track);
                 }
-                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, parent_keys, children, idx)? {
-                    return self.write_and_propagate(path, &parent_node, sink);
+                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, parent_keys, children, idx, track)? {
+                    return self.write_and_propagate(path, &parent_node, track);
                 }
                 // Try to merge with left or right sibling
                 let mut merged = None;
-                if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx, sink)? {
+                if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx, track)? {
                     merged = Some(id);
-                } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx, sink)? {
+                } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx, track)? {
                     merged = Some(id);
                 }
                 // We should have merged with a sibling or borrowed from it otherwise invalid state
@@ -614,7 +723,7 @@ where
                                return Ok(children[0]); // If the root has only one child, replace
                                 // the root with that child
                            } else {
-                               return self.write_and_propagate(path, &parent_node, sink);
+                               return self.write_and_propagate(path, &parent_node, track);
                            }
                         }
                         // Continue handling underflow
@@ -622,7 +731,7 @@ where
                         continue;
                     } else {
                         // Parent node didn't overflow, just write the updated parent node
-                        return self.write_and_propagate(path, &parent_node, sink);
+                        return self.write_and_propagate(path, &parent_node, track);
                     }
                 }
             }
@@ -650,6 +759,7 @@ where
         parent_keys: &mut [K],
         children: &mut [NodeId],
         idx: usize,
+        track: &mut impl TxnTracker,
     ) -> Result<bool> {
         if idx == 0 {
             return Ok(false);
@@ -705,11 +815,13 @@ where
                 ).into());
             }
         };
-        let new_node_id = self.write_node(node)?;
-        let new_left_node_id = self.write_node(&left_sibling)?;
+        let new_node_id = self.write_node(node, track)?;
+        let new_left_node_id = self.write_node(&left_sibling, track)?;
 
-        self.replace_node(children, left_child_idx, new_left_node_id)?;
-        self.replace_node(children, idx, new_node_id)?;
+        track.reclaim(children[left_child_idx])?;
+        children[left_child_idx] = new_left_node_id;
+        track.reclaim(children[idx])?;
+        children[idx] = new_node_id;
 
         Ok(true)
     }
@@ -721,6 +833,7 @@ where
         parent_keys: &mut [K],
         children: &mut [NodeId],
         idx: usize,
+        track: &mut impl TxnTracker,
     ) -> Result<bool> {
         if idx >= children.len() {
             return Ok(false); // No right sibling to borrow from
@@ -774,10 +887,13 @@ where
             }
         }
         // Write the updated nodes back to storage
-        let new_node_id = self.write_node(node)?;
-        let new_right_node_id = self.write_node(&right_sibling)?;
-        self.replace_node(children, idx, new_node_id)?;
-        self.replace_node(children, idx + 1, new_right_node_id)?;
+        let new_node_id = self.write_node(node, track)?;
+        let new_right_node_id = self.write_node(&right_sibling, track)?;
+
+        track.reclaim(children[idx])?;
+        children[idx] = new_node_id;
+        track.reclaim(children[idx + 1])?;
+        children[idx + 1] = new_right_node_id;
 
         Ok(true)
     }
@@ -789,7 +905,7 @@ where
         parent_keys: &mut Vec<K>,
         children: &mut Vec<NodeId>,
         idx: usize,
-        sink: &mut impl ReclaimSink,
+        track: &mut impl TxnTracker,
     ) -> Result<Option<NodeId>> {
         if idx == 0 {
             return Ok(None);
@@ -810,12 +926,13 @@ where
                 }
                 // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
-                let merged_node_id = self.write_node(&merged_node)?;
+                let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                sink.retire(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx])?; // Reclaim the left sibling node
                 self.remove_node(children, idx)?; // remove the right sibling
-                sink.retire(children[idx-1])?; // Reclaim the left sibling node
-                self.replace_node(children, idx - 1, merged_node_id)?; // update the left sibling
+                track.reclaim(children[idx-1])?; // Reclaim the left sibling node
+                children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
+// ID
                 // Update the parent keys
                 if !parent_keys.is_empty() {
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
@@ -835,12 +952,12 @@ where
                 left_keys.push(seperator_key); // Add the separator key to the left sibling
                 // Merge the left sibling with the current node
                 let merged_node = self.merge_nodes(&mut left_sibling, node)?;
-                let merged_node_id = self.write_node(&merged_node)?;
+                let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                sink.retire(children[idx])?; // Reclaim the left sibling node
+                track.reclaim(children[idx])?; // Reclaim the left sibling node
                 self.remove_node(children, idx)?; // remove the right sibling
-                sink.retire(children[idx-1])?; // Reclaim the left sibling node
-                self.replace_node(children, idx - 1, merged_node_id)?; // update the left sibling
+                track.reclaim(children[idx-1])?; // Reclaim the left sibling node
+                children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
             },
             _ => {
@@ -858,7 +975,7 @@ where
         parent_keys: &mut Vec<K>,
         children: &mut Vec<NodeId>,
         idx: usize,
-        sink: &mut impl ReclaimSink,
+        track: &mut impl TxnTracker,
     ) -> Result<Option<NodeId>> {
         // Check if there is a right sibling to merge with
         let right_idx = idx + 1;
@@ -882,12 +999,12 @@ where
                 }
                 // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
-                let merged_node_id = self.write_node(&merged_node)?;
+                let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                sink.retire(children[right_idx])?; // Reclaim the left sibling node
+                track.reclaim(children[right_idx])?; // Reclaim the left sibling node
                 self.remove_node(children, right_idx)?; // remove the right sibling
-                sink.retire(children[idx])?; // Reclaim the left sibling node
-                self.replace_node(children, idx, merged_node_id)?; // update the left sibling
+                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                children[idx] = merged_node_id; // Update the left sibling with the merged node
                 // Update the parent keys
                 if !parent_keys.is_empty() {
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
@@ -907,12 +1024,12 @@ where
                 left_keys.push(seperator_key); // Add the separator key to the left sibling
                 // Merge the current node with the right sibling
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
-                let merged_node_id = self.write_node(&merged_node)?;
+                let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                sink.retire(children[idx+1])?; // Reclaim the left sibling node
+                track.reclaim(children[idx+1])?; // Reclaim the left sibling node
                 self.remove_node(children, right_idx)?; // remove the right sibling
-                sink.retire(children[idx])?; // Reclaim the left sibling node
-                self.replace_node(children, idx, merged_node_id)?; // update the left sibling
+                track.reclaim(children[idx])?; // Reclaim the left sibling node
+                children[idx] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
             },
             _ => {
@@ -983,7 +1100,7 @@ where
 
     // Set the root of the B+ tree
     pub fn set_root(&mut self, root: NodeId) {
-        self.root_id = root;
+        self.root_id.store(root, Ordering::Relaxed);
     }
 
     pub fn reclaim_node(&mut self, node_id: NodeId) -> Result<()> {
@@ -994,39 +1111,23 @@ where
         Ok(())
     }
 
-    pub fn commit(&mut self) -> Result<()> {
-        // Skip if there's no staged root
-        let new_root = match self.staged_root_id {
-            Some(id) => id,
-            None => return Ok(()), // No-op
-        };
-    
-        let new_height = match self.staged_height {
-            Some(height) => height,
-            None => self.height,
-        };
-    
-        //self.reclaim_node(self.root_id)?;
+    pub fn commit(&mut self, new_root_id: NodeId) -> Result<()> {
         self.storage.flush()?;
 
         // Now commit the new root
-        self.root_id = new_root;
-        self.height = new_height;
-        self.staged_root_id = None;
-        self.staged_height = None;
+        self.txn_id.fetch_add(1, Ordering::SeqCst);
+        self.root_id.store(new_root_id, Ordering::SeqCst);
     
-        let target_slot = self.txn_id % 2;
-        self.txn_id += 1; // Increment transaction ID for the next commit
-
+        let target_slot = self.txn_id.load(Ordering::Relaxed) % 2;
         self.storage.commit_metadata(
             target_slot as u8,
-            self.txn_id,
-            new_root,
-            new_height,
+            self.txn_id.load(Ordering::Relaxed),
+            new_root_id,
+            self.height,
             self.order,
             self.size,
         )?;
-
+        
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
         let _new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
@@ -1045,11 +1146,11 @@ where
 
     pub fn traverse(&mut self) -> Result<Vec<(K, V)>> {
         let mut result = Vec::new();
-        if self.root_id == 0 {
+        if self.root_id.load(Ordering::Relaxed) == 0 {
             return Ok(result); // Empty tree
         }
         let _guard = self.epoch_mgr.pin();
-        self.traverse_inner(self.root_id, &mut result)?;
+        self.traverse_inner(self.root_id.load(Ordering::Relaxed), &mut result)?;
         Ok(result)
     }
 
@@ -1092,11 +1193,11 @@ where
     }
 
     pub fn get_txn_id(&self) -> u64 {
-        self.txn_id
+        self.txn_id.load(Ordering::Relaxed)
     }
 
     pub fn get_root_id(&self) -> NodeId {
-        self.root_id
+        self.root_id.load(Ordering::Relaxed)
     }
 }
 
@@ -1112,8 +1213,11 @@ mod tests {
     use rand::Rng;
 
     pub struct DummySink;
-    impl ReclaimSink for DummySink {
-        fn retire(&mut self, _node_id: NodeId) -> Result<(), TreeError> {
+    impl TxnTracker for DummySink {
+        fn reclaim(&mut self, _node_id: NodeId) -> Result<()> {
+            Ok(())
+        }
+        fn add_new(&mut self, _node_id: NodeId) -> Result<()> {
             Ok(())
         }
     }
@@ -1126,8 +1230,8 @@ mod tests {
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let key = 1u64;
         let value = "a".to_string();
-        let mut dummy_sink = DummySink{};
-        let res = tree.insert(key, value.clone(), &mut dummy_sink);
+        let mut dummy_track = DummySink{};
+        let res = tree.insert(key, value.clone(), &mut dummy_track);
         assert!(res.is_ok(), "Node should be inserted successfully");
         let res = tree.search_inner(&key, res?)?;
         assert!(res.is_some(), "Node should be read successfully");
@@ -1143,11 +1247,11 @@ mod tests {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let mut root_id = tree.get_root_id();
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
         for i in 0..order - 1 {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Value should be inserted successfully");
             root_id = res.unwrap(); // Update root_id after each insert
             let res = tree.search_inner(&key, root_id)?;
@@ -1172,13 +1276,13 @@ mod tests {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let multiplier = 1000; // Number of times to insert times the order - this will cause
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
         let mut root_id = tree.get_root_id();
         // overflows 
         for i in 0..order*multiplier {
             let key = i as u64;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
             println!("res: {:?}", res);
             assert!(res.is_ok(), "Value should be inserted successfully");
             root_id = res.unwrap(); // Update root_id after each insert
@@ -1204,19 +1308,19 @@ mod tests {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let mut root_id = tree.get_root_id();
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
         let bound = order as u64*multiplier;
         for i in 0..bound {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res.unwrap(); // Update root_id after each insert
         }
             tree.traverse()?;
         for i in 0..bound {
             let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_sink)?;
+            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
             let DeleteResult::Deleted(res) = res else {
                 return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
             };
@@ -1245,19 +1349,19 @@ mod tests {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
         let mut root_id = tree.get_root_id();
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
         // Inserting values
         for i in 0..order as u64*multiplier {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?;
         }
         // Deleting all values
         for i in 0..order as u64*multiplier {
             let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_sink)?;
+            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
             let DeleteResult::Deleted(res) = res else {
                 return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
             };
@@ -1287,12 +1391,12 @@ mod tests {
         //let multiplier = 2; // Number of times to insert and delete
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
         let mut root_id = tree.get_root_id();
         for i in 0..order as u64*multiplier {
             let key = i;
             let value = format!("value_{}", i);
-            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?; // Update root_id after each insert
         }
@@ -1302,7 +1406,7 @@ mod tests {
 
         for i in values_to_delete {
             let key = i;
-            let res = tree.delete_inner(&key, root_id, &mut dummy_sink)?;
+            let res = tree.delete_inner(&key, root_id, &mut dummy_track)?;
             let DeleteResult::Deleted(res) = res else {
                 return Err(TreeError::BackendAny("Expected DeleteResult::Deleted".to_string()).into());
             };
@@ -1354,64 +1458,73 @@ mod tests {
         let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
         let mut tree = BPlusTree::<String, String, FileStore<PageStore>>::new(store, order)?;
         let mut root_id = tree.get_root_id();
-        let mut dummy_sink = DummySink{};
+        let mut dummy_track = DummySink{};
 
         for i in 0..order {
             let key = format!("key_{}", i);
             let value = format!("value_{}", i);
             let value_updated = format!("value_upd_{}", i);
-            let res = tree.insert_inner(key.clone(), value.clone(), root_id, &mut dummy_sink);
+            let res = tree.insert_inner(key.clone(), value.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?;
-            assert_eq!(tree.search_inner(&(key.clone()), root_id)?, Some(value));
-            let res = tree.insert_inner(key.clone(), value_updated.clone(), root_id, &mut dummy_sink);
+            assert_eq!(tree.search_inner(&key, root_id)?, Some(value.clone()), "Value should be inserted successfully");
+            let res = tree.insert_inner(key.clone(), value_updated.clone(), root_id, &mut dummy_track);
             assert!(res.is_ok(), "Node should be inserted successfully");
             root_id = res?;
-            assert_eq!(tree.search_inner(&(key.clone()), root_id)?, Some(value_updated), "Value should be updated for duplicate key");
+            assert_eq!(tree.search_inner(&key, root_id)?, Some(value_updated), "Value should be updated for duplicate key");
         }
 
         Ok(())
     }
 
-    //#[test]
-    //fn commit_and_load_tree() -> Result<()> {
-    //    let file_path = "test_commit_load.bin";
-    //    let order = 4;
-    //    let multiplier = 10; // Number of times to insert
-    //    let iterations = order * multiplier;
-    //    {
-    //        let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    //        let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+    #[test]
+    fn commit_and_load_tree() -> Result<()> {
+        let file_path = "test_commit_load.bin";
+        let order = 4;
+        let multiplier = 10; // Number of times to insert
+        let mut dummy_track = DummySink{};
+        let iterations = order * multiplier;
+        {
+            let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+            let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+            let mut root_id = tree.get_root_id();
 
-    //        for i in 0..iterations {
-    //            let key = i as u64;
-    //            let value = format!("value_{}", i);
-    //            let res = tree.insert_and_commit(key, value.clone());
-    //            assert!(res.is_ok(), "Node should be inserted successfully");
-    //        }
+            for i in 0..iterations {
+                let key = i as u64;
+                let value = format!("value_{}", i);
+                let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+                assert!(res.is_ok(), "Node should be inserted successfully");
+                root_id = res?;
+            }
 
-    //        // Commit the changes
-    //        tree.commit()?;
-    //        for i in 0..iterations {
-    //            let key = i as u64;
-    //            let res = tree.search(&key)?;
-    //            assert!(res.is_some(), "Loaded tree should have the key {}", key);
-    //        }
-    //    }
-    //    {
-    //        let store_load = FileStore::<PageStore>::new(file_path)?;
-    //        // Load the tree from storage
-    //        let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
-    //        // Verify the loaded tree
-    //        for i in 0..iterations {
-    //            let key = i as u64;
-    //            let value = format!("value_{}", i);
-    //            let res = loaded_tree.search(&key)?;
-    //            assert!(res.is_some(), "Loaded tree should have the key {}", key);
-    //            assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
-    //        }
-    //    }
-    //    Ok(())
-    //}
+            // Commit the changes
+            println!("Committing tree with root ID: {}", root_id);
+            tree.commit(root_id)?;
+            assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
+            for i in 0..iterations {
+                let key = i as u64;
+                let res = tree.search(&key)?;
+                assert!(res.is_some(), "Loaded tree should have the key {}", key);
+            }
+        }
+        {
+            let store_load = FileStore::<PageStore>::new(file_path)?;
+            // Load the tree from storage
+            let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
+            let root_id = loaded_tree.get_root_id();
+            assert!(root_id != 0, "Loaded tree should have a valid root ID");
+            let entries = loaded_tree.traverse()?;
+            println!("Loaded tree entries: {:?}", entries);
+            // Verify the loaded tree
+            for i in 0..iterations {
+                let key = i as u64;
+                let value = format!("value_{}", i);
+                let res = loaded_tree.search(&key)?;
+                assert!(res.is_some(), "Loaded tree should have the key {}", key);
+                assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
+            }
+        }
+        Ok(())
+    }
 }
 
