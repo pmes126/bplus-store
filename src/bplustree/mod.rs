@@ -34,6 +34,7 @@ pub enum TreeError {
     NodeNotFound(String),
 }
 
-pub trait ReclaimSink {
-    fn retire(&mut self, node_id: NodeId) -> Result<()>;
+pub trait TxnTracker {
+    fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
+    fn add_new(&mut self, node_id: NodeId) -> Result<()>;
 }
