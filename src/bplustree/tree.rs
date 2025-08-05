@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, TreeError};
-use crate::bplustree::BPlusTreeRangeIter;
+use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::bplustree::TxnTracker;
 use crate::storage::ValueCodec;
@@ -58,8 +58,6 @@ where
     min_leaf_keys: usize,
     storage: S,
     height: usize, // Height of the B+ tree
-    staged_root_id: Option<NodeId>, // Staged root ID for transactions
-    staged_height: Option<usize>, // Staged height for transactions
     epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
     commit_count: AtomicUsize, // Number of commits made to the tree
     txn_id: AtomicU64, // Slot of metadata storage
@@ -72,12 +70,17 @@ where
 pub struct TransactionTracker {
     pub reclaimed: Vec<NodeId>,
     pub added: Vec<NodeId>,
+    pub staged_height: Option<usize>,
+    pub staged_size: Option<usize>,
 }
 
 impl  TransactionTracker {
     pub fn new() -> Self {
-        Self { reclaimed: Vec::new(),
-               added: Vec::new() 
+        Self {
+            reclaimed: Vec::new(),
+            added: Vec::new(),
+            staged_height: None,
+            staged_size: None,
         }
     }
 }
@@ -129,7 +132,7 @@ where
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
             staged_nodes: std::mem::take(&mut collector.added),
         };
-        return Ok(write_res);
+        Ok(write_res)
     }
 
     pub fn delete_with_root(&mut self, key: &K, root_id: NodeId) -> Result<WriteResult> {
@@ -164,7 +167,7 @@ where
 
     pub fn commit(&mut self, new_root_id: NodeId) -> Result<()> {
         let mut tree = self.inner.write().unwrap();
-        tree.commit(new_root_id);
+        tree.commit(new_root_id)?;
         Ok(())
     }
 
@@ -233,8 +236,6 @@ where
             // least 2
             min_leaf_keys: (order-1).div_ceil(2), // Ensure min_keys is at least 1
             height: 1, // Start with height 1 for the root node
-            staged_root_id: None, // No staged root initially
-            staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
             txn_id: AtomicU64::new(init_txn_id), // Initialize transaction ID
@@ -262,8 +263,6 @@ where
             min_internal_keys,
             min_leaf_keys,
             height: 1, //TODO: Load the height from metadata
-            staged_root_id: None, // No staged root initially
-            staged_height: None, // No staged height initially
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0), // Initialize commit count
             txn_id: AtomicU64::new(md.txn_id), // Initialize transaction ID
@@ -279,7 +278,7 @@ where
     // Writes a node to the B+ tree storage and updates the cache.
     fn write_node(&mut self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64> {
        let new_id = self.storage.write_node(node)?;
-       tracker.add_new(new_id);
+       tracker.add_new(new_id)?;
        Ok(new_id)
     }
 
@@ -314,38 +313,6 @@ where
         }
     }
 
-    // Replaces a node in a list of children with a new node ID, reclaiming the old node.
-    fn replace_node(
-        &mut self,
-        children: &mut [NodeId],
-        idx: usize,
-        new_node_id: NodeId,
-    ) -> Result<()> {
-        if idx >= children.len() {
-            return Err(TreeError::BackendAny(
-                "Index out of bounds while replacing node".to_string(),
-            ).into());
-        }
-        //self.reclaim_node(children[idx])?;
-        children[idx] = new_node_id;
-        Ok(())
-    }
-
-    // Removes a node from a list of children, reclaiming the node.
-    fn remove_node(
-        &mut self,
-        children: &mut Vec<NodeId>,
-        idx: usize,
-    ) -> Result<()> {
-        if idx >= children.len() {
-            return Err(TreeError::BackendAny(
-                "Index out of bounds while removing node".to_string(),
-            ).into());
-        }
-        children.remove(idx);
-        Ok(())
-    }
-
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn insert(&mut self, key: K, value: V, track: &mut impl TxnTracker) -> Result<NodeId> {
         self.insert_inner(key, value, self.root_id.load(Ordering::Relaxed), track)
@@ -374,9 +341,9 @@ where
         }
     
         if keys.len() > self.max_keys {
-            return self.handle_leaf_split(path, leaf_node, track);
+            self.handle_leaf_split(path, leaf_node, track)
         } else {
-           return self.write_and_propagate(path, &leaf_node, track);
+           self.write_and_propagate(path, &leaf_node, track)
         }
     }
 
@@ -565,7 +532,6 @@ where
         };
 
         let new_root_id = self.write_node(&new_root, track)?;
-        //self.replace_root(new_root_id)?;
         //self.staged_height = Some(self.height + 1); // Update staged height
 
         Ok(new_root_id)
@@ -606,48 +572,29 @@ where
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range(&mut self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeRangeIter<K, V, S>>> {
+    pub fn search_range(&mut self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<K, V, S>>> {
         if start > end {
             return Ok(None); // Invalid range
         }
         let _guard = self.epoch_mgr.pin();
-        let mut current_id = root_id;
-        loop {
-            match self.read_node(current_id)? {
-                Some(Node::Internal { keys, children }) => {
-                    let i = match keys.binary_search(start) {
-                        Ok(i) => i + 1,
-                        Err(i) => i,
-                    };
-                    current_id = children[i];
-                }
-                Some(Node::Leaf { keys, .. }) => {
-                    // Find the index in the leaf node
-                    let start_index = keys.binary_search(start).unwrap_or(
-                        keys.len(), // If not found the iterator will skip to the next leaf node
-                    );
-
-                    return Ok(Some(BPlusTreeRangeIter {
-                        storage: &mut self.storage,
-                        current_id: Some(current_id),
-                        index: start_index,
-                        start: start.clone(),
-                        end: end.clone(),
-                        phantom: std::marker::PhantomData,
-                    }));
-                }
-                None => return Ok(None), // Node not found
-            }
-        }
+        Ok(Some(BPlusTreeIter::new(
+            &mut self.storage,
+            root_id,
+            start,
+            end,
+        )))
     }
 
     // Deletes a key from the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn delete(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
-       let res = self.delete_inner(key, root_id, track)?;
-       let DeleteResult::Deleted(new_root_id) = res else {
-           return Err(TreeError::BackendAny("Key not found for deletion".to_string()).into());
-       };
-       return Ok(new_root_id);
+        let res = self.delete_inner(key, root_id, track)?;
+        match res {
+            DeleteResult::NotFound => Err(TreeError::BackendAny("Key not found for deletion".to_string()).into()), // Key not found, return current root
+            DeleteResult::Deleted(new_root_id) => {
+                // If the root node was deleted, we need to update the root ID
+                return Ok(new_root_id);
+            }
+        }
     }
 
     // Delete and handle underflow of leaf nodes
@@ -691,10 +638,9 @@ where
                 let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
                     return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
                 };
-                
+                // If the root has only one child, replace the root with that child
                 if path.is_empty() 
                    && children.len() == 1 {
-                        // If the root has only one child, replace the root with that child
                    return Ok(children[0]);
                 }
                 // Try borrowing from left or right sibling, on success just propagate the update,
@@ -718,10 +664,9 @@ where
                     if parent_keys.len() < self.min_internal_keys {
                         // handle root node underflow
                         if path.is_empty() {
-
                            if children.len() == 1 {
-                               return Ok(children[0]); // If the root has only one child, replace
-                                // the root with that child
+                               track.reclaim(parent_id)?;
+                               return Ok(children[0]); // If the root has only one child, replace the root with that child
                            } else {
                                return self.write_and_propagate(path, &parent_node, track);
                            }
@@ -738,19 +683,6 @@ where
         }
         Err(TreeError::BackendAny("Node underflow couldn't be resolved".to_string()).into())
     }
-
-    // Shrinks the tree to the root if it has only one child and the height is greater than 1.
-    fn shrink_to_root(&mut self, children: &[NodeId]) -> Result<bool> {
-        // shrink the tree if we have only one child at the root and the height is greater than 1
-        if children.len() == 1 && self.height > 1 {
-            self.replace_root(children[0])?;
-            self.staged_height = Some(self.height.saturating_sub(1)); // Update staged height
-            //self.height = self.height.saturating_sub(1);
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
 
     // Tries to borrow a key from the left sibling of the current node.
     fn try_borrow_from_left(
@@ -929,7 +861,7 @@ where
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
-                self.remove_node(children, idx)?; // remove the right sibling
+                children.remove(idx);
                 track.reclaim(children[idx-1])?; // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
 // ID
@@ -955,7 +887,7 @@ where
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
-                self.remove_node(children, idx)?; // remove the right sibling
+                children.remove(idx);
                 track.reclaim(children[idx-1])?; // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
@@ -1001,8 +933,8 @@ where
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[right_idx])?; // Reclaim the left sibling node
-                self.remove_node(children, right_idx)?; // remove the right sibling
+                track.reclaim(children[right_idx])?; // Reclaim the right sibling node
+                children.remove(right_idx); // Remove the current node
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 // Update the parent keys
@@ -1026,8 +958,8 @@ where
                 let merged_node = self.merge_nodes(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node(&merged_node, track)?;
                 // Update the parent node
-                track.reclaim(children[idx+1])?; // Reclaim the left sibling node
-                self.remove_node(children, right_idx)?; // remove the right sibling
+                track.reclaim(children[right_idx])?; // Reclaim the right sibling node
+                children.remove(right_idx); // Remove the right sibling
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
@@ -1051,7 +983,7 @@ where
         (
             Node::Leaf { keys: left_keys, values: left_values, next: left_next },
             Node::Leaf { keys: right_keys, values: right_values, next: right_next },
-        ) => {                // Check if the total number of keys exceeds the maximum allowed
+        ) => {  // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
@@ -1088,19 +1020,6 @@ where
             "Expected leaf nodes for merging".to_string(),
         ).into()),
         }
-    }
-
-    fn replace_root(&mut self, new_root_id: NodeId) -> Result<()> {
-        // Reclaim the old root node
-        self.staged_root_id = Some(new_root_id);
-        //self.reclaim_node(self.root_id)?;
-        //self.root_id = new_root_id;
-        Ok(())
-    }
-
-    // Set the root of the B+ tree
-    pub fn set_root(&mut self, root: NodeId) {
-        self.root_id.store(root, Ordering::Relaxed);
     }
 
     pub fn reclaim_node(&mut self, node_id: NodeId) -> Result<()> {
@@ -1283,7 +1202,6 @@ mod tests {
             let key = i as u64;
             let value = format!("value_{}", i);
             let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
-            println!("res: {:?}", res);
             assert!(res.is_ok(), "Value should be inserted successfully");
             root_id = res.unwrap(); // Update root_id after each insert
             let res = tree.search_inner(&key, root_id)?;
@@ -1514,8 +1432,6 @@ mod tests {
             let mut loaded_tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store_load)?;
             let root_id = loaded_tree.get_root_id();
             assert!(root_id != 0, "Loaded tree should have a valid root ID");
-            let entries = loaded_tree.traverse()?;
-            println!("Loaded tree entries: {:?}", entries);
             // Verify the loaded tree
             for i in 0..iterations {
                 let key = i as u64;
@@ -1523,6 +1439,53 @@ mod tests {
                 let res = loaded_tree.search(&key)?;
                 assert!(res.is_some(), "Loaded tree should have the key {}", key);
                 assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn range_search_test() -> Result<()> {
+        let file_path = "test_range_scan.bin";
+        let order = 4;
+        let multiplier = 20; // Number of times to insert
+        let mut dummy_track = DummySink{};
+        let iterations = order * multiplier;
+        {
+            let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+            let mut tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
+            let mut root_id = tree.get_root_id();
+
+            for i in 0..iterations {
+                let key = i as u64;
+                let value = format!("value_{}", i);
+                let res = tree.insert_inner(key, value.clone(), root_id, &mut dummy_track);
+                assert!(res.is_ok(), "Node should be inserted successfully");
+                root_id = res?;
+            }
+            tree.commit(root_id)?;
+            assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
+
+            let _ = tree.traverse()?;
+            // Perform range search
+            let start = 0;
+            let end = iterations as u64 - 1;
+            let res = tree.search_range(root_id, &start, &end)?;
+            assert!(res.is_some(), "Range search should be successful");
+            for (i,  value) in res.unwrap().enumerate() {
+                let (key, val) = value?;
+                
+                assert_eq!(key, i as u64, "Key should match the index in range search");
+                assert_eq!(val, format!("value_{}", i), "Value should match the inserted value in range search");
+            }
+
+            let start_rand = rand::thread_rng().gen_range(0..(iterations/2)  as u64);
+            let end_rand = rand::thread_rng().gen_range(start_rand..iterations as u64);
+            let res = tree.search_range(root_id, &start_rand, &end_rand)?;
+            for (i, value) in res.unwrap().enumerate() {
+                let (key, val) = value?;
+                assert_eq!(key, start_rand + i as u64, "Key should match the index in range search");
+                assert_eq!(val, format!("value_{}", start_rand + i as u64), "Value should match the inserted value in range search");
             }
         }
         Ok(())
