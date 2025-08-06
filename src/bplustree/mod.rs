@@ -4,7 +4,6 @@ mod iterator;
 mod epoch;
 mod transaction;
 
-pub use tree::BPlusTree;
 pub use node::Node;
 pub use node::NodeId;
 pub use iterator::BPlusTreeIter;

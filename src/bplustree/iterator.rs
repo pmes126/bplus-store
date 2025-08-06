@@ -17,7 +17,7 @@ pub struct BPlusTreeIter<'a, K, V, S>
     pub(super) index: usize,
     pub(super) start: K,
     pub(super) end: K,
-    pub(super) stack: Vec<TraversalFrame>,
+    stack: Vec<TraversalFrame>,
     pub phantom: std::marker::PhantomData<(K, V)>,
 }
 
@@ -97,11 +97,14 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
 
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
-        println!("BPlusTreeIter::next() called, current index: {}", self.index);
         loop {
             if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
                 if self.index < keys.len() {
                     let (k, v) = (&keys[self.index], &values[self.index]);
+                    if k > &self.end {
+                        // If the key is beyond the end, stop iteration
+                        return None;
+                    }
                     self.index += 1;
                     return Some(Ok((k.clone(), v.clone())));
                 }
