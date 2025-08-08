@@ -30,7 +30,6 @@ impl EpochManager {
             global_epoch: AtomicU64::new(1),
             active_readers: Mutex::new(HashMap::new()),
             deferred_pages: Mutex::new(BTreeMap::new()),
-            // ... other fields
         })
     }
 
