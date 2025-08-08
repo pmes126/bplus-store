@@ -3,14 +3,15 @@ use std::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
 use std::sync::Arc;
 
 use crate::bplustree::epoch::COMMIT_COUNT;
-use crate::bplustree::{Node, TreeError, CommitError};
+use crate::bplustree::Node;
 use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
-use crate::bplustree::TxnTracker;
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
 use crate::storage::metadata;
-use crate::storage::{NodeStorage, MetadataStorage, metadata::Metadata, metadata::{METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::{NodeStorage, MetadataStorage, Metadata, {METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::storage::CodecError;
+use thiserror::Error;
 use anyhow::Result;
 
 pub type NodeId = u64; // Type for node IDs
@@ -45,6 +46,49 @@ pub enum SplitResult<K, N> {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum TreeError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Failed to initialize backend: {0}")]
+    Backend(#[from] CodecError),
+    
+    #[error("Bad input: {0}")]
+    BadInput(String),
+    
+    #[error("Failed to initialize backend: {0}")]
+    BackendAny(String),
+    
+    #[error("Node Not Found: {0}")]
+    NodeNotFound(String),
+}
+
+#[derive(Debug, Error)]
+pub enum CommitError {
+    #[error("Commit failed after {0} retries")]
+    MaxRetries(usize),
+
+    #[error("Commit aborted due to node not found: {0}")]
+    NodeNotFound(String),
+
+    #[error("Commit aborted due to IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Commit aborted due to codec error: {0}")]
+    Codec(#[from] CodecError),
+
+    #[error("Commit aborted due to root mismatch")]
+    RebaseRequired,
+}
+
+pub trait TxnTracker {
+    fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
+    fn add_new(&mut self, node_id: NodeId) -> Result<()>;
+    fn record_staged_height(&mut self, height: usize);
+    fn record_staged_size(&mut self, size: usize);
+}
+
 #[derive(Debug, Clone)]
 pub struct MetadataSnapshot {
     pub root_id: NodeId,
@@ -70,6 +114,7 @@ pub struct StagedMetadata {
 pub struct BaseVersion {
     pub committed_ptr: *const Metadata
 }
+
 /// B+ tree structure with generic key and value types, and a storage backend
 pub struct BPlusTree<K, V, S: NodeStorage<K, V>> 
 where
@@ -307,6 +352,30 @@ where
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
             phantom: std::marker::PhantomData,
         })
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn new_with_deps(storage: S, epoch_mgr: EpochManager, order: usize) -> Self {
+
+        let meta = Metadata {
+            root_node_id: 2,
+            txn_id: 0, // Initial transaction ID
+            height: 1, // Initial height
+            checksum: 0, // Placeholder for checksum
+            size: 0, // Initial size
+            order,
+        };
+        Self {
+            storage,
+            epoch_mgr: Arc::new(epoch_mgr),
+            commit_count: 0.into(),
+            max_keys: order - 1,
+            min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
+            min_leaf_keys: (order-1).div_ceil(2), // Ensure min_keys is at least 1
+            txn_id: AtomicU64::new(1), // Initial transaction ID
+            committed: AtomicPtr::new(Box::into_raw(Box::new(meta))), // Initialize committed pointer
+            phantom: std::marker::PhantomData,
+            }
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.

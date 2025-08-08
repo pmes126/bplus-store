@@ -169,16 +169,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    use crate::tests::common::{TestStorage, TestEpoch, test_tree};
     use mockall::{mock, predicate::*};
     
-    mock! {
-    }
-    fn test_tree() -> (SharedBPlusTree<u64, String, MockStorage>, MockStorage) {
-        // Create a mock storage and a shared BPlusTree instance for testing
-        let storage = MockStorage::new();
-        let tree = SharedBPlusTree::new(storage.clone());
-        (tree, storage)
-    }
+    //mock! {
+    //}
+    //
+    //fn test_tree() -> (SharedBPlusTree<u64, String, MockStorage>, MockStorage) {
+    //    // Create a mock storage and a shared BPlusTree instance for testing
+    //    let storage = MockStorage::new();
+    //    let tree = SharedBPlusTree::new(storage.clone());
+    //    (tree, storage)
+    //}
 
     #[test]
     fn commit_happy_path() {
