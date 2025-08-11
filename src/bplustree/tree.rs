@@ -1273,8 +1273,7 @@ where
         match result {
             // ✅ cas has succeeded, proceed with commit to storage
             Ok(old_ptr) => {
-                // 3. Commit metadata to the double-buffered slot, TODO: if this commit fails we
-                //    are in a bad state, we should handle this case 
+                // 3. Commit metadata to the double-buffered slot 
                 let slot = new_txn_id % 2;
 
                 let res = self.storage.commit_metadata_with_object(
@@ -1436,22 +1435,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::common::{test_storage::TestStorage, test_tree, test_tree_with_noop_storage, TestHarness};
+    use crate::tests::common::{test_storage::TestStorage, test_tree};
 
-    pub struct DummySink;
+    #[derive(Debug, Default)]
+    pub struct DummySink {
+        reclaimed: Vec<NodeId>,
+    }
+    
     impl TxnTracker for DummySink {
         fn reclaim(&mut self, _node_id: NodeId) -> Result<()> {
+            self.reclaimed.push(_node_id);
             Ok(())
         }
+
         fn add_new(&mut self, _node_id: NodeId) -> Result<()> {
             Ok(())
         }
+
         fn record_staged_size(&mut self, _size: usize){
         }
+
         fn record_staged_height(&mut self, _height: usize) {
         }
     }
 
+    // test commit happy path
     #[test]
     fn commit_happy_path() {
         let storage = TestStorage::new(); // Reset the test storage state
@@ -1470,6 +1478,7 @@ mod tests {
         assert_eq!(m.txn_id, 2); // txn_id is initialized at 1 so txn_id should be 2
     }
 
+    // commit should succeed if the base version is the current committed version
     #[test]
     fn commit_happy_path_2() {
         let storage = TestStorage::new(); // Reset the test storage state
@@ -1495,6 +1504,7 @@ mod tests {
         assert_eq!(h.storage.flush_count(), 1);
     }
 
+    // commit should fail if the base version is not the current committed version
     #[test]
     fn commit_aborts_on_conflict() {
         let storage = TestStorage::new(); // Reset the test storage state
@@ -1510,6 +1520,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // txn_id should be strictly monotonic, each commit should increment the txn_id
     #[test]
     fn txn_id_is_strictly_monotonic() {
         let storage = TestStorage::new(); // Reset the test storage state
@@ -1527,6 +1538,7 @@ mod tests {
         }
     }
 
+    // The slot should follow the transaction ID modulo 2
     #[test]
     fn slot_follows_txn_mod2() {
         let storage = TestStorage::new(); // Reset the test storage state
@@ -1539,48 +1551,40 @@ mod tests {
         }
     }
 
-    // commit should abort if there is a storage failure - don't change the tree state (cas)
-    //#[test]
-    //fn commit_metadata_write_failure_is_abort() { /* ... */ }
+    // commit should abort if there is a storage failure and restore the tree state (metadata ptr)
+    #[test]
+    fn commit_metadata_write_failure_is_abort() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        storage.inject_commit_failure(true); 
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+        let _mocks = test_harness.storage;
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
+        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
 
-    //#[test]
-    //fn flush_failure_after_cas_keeps_published_state() { /* ... */ }
+        let md_before = tree.metadata(); // Ensure metadata is still valid
+        let result = tree.try_commit(&base, staged);
+        assert!(result.is_err(), "Commit should fail due to storage failure");
+        let md_after = tree.metadata(); // Ensure metadata is still valid
+        assert_eq!(md_before.root_node_id, md_after.root_node_id, "Root node ID should not change on commit failure");
+    }
 
-    //#[test]
-    //fn many_writers_retry_until_success() {
-    // let storage = TestStorage::new(); // Reset the test storage state
-    // let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
-    // let tree = test_harness.tree;
+    // commit should publish data regardless of a storage flush failure
+    #[test]
+    fn flush_failure_after_cas_keeps_published_state() {
+        let storage = TestStorage::new(); // Reset the test storage state
+        storage.inject_flush_failure(true); 
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
+        let tree = test_harness.tree;
+        let _mocks = test_harness.storage;
+        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
+        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
 
-    // let threads: Vec<_> = (0..4).map(|_| {
-    //     let tree = Arc::clone(&tree);
-    //     std::thread::spawn(move || {
-    //         let mut ok = 0;
-    //         for i in 0..200 {
-    //             loop {
-    //                 let base = tree.metadata_ptr();
-    //                 let base_version = BaseVersion { committed_ptr: base };
-    //                 let staged = StagedMetadata {
-    //                     root_id: (i as u64) + 2, // new id every attempt
-    //                     height: 2,
-    //                     size: i as usize,
-    //                 };
-    //                 match tree.try_commit(&base_version, staged.clone()) {
-    //                     Ok(()) => { ok += 1; break; }
-    //                     Err(CommitError::RebaseRequired) => continue,
-    //                     Err(_) => break, // ignore IO for this test
-    //                 }
-    //             }
-    //         }
-    //         ok
-    //     })
-    // }).collect();
-
-    // let total_ok: u64 = threads.into_iter().map(|t| t.join().unwrap() as u64).sum();
-
-    // // Monotonic txn_id equals #successful commits
-    // assert_eq!(tree.metadata().txn_id, total_ok);
-    // assert!(total_ok > 0, "At least one commit should succeed");
-    //}
+        let md_before = tree.metadata(); // Ensure metadata is still valid
+        let result = tree.try_commit(&base, staged);
+        assert!(result.is_err(), "Commit should fail due to flush failure");
+        let md_after = tree.metadata(); // Ensure metadata is still valid
+        assert_ne!(md_before.root_node_id, md_after.root_node_id, "Metadata should be published regardless of flush failure");
+    }
 }
 
