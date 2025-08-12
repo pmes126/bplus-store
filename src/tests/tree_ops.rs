@@ -2,42 +2,13 @@ use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
 use crate::bplustree::tree::{SharedBPlusTree, BPlusTree, BaseVersion, CommitError};
 use crate::bplustree::tree::StagedMetadata;
-use crate::storage::{KeyCodec, ValueCodec};
+use crate::tests::common::{make_tree, load_tree, make_tree_generic};
 
 use anyhow::Result;
 use tempfile::TempDir;
-use std::fmt::Debug;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
-
-fn make_tree(dir: &TempDir, order: usize) -> Result<SharedBPlusTree<u64, String, FileStore<PageStore>>, anyhow::Error> {
-    let file_path = dir.path().join("tree.data");
-
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order)?;
-    Ok(SharedBPlusTree::new(tree))
-}
-
-fn make_tree_generic<K, V>(dir: &TempDir, order: usize) -> Result<SharedBPlusTree<K, V, FileStore<PageStore>>, anyhow::Error>
-where
-    K: Debug + KeyCodec + Ord + Clone,
-    V: Debug + ValueCodec + Clone,
-{
-
-    let file_path = dir.path().join("tree.data");
-
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<K, V, FileStore<PageStore>>::new(store, order)?;
-    Ok(SharedBPlusTree::new(tree))
-}
-
-fn load_tree(dir: &TempDir) -> Result<SharedBPlusTree<u64, String, FileStore<PageStore>>, anyhow::Error> {
-    let file_path = dir.path().join("tree.data");
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store)?;
-    Ok(SharedBPlusTree::new(tree))
-}
 
 #[test]
 fn commit_persists_and_survives_reopen() {

@@ -11,7 +11,7 @@ enum WriteOp<K, V> {
     Delete(K),
 }
 
-enum TxnStatus {
+pub enum TxnStatus {
     Committed,
     Aborted,
 }
@@ -67,7 +67,8 @@ where
 
     pub fn insert(&mut self, key: K, value: V) -> Result<()> {
         self.changes.push(WriteOp::Insert(key.clone(), value.clone()));
-        let root_id = self.tree.get_root_id();
+        let root_id = self.staged_update.as_ref().map(|u| u.root_id).unwrap_or_else(|| self.tree.get_root_id());
+
         let res = self.tree.insert_with_root(key, value, root_id)?;
         self.reclaimed_nodes.extend(res.reclaimed_nodes);
         self.staged_nodes.extend(res.staged_nodes);
@@ -94,7 +95,7 @@ where
         Ok(())
     }
 
-    pub fn commit(mut self) -> Result<TxnStatus> {
+    pub fn commit(&mut self) -> Result<TxnStatus> {
         for _ in 0..MAX_COMMIT_RETRIES {
             let staged_update = self.staged_update.take()
                 .expect("Staged update should be set before commit");
