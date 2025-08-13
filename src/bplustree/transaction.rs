@@ -67,7 +67,7 @@ where
 
     pub fn insert(&mut self, key: K, value: V) -> Result<()> {
         self.changes.push(WriteOp::Insert(key.clone(), value.clone()));
-        let root_id = self.staged_update.as_ref().map(|u| u.root_id).unwrap_or_else(|| self.tree.get_root_id());
+        let root_id = self.get_root_id();
 
         let res = self.tree.insert_with_root(key, value, root_id)?;
         self.reclaimed_nodes.extend(res.reclaimed_nodes);
@@ -115,6 +115,7 @@ where
             } else {
                 // Root changed — retry entire transaction
                 self.initial_root_id = self.tree.get_root_id(); // Update initial root ID
+                self.tree_base_version = BaseVersion { committed_ptr: self.tree.get_metadata_ptr() };
                 self.reclaimed_nodes.clear(); // reset collected reclaim info
                 // reclaim staged nodes
                 if let Some(epoch) = self.tree.get_epoch_mgr().get_current_thread_epoch() {
@@ -131,12 +132,14 @@ where
     // Rebase the transaction by applying all changes to the tree
     fn rebase(&mut self) -> Result<()> {
         for op in &self.changes {
+            let root_id = self.staged_update.as_ref()
+                .map_or(self.initial_root_id, |u| u.root_id);
             match op {
                 WriteOp::Insert(k, v) => {
                     let write_res = self.tree.insert_with_root(
                         k.clone(),
                         v.clone(),
-                        self.tree.get_root_id(),
+                        root_id,
                     )?;
                     self.reclaimed_nodes.extend(write_res.reclaimed_nodes);
                     self.staged_nodes.extend(write_res.staged_nodes);

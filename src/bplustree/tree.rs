@@ -198,6 +198,10 @@ where
         }
     }
 
+    pub fn from_arc(tree: Arc<BPlusTree<K, V, S>>) -> Self {
+        Self { inner: tree }
+    }
+
     pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult> {
         let mut collector = TransactionTracker::new();
         let new_root_id = self.inner.insert_inner(key, value, root_id, &mut collector)?;
@@ -1243,6 +1247,11 @@ where
 
     // Attempts to commit the transaction with the given metadata.
     pub fn try_commit(&self, base_version: &BaseVersion, new_meta: StagedMetadata) -> Result<(), CommitError> {
+        #[cfg(feature = "failpoints")]
+        fail::fail_point!("tree::commit::try_commit_failure", |_| {
+            return Err(CommitError::Injected("try_commit_failure".into()));
+        });
+
         let expected = base_version.committed_ptr;
         // load current committed metadata
         let current_ptr = self.committed.load(Ordering::Acquire);

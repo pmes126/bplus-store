@@ -24,3 +24,6 @@ opt-level = 0
 
 [profile.release]
 opt-level = 3
+
+[dev-dependencies]
+fail = "0.5"
