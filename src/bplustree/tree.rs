@@ -80,6 +80,9 @@ pub enum CommitError {
 
     #[error("Commit aborted due to root mismatch, try rebasing")]
     RebaseRequired,
+
+    #[error("Test Commit error")]
+    Injected,
 }
 
 pub trait TxnTracker {
@@ -198,6 +201,10 @@ where
         }
     }
 
+    pub fn from_arc(tree: Arc<BPlusTree<K, V, S>>) -> Self {
+        Self { inner: tree }
+    }
+
     pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult> {
         let mut collector = TransactionTracker::new();
         let new_root_id = self.inner.insert_inner(key, value, root_id, &mut collector)?;
@@ -302,6 +309,10 @@ where
     
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
         Arc::clone(&self.inner.epoch_mgr)
+    }
+
+    pub fn reclaim_node(&self, node_id: NodeId) -> Result<()> {
+        self.inner.reclaim_node(node_id)
     }
 }
 
@@ -1161,7 +1172,7 @@ where
     }
 
     // Reclaims a node by adding it to the reclamation candidates for the current epoch.
-    pub fn reclaim_node(&mut self, node_id: NodeId) -> Result<()> {
+    pub fn reclaim_node(&self, node_id: NodeId) -> Result<()> {
         let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
             TreeError::BackendAny("Failed to get epoch for current thread".to_string())
         })?;
@@ -1243,6 +1254,16 @@ where
 
     // Attempts to commit the transaction with the given metadata.
     pub fn try_commit(&self, base_version: &BaseVersion, new_meta: StagedMetadata) -> Result<(), CommitError> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let injected: Result<(), CommitError> = Ok(());
+            fail::fail_point!("tree::commit::try_commit_failure", |_| {
+                injected = Err(CommitError::Injected);
+                println!("Injected failure in try_commit");
+            });
+            injected?; // returns early if the failpoint was enabled
+        }
+
         let expected = base_version.committed_ptr;
         // load current committed metadata
         let current_ptr = self.committed.load(Ordering::Acquire);
@@ -1291,8 +1312,8 @@ where
                 self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-                for pid in reclaimed {
-                    self.storage.free_node(pid)?;
+                for nid in reclaimed {
+                    self.storage.free_node(nid)?;
                 }
                 if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
