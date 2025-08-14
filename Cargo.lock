@@ -84,6 +84,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "bplus_tree",
  "bytemuck",
  "crc32fast",
  "criterion",

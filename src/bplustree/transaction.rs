@@ -16,7 +16,7 @@ pub enum TxnStatus {
     Aborted,
 }
 
-const MAX_COMMIT_RETRIES: usize = 10;
+pub const MAX_COMMIT_RETRIES: usize = 10;
 
 pub struct WriteTransaction<K, V, S>
 where
