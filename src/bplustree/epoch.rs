@@ -11,7 +11,7 @@ pub const COMMIT_COUNT: u64 = 10; // Number of commits before a new epoch is cre
 // Tracks active reader epochs and deferred_pages reclamation.
 #[derive(Debug)]
 pub struct EpochManager {
-    global_epoch: AtomicU64,
+    global_epoch:   AtomicU64,
     active_readers: Mutex<HashMap<ThreadId, Epoch>>,
     deferred_pages: Mutex<BTreeMap<u64, Vec<NodeId>>>, // (epoch, NodeId)
 }
@@ -81,7 +81,7 @@ impl EpochManager {
     pub fn reclaim(&self, safe_epoch: Epoch) -> Vec<NodeId> {
         let mut reclaimed = vec![];
         let to_reclaim: Vec<u64> = self.deferred_pages.lock().unwrap()
-            .range(..safe_epoch) // exclude the safe_epoch itself anything older can be reclaimed
+            .range(..=safe_epoch) // exclude the safe_epoch itself anything older can be reclaimed
             .map(|(e, _)| *e)
             .collect();
 

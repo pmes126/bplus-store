@@ -1256,7 +1256,7 @@ where
     pub fn try_commit(&self, base_version: &BaseVersion, new_meta: StagedMetadata) -> Result<(), CommitError> {
         #[cfg(any(test, feature = "testing"))]
         {
-            let mut injected: Result<(), CommitError> = Ok(());
+            let injected: Result<(), CommitError> = Ok(());
             fail::fail_point!("tree::commit::try_commit_failure", |_| {
                 injected = Err(CommitError::Injected);
                 println!("Injected failure in try_commit");
@@ -1312,8 +1312,8 @@ where
                 self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
                 let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-                for pid in reclaimed {
-                    self.storage.free_node(pid)?;
+                for nid in reclaimed {
+                    self.storage.free_node(nid)?;
                 }
                 if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
