@@ -1,5 +1,4 @@
 use crate::bplustree::tree::{SharedBPlusTree, BPlusTree, BaseVersion, CommitError};
-use crate::bplustree::tree::StagedMetadata;
 use crate::bplustree::transaction::{WriteTransaction, MAX_COMMIT_RETRIES};
 use crate::tests::common;
 use anyhow::Result;
@@ -213,11 +212,13 @@ fn node_reclamation_in_tx_commit() {
         trx.delete(&i).expect("delete");
     }
     
-    assert!(!trx.get_reclaimed_nodes().is_empty(), "No nodes should be reclaimed before commit");
+    assert!(!trx.get_reclaimed_nodes().is_empty(), "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty");
 
     // Commit the transaction
     trx.commit().expect("commit");
 
     let deffered = tree.get_epoch_mgr().get_deferred_pages();
+
     assert!(!deffered.is_empty(), "Deferred pages should not be empty after commit");
+    assert!(trx.get_reclaimed_nodes().is_empty(), "Reclaimed nodes in tx should be empty after commit");
 }
