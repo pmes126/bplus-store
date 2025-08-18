@@ -55,10 +55,12 @@ impl NodeView {
             //println!("key_bytes_at({})={:?}", mid, self.key_bytes_at(mid));
             println!("string at mid={}", String::from_utf8_lossy(self.key_bytes_at(mid)));
             println!("string prob={}", String::from_utf8_lossy(probe));
+            println!("lhs: {:02x?}", self.key_bytes_at(mid));
+            println!("rhs: {:02x?}", probe);
             match self.key_bytes_at(mid).cmp(probe) {
-                Ordering::Less => lo = mid + 1,
+                Ordering::Less => { println!("LESS"); lo = mid + 1}, // move to the right
                 Ordering::Equal => { println!("FOUND"); return Ok(mid)}, // found exact match
-                Ordering::Greater => hi = mid,
+                Ordering::Greater => { println!("GREATER"); hi = mid},
             }
         }
         println!("lower_bound: returning lo={}", lo);

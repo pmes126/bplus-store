@@ -166,7 +166,6 @@ impl LeafPage {
             self.data.blob[off..off + LEN_SIZE].try_into()?
         ) as usize;
 
-        println!("key length at {} is {}", i, len);
         let k0 = off + LEN_SIZE*2;
         Ok(&self.data.blob[k0 .. k0 + len])
     }

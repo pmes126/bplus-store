@@ -438,7 +438,7 @@ where
         let mut path = vec![];
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; std::mem::size_of::<K>()];
+        let mut encode_buf = vec![0u8; key.encoded_len()];
         key.encode_key(encode_buf.as_mut()).
             map_err(|e| CodecError::EncodeFailure {
                     msg: e.to_string(),
@@ -452,7 +452,6 @@ where
                         let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
                             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
                         })?;
-                        //println!("Found leaf node with id: {} contents: {:?}", current_id, decoded_node);
                         return Ok((path, decoded_node));
                     }
                     NodeView::Internal { .. } => {
@@ -471,7 +470,6 @@ where
                     }
                 },
                 None => {
-                    println!("Node with ID: {} not found", current_id);
                     // Node not found, this should not happen as we are traversing the path
                    return Err(TreeError::BackendAny(
                        "Node not found while getting insertion path".to_string(),
@@ -491,7 +489,6 @@ where
             match self.read_node(current_id)? {
                 Some(node_res) => match &node_res {
                     Node::Leaf { .. } => {
-                        //println!("Found leaf node with id: {} contents: {:?}", current_id, node_res);
                         return Ok((path, node_res)); // Found the leaf node
                     }
                     Node::Internal { keys, children } => {
@@ -523,15 +520,6 @@ where
     pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
-        //let (path_1, leaf_node_1) = self.get_insertion_path(&key, root_id)?;
-        //assert_eq!(path, path_1, "Insertion paths should match");
-
-        //println!("Insertion path 1: {:?}", path);
-        //println!("Leaf node 1: {:?}", leaf_node);
-
-        //println!("Insertion path 2: {:?}", path_1);
-        //println!("Leaf node 2: {:?}", leaf_node_1);
-
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
@@ -781,7 +769,7 @@ where
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; std::mem::size_of::<K>()];
+        let mut encode_buf = vec![0u8; key.encoded_len()];
         key.encode_key(encode_buf.as_mut()).
             map_err(|e| CodecError::EncodeFailure {
                     msg: e.to_string(),
@@ -793,19 +781,16 @@ where
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) =>  {
-                                println!("Found value for key {:?} at index {} ", key, i);
                                 let val = node.value_at(i)?;
                                 match val {
                                     Some(val) => {
-                                        println!("Found value for key {:?} at index {}: {:?}", key, i, val);
 
                                         return Ok(Some(V::decode_value(val.as_ref())));
                                     }
                                     None => return Ok(None), // Key not found
                                 }
                             }
-                            Err(i) => {
-                                println!("Not found value for key {:?} at index {} ", key, i);
+                            Err(_i) => {
                                 return Ok(None)
                             }
                         };
@@ -825,7 +810,6 @@ where
                     }
                 },
                 None => {
-                    println!("Node with ID: {} not found", current_id);
                     // Node not found, this should not happen as we are traversing the path
                    return Err(TreeError::BackendAny(
                        "Node not found while getting insertion path".to_string(),
