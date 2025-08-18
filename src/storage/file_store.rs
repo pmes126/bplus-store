@@ -1,11 +1,22 @@
 use crate::bplustree::Node;
 use crate::bplustree::NodeView;
+use crate::layout::PAGE_SIZE;
 use crate::storage::codec::NoopNodeViewCodec;
-use crate::storage::{PageStorage, NodeStorage, MetadataStorage, metadata::Metadata, codec::DefaultNodeCodec, { KeyCodec, ValueCodec, NodeCodec, metadata::{MetadataPage, METADATA_PAGE_1, METADATA_PAGE_2, calculate_checksum, new_metadata_page, new_metadata_page_with_object }}};
-use crate::layout::{PAGE_SIZE};
+use crate::storage::{
+    MetadataStorage, NodeStorage, PageStorage,
+    codec::DefaultNodeCodec,
+    metadata::Metadata,
+    {
+        KeyCodec, NodeCodec, ValueCodec,
+        metadata::{
+            METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page,
+            new_metadata_page_with_object,
+        },
+    },
+};
 use anyhow::Result;
 use std::path::Path;
-use zerocopy::{AsBytes};
+use zerocopy::AsBytes;
 
 pub struct FileStore<S: PageStorage> {
     store: S,
@@ -14,7 +25,7 @@ pub struct FileStore<S: PageStorage> {
 impl<S: PageStorage> FileStore<S> {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         Ok(Self {
-            store: S::init(path)?
+            store: S::init(path)?,
         })
     }
 }
@@ -73,13 +84,25 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
         }
     }
 
-    fn commit_metadata(&self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error> {
+    fn commit_metadata(
+        &self,
+        slot: u8,
+        txn_id: u64,
+        root: u64,
+        height: usize,
+        order: usize,
+        size: usize,
+    ) -> Result<(), std::io::Error> {
         let mut metadata_page = new_metadata_page(root, txn_id, 0, height, order, size);
         self.write_metadata(slot, &mut metadata_page)?;
         Ok(())
     }
-    
-    fn commit_metadata_with_object(&self, slot: u8, metadata: &Metadata) -> Result<(), std::io::Error> {
+
+    fn commit_metadata_with_object(
+        &self,
+        slot: u8,
+        metadata: &Metadata,
+    ) -> Result<(), std::io::Error> {
         let mut metadata_page = new_metadata_page_with_object(metadata);
         self.write_metadata(slot, &mut metadata_page)?;
         Ok(())
@@ -87,9 +110,9 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
 }
 
 impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
-    where
-        K: KeyCodec + Ord,
-        V: ValueCodec,
+where
+    K: KeyCodec + Ord,
+    V: ValueCodec,
 {
     fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
     where
@@ -98,11 +121,7 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
     {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
-        DefaultNodeCodec::decode(&buf).
-            map_or(Ok(None), |node| {
-                    Ok(Some(node))
-                }
-            )
+        DefaultNodeCodec::decode(&buf).map_or(Ok(None), |node| Ok(Some(node)))
     }
 
     fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error>
@@ -115,18 +134,13 @@ impl<S: PageStorage, K, V> NodeStorage<K, V> for FileStore<S>
         Ok(res)
     }
 
-    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, anyhow::Error>
-    {
+    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, anyhow::Error> {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
-        NoopNodeViewCodec::decode(&buf)
-            .map(|view| {
-                Ok(Some(view))
-            })?
+        NoopNodeViewCodec::decode(&buf).map(|view| Ok(Some(view)))?
     }
 
-    fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error>
-    {
+    fn write_node_view(&self, node_view: NodeView) -> Result<u64, anyhow::Error> {
         let buf = NoopNodeViewCodec::encode(&node_view)?;
         let res = self.store.write_page(&buf)?;
         Ok(res)

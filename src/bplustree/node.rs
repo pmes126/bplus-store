@@ -13,9 +13,8 @@ pub enum Node<K, V> {
     },
 }
 
-
 impl<K, V> Node<K, V>
-where 
+where
     K: Ord,
     V: Clone,
 {
@@ -25,7 +24,7 @@ where
             Node::Leaf { keys, values } => keys.is_empty() && values.is_empty(),
         }
     }
-    
+
     pub fn is_underflowed(&self, min_keys: usize) -> bool {
         match self {
             Node::Internal { keys, .. } => keys.len() < min_keys,

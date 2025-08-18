@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::storage::NodeStorage;
 use crate::storage::MetadataStorage;
-use crate::storage::metadata::MetadataPage;
+use crate::storage::NodeStorage;
 use crate::storage::metadata::Metadata;
+use crate::storage::metadata::MetadataPage;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -75,8 +76,7 @@ impl MetadataStorage for TestStorage {
         size: usize,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "commit_metadata_with_object (injected failure)",
             ));
         }
@@ -88,11 +88,7 @@ impl MetadataStorage for TestStorage {
         Ok(())
     }
 
-    fn write_metadata(
-        &self,
-        slot: u8,
-        meta: &mut MetadataPage,
-    ) -> Result<(), std::io::Error> {
+    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
         // Simulate writing metadata by just logging it
         self.state.lock().unwrap().commits.push((
             slot,
@@ -107,7 +103,7 @@ impl MetadataStorage for TestStorage {
 
     fn read_metadata(&self, _slot: u8) -> Result<MetadataPage, std::io::Error> {
         // Simulate reading metadata by returning a dummy page
-        let dummy_page : MetadataPage = unsafe { std::mem::zeroed() };
+        let dummy_page: MetadataPage = unsafe { std::mem::zeroed() };
         Ok(dummy_page)
     }
 
@@ -134,8 +130,7 @@ impl MetadataStorage for TestStorage {
         metadata: &Metadata,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "commit_metadata_with_object (injected failure)",
             ));
         }
@@ -179,10 +174,7 @@ where
 
     fn flush(&self) -> Result<(), std::io::Error> {
         if self.fail_flush.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "flush (injected failure)",
-            ));
+            return Err(std::io::Error::other("flush (injected failure)"));
         }
         self.state.lock().unwrap().flushes += 1;
         Ok(())

@@ -1,14 +1,15 @@
-use crate::layout::PAGE_SIZE;
 use crate::bplustree::{Node, NodeView};
-use crate::storage::metadata::{ Metadata, MetadataPage};
-use std::path::{Path};
+use crate::layout::PAGE_SIZE;
+use crate::storage::codec::CodecError;
+use crate::storage::metadata::{Metadata, MetadataPage};
 use anyhow::Result;
-use crate::storage::codec::{CodecError};
+use std::path::Path;
 
 /// Unified storage interface for B+ tree logic
 pub trait PageStorage {
     /// Initializes the storage, creating necessary files or structures
-    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> where
+    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
+    where
         Self: Sized;
 
     /// Reads a page by ID into a fixed 4KB buffer
@@ -16,7 +17,7 @@ pub trait PageStorage {
 
     /// Writes a full 4KB page to disk and returns the offset
     fn write_page(&self, data: &[u8]) -> Result<u64, std::io::Error>;
-    
+
     /// Writes a full 4KB page to disk at the given offset
     fn write_page_at_offset(&self, offset: u64, data: &[u8]) -> Result<u64, std::io::Error>;
 
@@ -25,7 +26,7 @@ pub trait PageStorage {
 
     /// Optional: allocates a new, unused page ID
     fn allocate_page(&self) -> Result<u64, std::io::Error>;
-    
+
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
@@ -74,7 +75,7 @@ where
 
     /// Flushes any cached writes to persistent storage
     fn flush(&self) -> Result<(), std::io::Error>;
-    
+
     /// Frees a node by its ID
     fn free_node(&self, id: u64) -> Result<(), std::io::Error>;
 }
@@ -91,10 +92,22 @@ pub trait MetadataStorage {
 
     // Get the current metadata
     fn get_metadata(&self) -> Result<Metadata, std::io::Error>;
-    
+
     // Commits the provided metadata to the oldest metadata slot and advances the transaction ID
-    fn commit_metadata(&self, slot: u8, txn_id: u64, root: u64, height: usize, order: usize, size: usize) -> Result<(), std::io::Error>;
+    fn commit_metadata(
+        &self,
+        slot: u8,
+        txn_id: u64,
+        root: u64,
+        height: usize,
+        order: usize,
+        size: usize,
+    ) -> Result<(), std::io::Error>;
 
     // Commit metadata with a metadata object
-    fn commit_metadata_with_object(&self, slot: u8, metadata: &Metadata) -> Result<(), std::io::Error>;
+    fn commit_metadata_with_object(
+        &self,
+        slot: u8,
+        metadata: &Metadata,
+    ) -> Result<(), std::io::Error>;
 }

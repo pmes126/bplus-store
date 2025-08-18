@@ -1,15 +1,14 @@
-use crate::bplustree::transaction::{WriteTransaction, MAX_COMMIT_RETRIES};
+#![cfg(test)]
+
+use crate::bplustree::transaction::WriteTransaction;
 use crate::tests::common;
-use anyhow::Result;
-use tempfile::TempDir;
-use std::fmt::Debug;
+use rand::Rng;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand::Rng;
 use std::thread;
-use fail;
+use tempfile::TempDir;
 
-//#[test]
+#[test]
 fn commit_happy_path() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -17,7 +16,7 @@ fn commit_happy_path() {
     let mut trx = WriteTransaction::new(tree.clone());
 
     for i in 0..100 {
-        trx.insert(i,  format!("value_{}", i)).expect("insert");
+        trx.insert(i, format!("value_{}", i)).expect("insert");
     }
 
     trx.commit().expect("commit");
@@ -46,7 +45,7 @@ fn commit_with_retries() {
         Ok(_) => panic!("Commit should have failed due to injected failure"),
         Err(_e) => {}
     }
-   
+
     let fail_pattern = format!("return->{}", MAX_COMMIT_RETRIES-1);
     fail::cfg("tree::commit::try_commit_failure", &fail_pattern).unwrap();
     // Now we expect the commit to succeed after retries
@@ -59,7 +58,7 @@ fn commit_with_retries() {
 }
 */
 
-//#[test]
+#[test]
 fn commit_with_random_inserts() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -77,11 +76,14 @@ fn commit_with_random_inserts() {
     trx.commit().expect("commit");
 
     for &key in &keys {
-        assert_eq!(tree.search(&key).expect("get"), Some(format!("value_{}", key)));
+        assert_eq!(
+            tree.search(&key).expect("get"),
+            Some(format!("value_{}", key))
+        );
     }
 }
 
-//#[test]
+#[test]
 fn contending_parallel_transactions() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -94,7 +96,8 @@ fn contending_parallel_transactions() {
                 for j in 0..100 {
                     let sleep_duration = rand::thread_rng().gen_range(1..10);
                     std::thread::sleep(std::time::Duration::from_millis(sleep_duration));
-                    trx.insert(i * 100 + j, format!("value_{}", i * 100 + j)).expect("insert");
+                    trx.insert(i * 100 + j, format!("value_{}", i * 100 + j))
+                        .expect("insert");
                 }
                 trx.commit().expect("commit");
             });
@@ -105,12 +108,12 @@ fn contending_parallel_transactions() {
     }
 }
 
-//#[test]
+#[test]
 fn commit_with_conflicting_transactions() {
     let dir = TempDir::new().unwrap();
     let order = 16;
     let tree = common::make_tree(&dir, order).expect("create tree");
-    
+
     // Start two transactions that will conflict
     let mut t1 = WriteTransaction::new(tree.clone());
     let mut t2 = WriteTransaction::new(tree.clone());
@@ -136,10 +139,10 @@ fn commit_failure_should_reclaim_nodes() {
     let dir = TempDir::new().unwrap();
     let order = 16;
     let tree = common::make_tree(&dir, order).expect("create tree");
-    
+
     // Start a transaction
     let mut trx = WriteTransaction::new(tree.clone());
-    
+
     // Insert some data
     for i in 0..10 {
         trx.insert(i, format!("value_{}", i)).expect("insert");
@@ -151,7 +154,7 @@ fn commit_failure_should_reclaim_nodes() {
     //    Ok(_) => panic!("Commit should have failed"),
     //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
     //}
-    
+
     //let deffered = tree.get_epoch_mgr().get_deferred_pages();
     //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
 
@@ -162,9 +165,9 @@ fn commit_failure_should_reclaim_nodes() {
 
     // Insert some data
     for i in 0..10 {
-        trx.insert(i, format!("value_{}", i*2)).expect("insert");
+        trx.insert(i, format!("value_{}", i * 2)).expect("insert");
     }
-    
+
     // Attempt to commit, overwrite values
     match trx.commit() {
         Ok(_) => println!("Commit succeeded unexpectedly"),
@@ -172,13 +175,16 @@ fn commit_failure_should_reclaim_nodes() {
     }
 
     let deffered = tree.get_epoch_mgr().get_deferred_pages();
-    assert!(deffered.is_empty(), "Deferred pages should be empty after successful commit");
+    assert!(
+        deffered.is_empty(),
+        "Deferred pages should be empty after successful commit"
+    );
 
     // Remove the failure configuration
     fail::remove("tree::commit::try_commit_failure");
 }
 
-//#[test]
+#[test]
 fn noop_tx_commit_no_side_effects() {
     let dir = TempDir::new().unwrap();
     let order = 16;
@@ -189,7 +195,10 @@ fn noop_tx_commit_no_side_effects() {
     trx.commit().expect("commit with no operations");
 
     // Ensure the tree is still empty
-    assert!(tree.get_root_id() == 2, "Tree should not have any nodes after noop commit");
+    assert!(
+        tree.get_root_id() == 2,
+        "Tree should not have any nodes after noop commit"
+    );
 }
 
 #[test]
@@ -197,10 +206,10 @@ fn node_reclamation_in_tx_commit() {
     let dir = TempDir::new().unwrap();
     let order = 10;
     let tree = common::make_tree(&dir, order).expect("create tree");
-    
+
     // Start a transaction
     let mut trx = WriteTransaction::new(tree.clone());
-    
+
     // Insert some data
     for i in 0..100 {
         trx.insert(i, format!("value_{}", i)).expect("insert");
@@ -210,14 +219,23 @@ fn node_reclamation_in_tx_commit() {
     for i in 0..100 {
         trx.delete(&i).expect("delete");
     }
-    
-    assert!(!trx.get_reclaimed_nodes().is_empty(), "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty");
+
+    assert!(
+        !trx.get_reclaimed_nodes().is_empty(),
+        "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
+    );
 
     // Commit the transaction
     trx.commit().expect("commit");
 
     let deffered = tree.get_epoch_mgr().get_deferred_pages();
 
-    assert!(!deffered.is_empty(), "Deferred pages should not be empty after commit");
-    assert!(trx.get_reclaimed_nodes().is_empty(), "Reclaimed nodes in tx should be empty after commit");
+    assert!(
+        !deffered.is_empty(),
+        "Deferred pages should not be empty after commit"
+    );
+    assert!(
+        trx.get_reclaimed_nodes().is_empty(),
+        "Reclaimed nodes in tx should be empty after commit"
+    );
 }

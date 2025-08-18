@@ -1,8 +1,8 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::layout::PAGE_SIZE;
 use crate::storage::PageStorage;
@@ -33,7 +33,10 @@ impl Drop for PageStore {
 }
 
 impl PageStorage for PageStore {
-    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> where Self: Sized {
+    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
+    where
+        Self: Sized,
+    {
         let file = OpenOptions::new()
             .read(true)
             .write(true)

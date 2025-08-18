@@ -1,22 +1,22 @@
+use crate::layout::MAX_ENTRIES;
+use crate::layout::PAGE_SIZE;
 use crate::storage::page::INTERNAL_NODE_TAG;
 use crate::storage::page::PageCodecError;
-use crate::layout::PAGE_SIZE;
-use crate::layout::MAX_ENTRIES;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct InternalPageHeader {
-    pub node_type: u64,       // Node type (LEAF_NODE_TAG)
-    pub entry_count:    u64,    // number of keys
-    pub free_start:     u64,
+    pub node_type: u64,   // Node type (LEAF_NODE_TAG)
+    pub entry_count: u64, // number of keys
+    pub free_start: u64,
     pub leftmost_child: u64, // leftmost child pointer, k keys for k+1 children
     pub key_offsets: [u16; MAX_ENTRIES],
 }
 
 const HEADER_SIZE_BYTES: usize = std::mem::size_of::<InternalPageHeader>();
 const DATA_SIZE: usize = PAGE_SIZE - HEADER_SIZE_BYTES;
-const LEN_KEY_SIZE: usize = std::mem::size_of::<u16>();
+const LEN_SIZE: usize = std::mem::size_of::<u16>();
 const CHILD_ID_SIZE: usize = std::mem::size_of::<u64>();
 
 #[repr(C)]
@@ -29,14 +29,14 @@ pub struct Data {
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct InternalPage {
     pub header: InternalPageHeader,
-    pub data : Data,
+    pub data: Data,
 }
 
 impl InternalPage {
     pub fn new() -> Self {
         InternalPage {
             header: InternalPageHeader {
-                node_type : INTERNAL_NODE_TAG,
+                node_type: INTERNAL_NODE_TAG,
                 entry_count: 0,
                 key_offsets: [0; MAX_ENTRIES],
                 free_start: 0,
@@ -49,26 +49,28 @@ impl InternalPage {
     }
 
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })
+        InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError {
+            msg: "Failed to convert bytes to LeafPage".to_string(),
+        })
     }
 
-    // Store according to the layout => [klen][key][ptr] 
+    // Store according to the layout => [klen][key][ptr]
     pub fn insert_entry(&mut self, key: &[u8], child: u64) -> Result<(), PageCodecError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull{
+            return Err(PageCodecError::PageFull {
                 msg: "LeafPage is full, cannot insert more entries".to_string(),
             });
         }
 
-        let required_space = key.len() + LEN_KEY_SIZE +  CHILD_ID_SIZE; // key_len +
+        let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE; // key_len +
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull{
+            return Err(PageCodecError::PageFull {
                 msg: "LeafPage is full, cannot insert more entries".to_string(),
             });
         }
 
         let data = &mut self.data.blob[..];
-        
+
         // Current entry index of entry_count has offset at the free_start position
         self.header.key_offsets[self.header.entry_count as usize] = self.header.free_start as u16;
 
@@ -101,66 +103,76 @@ impl InternalPage {
         Ok(())
     }
 
-
     // Read from the key_offset->[key_len][key][child_ptr]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
         // Read and decode the length of the key
         let key_len_offset = self.header.key_offsets[idx] as usize;
-        let mut end = key_len_offset + LEN_KEY_SIZE;
-        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[key_len_offset..end].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let mut end = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to read bytes as slice".to_string(),
+            })?;
         let key_length = u16::from_le_bytes(arr);
 
         // Read the key
-        let key_offset = key_len_offset + LEN_KEY_SIZE; // Move to the start of the key
+        let key_offset = key_len_offset + LEN_SIZE; // Move to the start of the key
         end = key_offset + key_length as usize;
         let key = &self.data.blob[key_offset..end];
-        
+
         // Read and decode the child pointer
         let child_offset = key_offset + key_length as usize;
         end = child_offset + CHILD_ID_SIZE;
-        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[child_offset..end].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let arr: [u8; CHILD_ID_SIZE] =
+            self.data.blob[child_offset..end].try_into().map_err(|_| {
+                PageCodecError::FromBytesError {
+                    msg: "Failed to read bytes as slice".to_string(),
+                }
+            })?;
         let child = u64::from_le_bytes(arr);
         Ok((key, child))
     }
-    
+
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let offset = self.header.key_offsets[i] as usize;
 
-        let len = u16::from_le_bytes(
-            self.data.blob[offset..offset + LEN_KEY_SIZE].try_into()?
-        ) as usize;
+        let len =
+            u16::from_le_bytes(self.data.blob[offset..offset + LEN_SIZE].try_into()?) as usize;
 
-        //println!("key length at {} is {}", i, len);
-        let k0 = offset + LEN_KEY_SIZE;
-        Ok(&self.data.blob[k0 .. k0 + len])
+        let k0 = offset + LEN_SIZE;
+        Ok(&self.data.blob[k0..k0 + len])
     }
-    
+
     #[inline]
     pub fn child_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let offset = self.header.key_offsets[i] as usize;
-        let key_len = u16::from_le_bytes(
-            self.data.blob[offset..offset + LEN_KEY_SIZE].try_into()?
-        ) as usize;
-        let c0 = offset + LEN_KEY_SIZE + key_len;
-        Ok(&self.data.blob[c0 .. c0 + CHILD_ID_SIZE])
+        let key_len =
+            u16::from_le_bytes(self.data.blob[offset..offset + LEN_SIZE].try_into()?) as usize;
+        let c0 = offset + LEN_SIZE + key_len;
+        Ok(&self.data.blob[c0..c0 + CHILD_ID_SIZE])
     }
 
     #[inline]
     pub fn child_at(&self, i: usize) -> Result<u64, PageCodecError> {
         // Read and decode the length of the key
         let offset = self.header.key_offsets[i] as usize;
-        let end = offset + LEN_KEY_SIZE;
-        let arr: [u8; LEN_KEY_SIZE] = self.data.blob[offset..end].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let end = offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] =
+            self.data.blob[offset..end]
+                .try_into()
+                .map_err(|_| PageCodecError::FromBytesError {
+                    msg: "Failed to read bytes as slice".to_string(),
+                })?;
         let key_length = u16::from_le_bytes(arr);
 
-        
-        let c0 = offset + LEN_KEY_SIZE + key_length as usize;
-        let arr: [u8; CHILD_ID_SIZE] = self.data.blob[c0..c0 + CHILD_ID_SIZE].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let c0 = offset + LEN_SIZE + key_length as usize;
+        let arr: [u8; CHILD_ID_SIZE] =
+            self.data.blob[c0..c0 + CHILD_ID_SIZE]
+                .try_into()
+                .map_err(|_| PageCodecError::FromBytesError {
+                    msg: "Failed to read bytes as slice".to_string(),
+                })?;
         Ok(u64::from_le_bytes(arr))
     }
 
@@ -170,7 +182,12 @@ impl InternalPage {
         let array: &[u8; PAGE_SIZE] = bytes.try_into()?; // also scoped
         Ok(array)
     }
+}
 
+impl Default for InternalPage {
+    fn default() -> Self {
+        InternalPage::new()
+    }
 }
 
 #[cfg(test)]
