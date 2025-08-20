@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use crate::storage::page::{InternalPage, LeafPage};
-use crate::storage::page::PageCodecError;
 use anyhow::Result;
 
 pub type NodeId = u64;
@@ -47,23 +46,14 @@ impl NodeView {
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         let mut lo = 0usize;
         let mut hi = self.keys_len();
-        println!("lower_bound: lo={} hi={} probe={:?}", lo, hi, probe);
-       // println!("key_bytes_at(0)={:?}", self.key_bytes_at(0));
-        println!("self.page.header.entry_count={}", self.keys_len());
         while lo < hi {
             let mid = (lo + hi) / 2;
-            //println!("key_bytes_at({})={:?}", mid, self.key_bytes_at(mid));
-            println!("string at mid={}", String::from_utf8_lossy(self.key_bytes_at(mid)));
-            println!("string prob={}", String::from_utf8_lossy(probe));
-            println!("lhs: {:02x?}", self.key_bytes_at(mid));
-            println!("rhs: {:02x?}", probe);
             match self.key_bytes_at(mid).cmp(probe) {
-                Ordering::Less => { println!("LESS"); lo = mid + 1}, // move to the right
-                Ordering::Equal => { println!("FOUND"); return Ok(mid)}, // found exact match
-                Ordering::Greater => { println!("GREATER"); hi = mid},
+                Ordering::Less => lo = mid + 1, // move to the right
+                Ordering::Equal => return Ok(mid), // found exact match
+                Ordering::Greater => hi = mid,
             }
         }
-        println!("lower_bound: returning lo={}", lo);
         Err(lo) // return the insertion point   
     }
 
@@ -76,7 +66,7 @@ impl NodeView {
                     return Ok(Some(page.header.leftmost_child)); // No child pointer for index 0
                 }
                 let idx = i - 1; // Internal nodes have child pointers at i-1
-                page.child_at(idx).map(|ptr| Some(ptr)).map_err(|e| anyhow::anyhow!(e)) 
+                page.child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e)) 
             },
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }

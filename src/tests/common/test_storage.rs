@@ -75,10 +75,7 @@ impl MetadataStorage for TestStorage {
         size: usize,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "commit_metadata_with_object (injected failure)",
-            ));
+            return Err(std::io::Error::other("commit_metadata_with_object (injected failure)"));
         }
         self.state
             .lock()
@@ -131,13 +128,10 @@ impl MetadataStorage for TestStorage {
     fn commit_metadata_with_object(
         &self,
         slot: u8,
-        metadata: &Metadata,
+        metadata: &Metadata
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "commit_metadata_with_object (injected failure)",
-            ));
+            return Err(std::io::Error::other("commit_metadata_with_object (injected failure)"));
         }
         // Simulate writing metadata by just logging it
         self.state.lock().unwrap().commits.push((
@@ -179,10 +173,7 @@ where
 
     fn flush(&self) -> Result<(), std::io::Error> {
         if self.fail_flush.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "flush (injected failure)",
-            ));
+            return Err(std::io::Error::other("flush (injected failure)"));
         }
         self.state.lock().unwrap().flushes += 1;
         Ok(())

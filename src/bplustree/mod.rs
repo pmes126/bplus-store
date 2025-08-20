@@ -10,3 +10,4 @@ pub use node_view::NodeView;
 pub use node::NodeId;
 pub use iterator::BPlusTreeIter;
 pub use epoch::EpochManager;
+pub use crate::bplustree;

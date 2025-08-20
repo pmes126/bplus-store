@@ -173,6 +173,12 @@ impl InternalPage {
 
 }
 
+impl Default for InternalPage {
+    fn default() -> Self {
+        InternalPage::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

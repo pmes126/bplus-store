@@ -34,10 +34,6 @@ pub enum CodecError {
     },
 }
 
-const fn buffer_size_for<T: Sized>() -> usize {
-    std::mem::size_of::<T>()
-}
-
 impl KeyCodec for u64 {
     fn encode_key(&self, out: &mut [u8]) -> Result<usize, CodecError> {
        let size = std::mem::size_of::<u64>();

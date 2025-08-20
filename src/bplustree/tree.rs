@@ -137,6 +137,7 @@ where
     phantom: std::marker::PhantomData<(K, V)>,
 }
 
+#[derive(Default)]
 pub struct TransactionTracker {
     pub reclaimed: Vec<NodeId>,
     pub added: Vec<NodeId>,
@@ -1493,22 +1494,6 @@ where
         Ok(())
     }
 
-    // Creates a new leaf node with the specified maximum number of keys.
-    fn create_leaf_node(&self) -> Node<K, V> {
-        Node::Leaf {
-            keys: Vec::with_capacity(self.max_keys),
-            values: Vec::with_capacity(self.max_keys),
-        }
-    }
-    
-    // Creates a new internal node with the specified maximum number of keys.
-    fn create_internal_node(&self) -> Node<K, V> {
-        Node::Internal {
-            keys: Vec::with_capacity(self.max_keys),
-            children: Vec::with_capacity(self.max_keys + 1), // +1 for the extra child pointer
-        }
-    }
-
     // Helpers to get metadata information
     pub fn get_txn_id(&self) -> u64 {
         self.txn_id.load(Ordering::Relaxed)
@@ -1560,28 +1545,6 @@ where
 mod tests {
     use super::*;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
-
-    #[derive(Debug, Default)]
-    pub struct DummySink {
-        reclaimed: Vec<NodeId>,
-    }
-    
-    impl TxnTracker for DummySink {
-        fn reclaim(&mut self, _node_id: NodeId) -> Result<()> {
-            self.reclaimed.push(_node_id);
-            Ok(())
-        }
-
-        fn add_new(&mut self, _node_id: NodeId) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_staged_size(&mut self, _size: usize){
-        }
-
-        fn record_staged_height(&mut self, _height: usize) {
-        }
-    }
 
     // test commit happy path
     #[test]

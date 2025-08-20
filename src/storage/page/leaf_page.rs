@@ -48,7 +48,7 @@ impl LeafPage {
     pub fn new() -> Self {
         LeafPage {
             header: LeafPageHeader {
-                node_type: LEAF_NODE_TAG as u64,
+                node_type: LEAF_NODE_TAG,
                 entry_count : 0,
                 version: LEAF_NODE_VERSION as u64,
                 free_start: 0,
@@ -194,10 +194,22 @@ impl LeafPage {
     pub fn len(&self) -> usize {
         self.header.entry_count as usize
     }
+    
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.header.entry_count == 0
+    }
 
+    #[inline]
     pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
         let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
         Ok(array)
+    }
+}
+
+impl Default for LeafPage {
+    fn default() -> Self {
+        LeafPage::new()
     }
 }
 

@@ -131,6 +131,12 @@ impl EpochManager {
     }
 }
 
+impl Default for EpochManager{
+    fn default() -> Self {
+        EpochManager::new()
+    }
+}
+
 pub struct ReaderGuard {
     epoch_mgr: Arc<EpochManager>,
     tid: ThreadId,

@@ -1,4 +1,4 @@
-use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata, CommitError};
+use crate::bplustree::tree::{SharedBPlusTree, BaseVersion, StagedMetadata};
 use crate::storage::ValueCodec;
 use crate::storage::KeyCodec;
 use crate::storage::{NodeStorage, MetadataStorage};
@@ -174,6 +174,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bplustree::tree::CommitError;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
     use crate::storage::metadata::{Metadata};
 

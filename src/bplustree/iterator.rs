@@ -98,8 +98,8 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
-                if self.index < keys.len() {
+            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf &&
+                self.index < keys.len() {
                     let (k, v) = (&keys[self.index], &values[self.index]);
                     if k > &self.end {
                         // If the key is beyond the end, stop iteration
@@ -107,7 +107,6 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
                     }
                     self.index += 1;
                     return Some(Ok((k.clone(), v.clone())));
-                }
             }
 
             // Need to move to next subtree

@@ -1,13 +1,10 @@
 use crate::bplustree::transaction::{WriteTransaction, MAX_COMMIT_RETRIES};
 use crate::tests::common;
-use anyhow::Result;
 use tempfile::TempDir;
-use std::fmt::Debug;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
 use std::thread;
-use fail;
 
 #[test]
 fn commit_happy_path() {
