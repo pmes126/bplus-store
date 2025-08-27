@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn test_internal_page_multiples() {
         let mut page = LeafPage::new();
-        let keys = ["key1", "key2key2", "key3key3key3"];
-        let values = ["value1", "value2value2", "value3value3value3"];
+        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4"];
+        let values = ["value1", "value2value2", "value3value3value3", "value4value4value4value4"];
 
         // Insert multiple entries
         for (&key, &value) in keys.iter().zip(&values) {

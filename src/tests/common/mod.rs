@@ -53,9 +53,9 @@ pub fn test_tree_with_epoch<K, V, S>(
     order: usize,
 ) -> TestHarness<K, V, S>
 where
-    K: KeyCodec + Clone + Ord + std::fmt::Debug + 'static,
-    V: ValueCodec + Clone + std::fmt::Debug + 'static,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
+    K: KeyCodec + Clone + Ord + std::fmt::Debug,
+    V: ValueCodec + Clone + std::fmt::Debug,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone,
 {
     let tree = Arc::new(BPlusTree::new_with_deps(
         storage.clone(),
@@ -105,9 +105,9 @@ pub fn test_trx<K, V, S>(
     tree : SharedBPlusTree<K, V, S>,
 ) -> WriteTransaction<K, V, S>
 where
-    K: KeyCodec + Clone + Ord + Debug + 'static,
-    V: ValueCodec + Clone + Debug + 'static,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: KeyCodec + Clone + Ord + Debug,
+    V: ValueCodec + Clone + Debug,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync,
 {
     WriteTransaction::new(tree.clone())
 }

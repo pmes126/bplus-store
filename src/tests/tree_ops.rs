@@ -498,7 +498,7 @@ fn range_search_test() -> Result<()> {
 #[test]
 fn commits_toggle_metadata_slots_and_increment_txn() {
     let dir = TempDir::new().unwrap();
-    let order = 16; // B+ tree order
+    let order = 16;
     let tree = make_tree(&dir, order).expect("create tree");
 
     let mut last_txn = tree.get_metadata().txn_id;
@@ -513,7 +513,7 @@ fn commits_toggle_metadata_slots_and_increment_txn() {
             };
             match tree.try_commit(&base, staged) {
                 Ok(()) => break,
-                Err(CommitError::RebaseRequired) => continue, // rare here, single thread
+                Err(CommitError::RebaseRequired) => continue, // shouldn't happen, single thread
                 Err(e) => panic!("unexpected error: {e:?}"),
             }
         }
