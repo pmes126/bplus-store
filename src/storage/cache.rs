@@ -7,7 +7,7 @@
 //const CACHE_CAPACITY: usize = 100; // Default cache capacity
 ////
 //// CacheLayer is a decorator around a backend storage that caches nodes in memory.
-//pub struct CacheLayer<K, V, B: NodeStorage<K, V>> 
+//pub struct CacheLayer<K, V, B: NodeStorage<K, V>>
 //where
 //    K: KeyCodec + Clone,
 //    V: ValueCodec + Clone,
@@ -61,7 +61,7 @@
 //        ))?;
 //        Ok(id)
 //    }
-//    
+//
 //    fn flush(&mut self) -> io::Result<()> {
 //        self.backend.flush()
 //    }
@@ -72,4 +72,4 @@
 //        // Free the node in the backend storage
 //        self.backend.free_node(id)
 //    }
-//} 
+//}

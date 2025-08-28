@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::storage::NodeStorage;
 use crate::storage::MetadataStorage;
-use crate::storage::metadata::MetadataPage;
+use crate::storage::NodeStorage;
 use crate::storage::metadata::Metadata;
+use crate::storage::metadata::MetadataPage;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -76,7 +76,9 @@ impl MetadataStorage for TestStorage {
         size: usize,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::other("commit_metadata_with_object (injected failure)"));
+            return Err(std::io::Error::other(
+                "commit_metadata_with_object (injected failure)",
+            ));
         }
         self.state
             .lock()
@@ -86,11 +88,7 @@ impl MetadataStorage for TestStorage {
         Ok(())
     }
 
-    fn write_metadata(
-        &self,
-        slot: u8,
-        meta: &mut MetadataPage,
-    ) -> Result<(), std::io::Error> {
+    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
         // Simulate writing metadata by just logging it
         self.state.lock().unwrap().commits.push((
             slot,
@@ -105,7 +103,7 @@ impl MetadataStorage for TestStorage {
 
     fn read_metadata(&self, _slot: u8) -> Result<MetadataPage, std::io::Error> {
         // Simulate reading metadata by returning a dummy page
-        let dummy_page : MetadataPage = unsafe { std::mem::zeroed() };
+        let dummy_page: MetadataPage = unsafe { std::mem::zeroed() };
         Ok(dummy_page)
     }
 
@@ -129,10 +127,12 @@ impl MetadataStorage for TestStorage {
     fn commit_metadata_with_object(
         &self,
         slot: u8,
-        metadata: &Metadata
+        metadata: &Metadata,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::other("commit_metadata_with_object (injected failure)"));
+            return Err(std::io::Error::other(
+                "commit_metadata_with_object (injected failure)",
+            ));
         }
         // Simulate writing metadata by just logging it
         self.state.lock().unwrap().commits.push((

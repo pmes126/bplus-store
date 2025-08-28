@@ -1,5 +1,5 @@
-use crate::layout::PAGE_SIZE;
 use crate::layout::MAX_ENTRIES;
+use crate::layout::PAGE_SIZE;
 use crate::storage::page::LEAF_NODE_TAG;
 use crate::storage::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
@@ -13,10 +13,10 @@ pub const LEAF_NODE_VERSION: u8 = 0;
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafPageHeader {
-    pub node_type: u64,       // Node type (LEAF_NODE_TAG)
-    pub entry_count: u64,     // Number of key-value pairs
-    pub version: u64,         // Version of the leaf node
-    pub free_start: u64,      // Offset for the next free space in the data area
+    pub node_type: u64,   // Node type (LEAF_NODE_TAG)
+    pub entry_count: u64, // Number of key-value pairs
+    pub version: u64,     // Version of the leaf node
+    pub free_start: u64,  // Offset for the next free space in the data area
 }
 
 #[repr(C)]
@@ -33,7 +33,7 @@ const LEN_SIZE: usize = std::mem::size_of::<u16>();
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafData {
-    pub blob: [u8; DATA_SIZE] // Fixed-size array for storing key-value pairs
+    pub blob: [u8; DATA_SIZE], // Fixed-size array for storing key-value pairs
 }
 
 #[repr(C)]
@@ -49,7 +49,7 @@ impl LeafPage {
         LeafPage {
             header: LeafPageHeader {
                 node_type: LEAF_NODE_TAG,
-                entry_count : 0,
+                entry_count: 0,
                 version: LEAF_NODE_VERSION as u64,
                 free_start: 0,
             },
@@ -63,18 +63,19 @@ impl LeafPage {
     }
 
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        LeafPage::ref_from(buf).ok_or(PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })
+        LeafPage::ref_from(buf).ok_or(PageCodecError::FromBytesError {
+            msg: "Failed to convert bytes to LeafPage".to_string(),
+        })
     }
 
     pub fn is_full(&self) -> bool {
         self.header.entry_count >= MAX_ENTRIES as u64
     }
 
-
     // Insert values according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     pub fn insert_entry(&mut self, key: &[u8], value: &[u8]) -> Result<(), PageCodecError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull{
+            return Err(PageCodecError::PageFull {
                 msg: "LeafPage is full, cannot insert more entries".to_string(),
             });
         }
@@ -82,7 +83,7 @@ impl LeafPage {
         let required_space = key.len() + value.len() + LEN_SIZE * 2; // key_len +
         // value_len
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull{
+            return Err(PageCodecError::PageFull {
                 msg: "LeafPage is full, cannot insert more entries".to_string(),
             });
         }
@@ -132,20 +133,26 @@ impl LeafPage {
 
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds{
+            return Err(PageCodecError::IndexOutOfBounds {
                 msg: "Index out of bounds".to_string(),
             });
         }
 
         let key_len_offset = self.slots.offsets[idx] as usize;
-        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to convert bytes to LeafPage".to_string() })?;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to convert bytes to LeafPage".to_string(),
+            })?;
 
         let key_length = u16::from_le_bytes(arr) as usize;
 
         let value_len_offset = key_len_offset + LEN_SIZE;
-        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into().
-            map_err(|_| PageCodecError::FromBytesError{ msg: "Failed to read bytes as slice".to_string() })?;
+        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to read bytes as slice".to_string(),
+            })?;
         let value_length = u16::from_le_bytes(arr);
 
         let key_offset = value_len_offset + LEN_SIZE;
@@ -156,30 +163,30 @@ impl LeafPage {
 
         Ok((key, value))
     }
-    
+
     /// Return key bytes at slot i (no decode) klen vlen key value
     /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let off = self.slots.offsets[i] as usize;
-        let len = u16::from_le_bytes(
-            self.data.blob[off..off + LEN_SIZE].try_into()?
-        ) as usize;
+        let len = u16::from_le_bytes(self.data.blob[off..off + LEN_SIZE].try_into()?) as usize;
 
-        let k0 = off + LEN_SIZE*2;
-        Ok(&self.data.blob[k0 .. k0 + len])
+        let k0 = off + LEN_SIZE * 2;
+        Ok(&self.data.blob[k0..k0 + len])
     }
-    
+
     /// Return value bytes at slot i (no decode)
     #[inline]
     pub fn value_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let key_len_offset = self.slots.offsets[i] as usize;
-        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into()?;
+        let arr: [u8; LEN_SIZE] =
+            self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into()?;
 
         let key_length = u16::from_le_bytes(arr) as usize;
 
         let value_len_offset = key_len_offset + LEN_SIZE;
-        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into()?;
+        let arr: [u8; LEN_SIZE] =
+            self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into()?;
         let value_length = u16::from_le_bytes(arr);
 
         let key_offset = value_len_offset + LEN_SIZE;
@@ -194,7 +201,7 @@ impl LeafPage {
     pub fn len(&self) -> usize {
         self.header.entry_count as usize
     }
-    
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.header.entry_count == 0
@@ -235,7 +242,12 @@ mod tests {
     fn test_internal_page_multiples() {
         let mut page = LeafPage::new();
         let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4"];
-        let values = ["value1", "value2value2", "value3value3value3", "value4value4value4value4"];
+        let values = [
+            "value1",
+            "value2value2",
+            "value3value3value3",
+            "value4value4value4value4",
+        ];
 
         // Insert multiple entries
         for (&key, &value) in keys.iter().zip(&values) {

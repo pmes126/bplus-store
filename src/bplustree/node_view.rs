@@ -1,18 +1,14 @@
-use std::cmp::Ordering;
 use crate::storage::page::{InternalPage, LeafPage};
 use anyhow::Result;
+use std::cmp::Ordering;
 
 pub type NodeId = u64;
 
 /// A view of a B+ tree node stored in a page
 #[derive(Clone)]
 pub enum NodeView {
-    Internal {
-        page: InternalPage
-    },
-    Leaf {
-        page: LeafPage
-    },
+    Internal { page: InternalPage },
+    Leaf { page: LeafPage },
 }
 
 impl NodeView {
@@ -49,7 +45,7 @@ impl NodeView {
         while lo < hi {
             let mid = (lo + hi) / 2;
             match self.key_bytes_at(mid).cmp(probe) {
-                Ordering::Less => lo = mid + 1, // move to the right
+                Ordering::Less => lo = mid + 1,    // move to the right
                 Ordering::Equal => return Ok(mid), // found exact match
                 Ordering::Greater => hi = mid,
             }
@@ -61,13 +57,13 @@ impl NodeView {
     #[inline]
     pub fn child_ptr_at(&self, i: usize) -> Result<Option<u64>> {
         match self {
-            NodeView::Internal { page } => { 
+            NodeView::Internal { page } => {
                 if i == 0 {
                     return Ok(Some(page.header.leftmost_child)); // No child pointer for index 0
                 }
                 let idx = i - 1; // Internal nodes have child pointers at i-1
-                page.child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e)) 
-            },
+                page.child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
+            }
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }
     }

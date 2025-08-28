@@ -1,24 +1,25 @@
 #![allow(dead_code)]
 
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicUsize, AtomicU64, AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use crate::bplustree::epoch::COMMIT_COUNT;
-use crate::bplustree::{Node, NodeView};
 use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
-use crate::storage::ValueCodec;
-use crate::storage::KeyCodec;
-use crate::storage::metadata;
-use crate::storage::{NodeStorage, MetadataStorage, Metadata, {METADATA_PAGE_1, METADATA_PAGE_2}};
+use crate::bplustree::epoch::COMMIT_COUNT;
+use crate::bplustree::{Node, NodeView};
 use crate::storage::CodecError;
-use thiserror::Error;
+use crate::storage::KeyCodec;
+use crate::storage::ValueCodec;
+use crate::storage::metadata;
+use crate::storage::{
+    Metadata, MetadataStorage, NodeStorage, {METADATA_PAGE_1, METADATA_PAGE_2},
+};
 use anyhow::Result;
+use thiserror::Error;
 
 pub type NodeId = u64; // Type for node IDs
 pub type PathNode = (NodeId, usize); // Type for path nodes (node ID and index in parent)
-
 
 fn print_vec<T: std::fmt::Debug>(vec: &Vec<T>, msg: &str) {
     println!("{}: {:?}", msg, vec);
@@ -42,9 +43,9 @@ pub enum DeleteResult<N> {
 
 pub enum SplitResult<K, N> {
     SplitNodes {
-        left_node: N,        // Left half (including inserted key)
-        right_node: N,       // Right half
-        split_key: K,        // First key of right node, to push into parent
+        left_node: N,  // Left half (including inserted key)
+        right_node: N, // Right half
+        split_key: K,  // First key of right node, to push into parent
     },
 }
 
@@ -55,13 +56,13 @@ pub enum TreeError {
 
     #[error("Failed to initialize backend: {0}")]
     Backend(#[from] CodecError),
-    
+
     #[error("Bad input: {0}")]
     BadInput(String),
-    
+
     #[error("Failed to initialize backend: {0}")]
     BackendAny(String),
-    
+
     #[error("Node Not Found: {0}")]
     NodeNotFound(String),
 }
@@ -112,11 +113,11 @@ pub struct StagedMetadata {
 
 // Pointer to the committed metadata
 pub struct BaseVersion {
-    pub committed_ptr: *const Metadata
+    pub committed_ptr: *const Metadata,
 }
 
 /// B+ tree structure with generic key and value types, and a storage backend
-pub struct BPlusTree<K, V, S: NodeStorage<K, V>> 
+pub struct BPlusTree<K, V, S: NodeStorage<K, V>>
 where
     K: KeyCodec + Ord,
     V: ValueCodec,
@@ -127,8 +128,8 @@ where
     min_leaf_keys: usize,
     storage: S,
     epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
-    commit_count: AtomicUsize, // Number of commits made to the tree
-    txn_id: AtomicU64, // Slot of metadata storage
+    commit_count: AtomicUsize,    // Number of commits made to the tree
+    txn_id: AtomicU64,            // Slot of metadata storage
     committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
     // Phantom data to hold the types of keys and values
     phantom: std::marker::PhantomData<(K, V)>,
@@ -205,7 +206,9 @@ where
 
     pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult> {
         let mut collector = TransactionTracker::new();
-        let new_root_id = self.inner.insert_inner(key, value, root_id, &mut collector)?;
+        let new_root_id = self
+            .inner
+            .insert_inner(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -240,7 +243,7 @@ where
     pub fn search(&self, key: &K) -> Result<Option<V>> {
         self.inner.search(key)
     }
-    
+
     pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
         self.inner.search_inner_undecoded(key, root_id)
     }
@@ -248,7 +251,7 @@ where
     pub fn get_root_id(&self) -> NodeId {
         self.inner.get_root_id()
     }
-    
+
     pub fn get_height(&self) -> usize {
         self.inner.get_height()
     }
@@ -270,14 +273,18 @@ where
         self.inner.get_snapshot()
     }
 
-    pub fn try_commit(&self, version: &BaseVersion, new_metadata: StagedMetadata) -> Result<(), CommitError> {
+    pub fn try_commit(
+        &self,
+        version: &BaseVersion,
+        new_metadata: StagedMetadata,
+    ) -> Result<(), CommitError> {
         self.inner.try_commit(version, new_metadata)
     }
 
     pub fn get_metadata_ptr(&self) -> *const Metadata {
         self.inner.committed.load(Ordering::SeqCst)
     }
-    
+
     pub fn get_metadata(&self) -> &Metadata {
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
@@ -297,15 +304,24 @@ where
         self.inner.traverse()
     }
 
-    pub fn search_range_at_root<'a>(&'a self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    pub fn search_range_at_root<'a>(
+        &'a self,
+        root_id: NodeId,
+        start: &K,
+        end: &K,
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         self.inner.search_range(root_id, start, end)
     }
 
-    pub fn search_in_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    pub fn search_in_range<'a>(
+        &'a self,
+        start: &K,
+        end: &K,
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
     }
-    
+
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
         Arc::clone(&self.inner.epoch_mgr)
     }
@@ -328,35 +344,31 @@ where
             values: Vec::with_capacity(order),
         };
         if order < 2 {
-            return Err(TreeError::BadInput(
-                "Order must be at least 2".to_string()
-            ));
-        } 
+            return Err(TreeError::BadInput("Order must be at least 2".to_string()));
+        }
         // Initialize the root node ID
-        let init_id = storage.write_node(&root_node).map_err(|e| TreeError::BackendAny(e.to_string()))?;
+        let init_id = storage
+            .write_node(&root_node)
+            .map_err(|e| TreeError::BackendAny(e.to_string()))?;
         let init_txn_id = 1; // Initial transaction ID
         let md1 = Metadata {
             root_node_id: init_id,
             txn_id: init_txn_id, // Initial transaction ID
-            height: 1, // Initial height
-            checksum: 0, // Placeholder for checksum
-            size: 0, // Initial size
+            height: 1,           // Initial height
+            checksum: 0,         // Placeholder for checksum
+            size: 0,             // Initial size
             order,
         };
         let md2 = Metadata {
             root_node_id: init_id,
             txn_id: init_txn_id, // Initial transaction ID
-            height: 1, // Initial height
-            checksum: 0, // Placeholder for checksum
-            size: 0, // Initial size
+            height: 1,           // Initial height
+            checksum: 0,         // Placeholder for checksum
+            size: 0,             // Initial size
             order,
         };
-        let mut metadata_1 = metadata::new_metadata_page_with_object(
-            &md1,
-        );
-        let mut metadata_2 = metadata::new_metadata_page_with_object(
-            &md2,
-        );
+        let mut metadata_1 = metadata::new_metadata_page_with_object(&md1);
+        let mut metadata_2 = metadata::new_metadata_page_with_object(&md2);
         storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 
@@ -366,10 +378,10 @@ where
             storage,
             max_keys: order - 1,
             min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
-            min_leaf_keys: (order-1).div_ceil(2), // Ensure min_keys is at least 1
-            epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
-            commit_count: AtomicUsize::new(0), // Initialize commit count
-            txn_id: AtomicU64::new(init_txn_id), // Initialize transaction ID
+            min_leaf_keys: (order - 1).div_ceil(2),   // Ensure min_keys is at least 1
+            epoch_mgr: EpochManager::new_shared(),    // Initialize the epoch manager
+            commit_count: AtomicUsize::new(0),        // Initialize commit count
+            txn_id: AtomicU64::new(init_txn_id),      // Initialize transaction ID
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
             phantom: std::marker::PhantomData,
         })
@@ -380,7 +392,7 @@ where
         let md = storage.get_metadata()?;
         let md_ptr = Box::new(md);
         let order = md.order;
-        
+
         let max_keys = order - 1;
         let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 
         let min_leaf_keys = order.saturating_div(2); // Ensure min_keys is at least 1
@@ -391,8 +403,8 @@ where
             min_internal_keys,
             min_leaf_keys,
             epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
-            commit_count: AtomicUsize::new(0), // Initialize commit count
-            txn_id: AtomicU64::new(md.txn_id), // Initialize transaction ID
+            commit_count: AtomicUsize::new(0),     // Initialize commit count
+            txn_id: AtomicU64::new(md.txn_id),     // Initialize transaction ID
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
             phantom: std::marker::PhantomData,
         })
@@ -402,10 +414,10 @@ where
     pub fn new_with_deps(storage: S, epoch_mgr: EpochManager, order: usize) -> Self {
         let meta = Metadata {
             root_node_id: 2,
-            txn_id: 0, // Initial transaction ID
-            height: 1, // Initial height
+            txn_id: 0,   // Initial transaction ID
+            height: 1,   // Initial height
             checksum: 0, // Placeholder for checksum
-            size: 0, // Initial size
+            size: 0,     // Initial size
             order,
         };
         Self {
@@ -414,11 +426,11 @@ where
             commit_count: 0.into(),
             max_keys: order - 1,
             min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
-            min_leaf_keys: (order-1).div_ceil(2), // Ensure min_keys is at least 1
-            txn_id: AtomicU64::new(1), // Initial transaction ID
+            min_leaf_keys: (order - 1).div_ceil(2),   // Ensure min_keys is at least 1
+            txn_id: AtomicU64::new(1),                // Initial transaction ID
             committed: AtomicPtr::new(Box::into_raw(Box::new(meta))), // Initialize committed pointer
             phantom: std::marker::PhantomData,
-            }
+        }
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.
@@ -428,29 +440,35 @@ where
 
     // Writes a node to the B+ tree storage and updates the cache.
     fn write_node(&self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64> {
-       let new_id = self.storage.write_node(node)?;
-       tracker.add_new(new_id)?;
-       Ok(new_id)
+        let new_id = self.storage.write_node(node)?;
+        tracker.add_new(new_id)?;
+        Ok(new_id)
     }
 
-    pub fn get_insertion_path_undecoded(&self, key: &K, root_id: NodeId) -> Result<(Vec<PathNode>, Node<K, V>)> {
+    pub fn get_insertion_path_undecoded(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<(Vec<PathNode>, Node<K, V>)> {
         let mut path = vec![];
         let mut current_id = root_id;
 
         let mut encode_buf = vec![0u8; key.encoded_len()];
-        key.encode_key(encode_buf.as_mut()).
-            map_err(|e| CodecError::EncodeFailure {
-                    msg: e.to_string(),
-                })?;
+        key.encode_key(encode_buf.as_mut())
+            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
             match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
-                        let decoded_node = self.storage.read_node(current_id)?.ok_or_else(|| {
-                            TreeError::NodeNotFound(format!("Leaf node with ID {} not found", current_id))
-                        })?;
+                        let decoded_node =
+                            self.storage.read_node(current_id)?.ok_or_else(|| {
+                                TreeError::NodeNotFound(format!(
+                                    "Leaf node with ID {} not found",
+                                    current_id
+                                ))
+                            })?;
                         return Ok((path, decoded_node));
                     }
                     NodeView::Internal { .. } => {
@@ -464,22 +482,30 @@ where
                         if let Some(child_id) = child {
                             current_id = child_id; // Move to the child node
                         } else {
-                            TreeError::BackendAny(format!("Internal node cannot retrieve child at index {}", i));
+                            TreeError::BackendAny(format!(
+                                "Internal node cannot retrieve child at index {}",
+                                i
+                            ));
                         }
                     }
                 },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                   return Err(TreeError::BackendAny(
-                       "Node not found while getting insertion path".to_string(),
-                   ).into());
+                    return Err(TreeError::BackendAny(
+                        "Node not found while getting insertion path".to_string(),
+                    )
+                    .into());
                 }
             }
         }
     }
 
     // Returns the path of where a key should be inserted.
-    pub fn get_insertion_path(&self, key: &K, root_id: NodeId) -> Result<(Vec<PathNode>, Node<K, V>)> {
+    pub fn get_insertion_path(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<(Vec<PathNode>, Node<K, V>)> {
         let mut path = vec![];
         let mut current_id = root_id;
 
@@ -501,9 +527,10 @@ where
                 },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                   return Err(TreeError::BackendAny(
-                       "Node not found while getting insertion path".to_string(),
-                   ).into());
+                    return Err(TreeError::BackendAny(
+                        "Node not found while getting insertion path".to_string(),
+                    )
+                    .into());
                 }
             }
         }
@@ -516,16 +543,22 @@ where
     }
 
     // Inserts a key-value pair into the B+ tree.
-    pub fn insert_inner(&self, key: K, value: V, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
+    pub fn insert_inner(
+        &self,
+        key: K,
+        value: V,
+        root_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
-            return Err(TreeError::BackendAny(
-                "Expected a leaf node for insertion".to_string(),
-            ).into());
+            return Err(
+                TreeError::BackendAny("Expected a leaf node for insertion".to_string()).into(),
+            );
         };
-    
+
         match keys.binary_search(&key) {
             Ok(i) => {
                 values[i] = value; // Replace existing value
@@ -535,14 +568,14 @@ where
                 values.insert(i, value);
             }
         }
-    
+
         track.record_staged_size(self.get_size() + 1); // Update staged size
         track.record_staged_height(self.get_height()); // Update staged height - could be increased later
 
         if keys.len() > self.max_keys {
             self.handle_leaf_split(path, leaf_node, track)
         } else {
-           self.write_and_propagate(path, &leaf_node, track)
+            self.write_and_propagate(path, &leaf_node, track)
         }
     }
 
@@ -551,32 +584,31 @@ where
         &self,
         path: Vec<(NodeId, usize)>,
         leaf_node: Node<K, V>,
-        track: &mut impl TxnTracker
+        track: &mut impl TxnTracker,
     ) -> Result<NodeId> {
         let SplitResult::SplitNodes {
             left_node,
             right_node,
             split_key,
-        } = self.split_leaf_node(leaf_node)?;    
+        } = self.split_leaf_node(leaf_node)?;
         let right_id = self.write_node(&right_node, track)?;
         let left_id = self.write_node(&left_node, track)?;
-    
+
         self.propagate_split(path, left_id, right_id, split_key, track)
     }
 
     // Splits a leaf node into two nodes and returns the new right node, the left node, and the
     // first key of the right node to be pushed up to the parent.
-    fn split_leaf_node (
-        &self,
-        mut leaf_node: Node<K, V>,
-    ) -> Result<SplitResult<K, Node<K, V>>> {
+    fn split_leaf_node(&self, mut leaf_node: Node<K, V>) -> Result<SplitResult<K, Node<K, V>>> {
         // Equally split the keys and values between the two nodes.
         if let Node::Leaf { keys, values } = &mut leaf_node {
             let mid = keys.len() / 2;
             let split_idx = mid; // Index to split the keys and values
             let right_keys = keys.split_off(split_idx);
             let right_values = values.split_off(split_idx);
-            let split_key = right_keys.first().ok_or_else(|| { TreeError::BackendAny("Leaf node has no keys to split".to_string()) })?;
+            let split_key = right_keys.first().ok_or_else(|| {
+                TreeError::BackendAny("Leaf node has no keys to split".to_string())
+            })?;
             let right_leaf = Node::Leaf {
                 keys: right_keys.to_vec(),
                 values: right_values,
@@ -589,11 +621,13 @@ where
                 keys: std::mem::take(&mut new_keys),
                 values: std::mem::take(&mut new_values),
             };
-            Ok( SplitResult::SplitNodes { left_node: left_leaf, right_node: right_leaf, split_key: split_key.clone()})
+            Ok(SplitResult::SplitNodes {
+                left_node: left_leaf,
+                right_node: right_leaf,
+                split_key: split_key.clone(),
+            })
         } else {
-            Err(TreeError::BackendAny(
-                "Expected a leaf node for splitting".to_string(),
-            ).into())
+            Err(TreeError::BackendAny("Expected a leaf node for splitting".to_string()).into())
         }
     }
 
@@ -616,21 +650,30 @@ where
                 children: right_children,
             };
             // split key is the key at the split index, which will be  removed and pushed up to the parent
-            let split_key = keys.pop().ok_or_else(|| { TreeError::BackendAny("Internal node has no mid keys for split".to_string()) })?;
+            let split_key = keys.pop().ok_or_else(|| {
+                TreeError::BackendAny("Internal node has no mid keys for split".to_string())
+            })?;
             let left_internal = Node::Internal {
                 keys: std::mem::take(keys),
                 children: std::mem::take(children),
             };
-            Ok(SplitResult::SplitNodes { right_node: right_internal, left_node: left_internal, split_key: split_key.clone() })
+            Ok(SplitResult::SplitNodes {
+                right_node: right_internal,
+                left_node: left_internal,
+                split_key: split_key.clone(),
+            })
         } else {
-            Err(TreeError::BackendAny(
-                "Expected an internal node for splitting".to_string(),
-            ).into())
+            Err(TreeError::BackendAny("Expected an internal node for splitting".to_string()).into())
         }
     }
 
     // Writes a node and propagates the update to the parent nodes.
-    fn write_and_propagate(&self, path: Vec<(u64, usize)>, node: &Node<K, V>, track: &mut impl TxnTracker) -> Result<NodeId> {
+    fn write_and_propagate(
+        &self,
+        path: Vec<(u64, usize)>,
+        node: &Node<K, V>,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId> {
         let new_node_id = self.write_node(node, track)?;
         if path.is_empty() {
             Ok(new_node_id)
@@ -652,19 +695,20 @@ where
                 .read_node(parent_id)?
                 .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
 
-            let Node::Internal { ref mut children, .. } = parent_node else {
+            let Node::Internal {
+                ref mut children, ..
+            } = parent_node
+            else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node while updating parents".to_string(),
                 )
                 .into());
             };
             if insert_pos >= children.len() {
-                return Err(TreeError::BackendAny(
-                    format!(
-                        "Insert position {} out of bounds for children in node {}",
-                        insert_pos, parent_id
-                    ),
-                )
+                return Err(TreeError::BackendAny(format!(
+                    "Insert position {} out of bounds for children in node {}",
+                    insert_pos, parent_id
+                ))
                 .into());
             }
             // Reclaim the original child node and update the child pointer
@@ -678,23 +722,26 @@ where
 
     // Insert into a parent node, the path is the collection of the nodes that are parent to the
     // leaf, try inserting in a lifo manner.
-    fn propagate_split(&self,
-          mut path: Vec<(NodeId, usize)>,
-          mut left: NodeId,
-          mut right: NodeId,
-          mut key: K,
-          track: &mut impl TxnTracker,
-        ) -> Result<NodeId> {
+    fn propagate_split(
+        &self,
+        mut path: Vec<(NodeId, usize)>,
+        mut left: NodeId,
+        mut right: NodeId,
+        mut key: K,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
                     "Node not found while inserting into parent".to_string(),
-                ).into());
+                )
+                .into());
             };
             let Node::Internal { keys, children } = &mut node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
-                ).into());
+                )
+                .into());
             };
             // Insert the split key and adjust children
             keys.insert(insert_pos, key);
@@ -736,7 +783,7 @@ where
         let root_id = self.get_root_id();
         self.search_inner_undecoded(key, root_id)
     }
-    
+
     // Search for a key and return the value if exists
     pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
         let _guard = self.epoch_mgr.pin();
@@ -749,7 +796,7 @@ where
                     // where it would be inserted
                     let i = match keys.binary_search(key) {
                         Ok(i) => i + 1, // Go to the next child
-                        Err(i) => i, // Go to the child where it would be inserted
+                        Err(i) => i,    // Go to the child where it would be inserted
                     };
                     current_id = children[i];
                 }
@@ -769,17 +816,15 @@ where
         let mut current_id = root_id;
 
         let mut encode_buf = vec![0u8; key.encoded_len()];
-        key.encode_key(encode_buf.as_mut()).
-            map_err(|e| CodecError::EncodeFailure {
-                    msg: e.to_string(),
-                })?;
+        key.encode_key(encode_buf.as_mut())
+            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
             match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
-                            Ok(i) =>  {
+                            Ok(i) => {
                                 let val = node.value_at(i)?;
                                 match val {
                                     Some(val) => {
@@ -788,9 +833,7 @@ where
                                     None => return Ok(None), // Key not found
                                 }
                             }
-                            Err(_i) => {
-                                return Ok(None)
-                            }
+                            Err(_i) => return Ok(None),
                         };
                     }
                     NodeView::Internal { .. } => {
@@ -803,15 +846,19 @@ where
                         if let Some(child_id) = child {
                             current_id = child_id; // Move to the child node
                         } else {
-                            TreeError::BackendAny(format!("Internal node cannot retrieve child at index {}", i));
+                            TreeError::BackendAny(format!(
+                                "Internal node cannot retrieve child at index {}",
+                                i
+                            ));
                         }
                     }
                 },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                   return Err(TreeError::BackendAny(
-                       "Node not found while getting insertion path".to_string(),
-                   ).into());
+                    return Err(TreeError::BackendAny(
+                        "Node not found while getting insertion path".to_string(),
+                    )
+                    .into());
                 }
             }
         }
@@ -819,7 +866,12 @@ where
 
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
-    pub fn search_range<'a>(&'a self, root_id: NodeId, start: &K, end: &K) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    pub fn search_range<'a>(
+        &'a self,
+        root_id: NodeId,
+        start: &K,
+        end: &K,
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
         if start > end {
             return Ok(None); // Invalid range
         }
@@ -834,18 +886,28 @@ where
     }
 
     // Deletes a key from the B+ tree.
-    pub fn delete(&mut self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<NodeId> {
+    pub fn delete(
+        &mut self,
+        key: &K,
+        root_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId> {
         let res = self.delete_inner(key, root_id, track)?;
         match res {
-            DeleteResult::NotFound => Err(TreeError::BackendAny("Key not found for deletion".to_string()).into()), // Key not found, return current root
-            DeleteResult::Deleted(new_root_id) => {
-                Ok(new_root_id)
-            }
+            DeleteResult::NotFound => {
+                Err(TreeError::BackendAny("Key not found for deletion".to_string()).into())
+            } // Key not found, return current root
+            DeleteResult::Deleted(new_root_id) => Ok(new_root_id),
         }
     }
 
     // Delete the key value pair and handle underflow of leaf nodes
-    pub fn delete_inner(&self, key: &K, root_id: NodeId, track: &mut impl TxnTracker) -> Result<DeleteResult<NodeId>> {
+    pub fn delete_inner(
+        &self,
+        key: &K,
+        root_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<DeleteResult<NodeId>> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut node) = self.get_insertion_path_undecoded(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
@@ -858,7 +920,7 @@ where
         // Update leaf node
         keys.remove(index);
         values.remove(index);
-        
+
         track.record_staged_size(self.get_size().saturating_sub(1));
         track.record_staged_height(self.get_height()); // Update staged height, it may be decreased later
 
@@ -884,27 +946,41 @@ where
                 return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
             };
             {
-                let Node::Internal { keys: ref mut parent_keys, ref mut children } = parent_node else {
-                    return Err(TreeError::BackendAny("Expected internal node as parent".to_string()).into());
+                let Node::Internal {
+                    keys: ref mut parent_keys,
+                    ref mut children,
+                } = parent_node
+                else {
+                    return Err(TreeError::BackendAny(
+                        "Expected internal node as parent".to_string(),
+                    )
+                    .into());
                 };
                 // If the root has only one child, replace the root with that child
-                if path.is_empty() 
-                   && children.len() == 1 {
-                   return Ok(children[0]);
+                if path.is_empty() && children.len() == 1 {
+                    return Ok(children[0]);
                 }
                 // Try borrowing from left or right sibling, on success just propagate the update,
                 // no change in number of keys in the parent node
-                if idx > 0 && self.try_borrow_from_left(&mut node, parent_keys, children, idx, track)? {
+                if idx > 0
+                    && self.try_borrow_from_left(&mut node, parent_keys, children, idx, track)?
+                {
                     return self.write_and_propagate(path, &parent_node, track);
                 }
-                if (idx < children.len() - 1) && self.try_borrow_from_right(&mut node, parent_keys, children, idx, track)? {
+                if (idx < children.len() - 1)
+                    && self.try_borrow_from_right(&mut node, parent_keys, children, idx, track)?
+                {
                     return self.write_and_propagate(path, &parent_node, track);
                 }
                 // Try to merge with left or right sibling
                 let mut merged = None;
-                if let Some(id) = self.try_merge_with_left(&mut node, parent_keys, children, idx, track)? {
+                if let Some(id) =
+                    self.try_merge_with_left(&mut node, parent_keys, children, idx, track)?
+                {
                     merged = Some(id);
-                } else if let Some(id) = self.try_merge_with_right(&mut node, parent_keys, children, idx, track)? {
+                } else if let Some(id) =
+                    self.try_merge_with_right(&mut node, parent_keys, children, idx, track)?
+                {
                     merged = Some(id);
                 }
                 // We should have merged with a sibling or borrowed from it otherwise invalid state
@@ -913,13 +989,13 @@ where
                     if parent_keys.len() < self.min_internal_keys {
                         // handle root node underflow
                         if path.is_empty() {
-                           if children.len() == 1 {
-                               track.reclaim(parent_id)?;
-                               track.record_staged_height(self.get_height().saturating_sub(1));
-                               return Ok(children[0]); // If the root has only one child, replace the root with that child
-                           } else {
-                               return self.write_and_propagate(path, &parent_node, track);
-                           }
+                            if children.len() == 1 {
+                                track.reclaim(parent_id)?;
+                                track.record_staged_height(self.get_height().saturating_sub(1));
+                                return Ok(children[0]); // If the root has only one child, replace the root with that child
+                            } else {
+                                return self.write_and_propagate(path, &parent_node, track);
+                            }
                         }
                         // Continue handling underflow
                         node = parent_node;
@@ -954,8 +1030,16 @@ where
         };
         match (&mut left_sibling, &mut *node) {
             (
-                Node::Leaf { keys: left_keys, values: left_values, .. },
-                Node::Leaf { keys: right_keys, values: right_values, .. },
+                Node::Leaf {
+                    keys: left_keys,
+                    values: left_values,
+                    ..
+                },
+                Node::Leaf {
+                    keys: right_keys,
+                    values: right_values,
+                    ..
+                },
             ) => {
                 if left_keys.len() > self.min_leaf_keys {
                     let borrowed_key = left_keys.pop().ok_or_else(|| {
@@ -967,14 +1051,20 @@ where
                     right_keys.insert(0, borrowed_key.clone());
                     right_values.insert(0, borrowed_value);
                     // Update the separator key with the borrowed key - separator should alwasy be the first key of the right child
-                    parent_keys[parent_key_idx] = borrowed_key; 
+                    parent_keys[parent_key_idx] = borrowed_key;
                 } else {
                     return Ok(false);
                 }
             }
             (
-                Node::Internal { keys: left_keys, children: left_children },
-                Node::Internal { keys: right_keys, children: right_children },
+                Node::Internal {
+                    keys: left_keys,
+                    children: left_children,
+                },
+                Node::Internal {
+                    keys: right_keys,
+                    children: right_children,
+                },
             ) => {
                 if left_keys.len() > self.min_internal_keys {
                     let borrowed_key = left_keys.pop().ok_or_else(|| {
@@ -994,7 +1084,8 @@ where
             _ => {
                 return Err(TreeError::BackendAny(
                     "Expected matching node types for borrowing".to_string(),
-                ).into());
+                )
+                .into());
             }
         };
         let new_node_id = self.write_node(node, track)?;
@@ -1027,8 +1118,16 @@ where
         };
         match (&mut *node, &mut right_sibling) {
             (
-                Node::Leaf { keys: left_keys, values: left_values, .. },
-                Node::Leaf { keys: right_keys, values: right_values, .. },
+                Node::Leaf {
+                    keys: left_keys,
+                    values: left_values,
+                    ..
+                },
+                Node::Leaf {
+                    keys: right_keys,
+                    values: right_values,
+                    ..
+                },
             ) => {
                 if right_keys.len() > self.min_leaf_keys {
                     // Borrow from the right sibling
@@ -1045,16 +1144,22 @@ where
                 }
             }
             (
-                Node::Internal { keys: left_keys, children: left_children },
-                Node::Internal { keys: right_keys, children: right_children },
+                Node::Internal {
+                    keys: left_keys,
+                    children: left_children,
+                },
+                Node::Internal {
+                    keys: right_keys,
+                    children: right_children,
+                },
             ) => {
-                if right_keys.len() > self.min_internal_keys { 
+                if right_keys.len() > self.min_internal_keys {
                     // Steps for Internal node are diffent we need to swap the first key of the
                     // right sibling with the separator from parent
                     // 1. Move separator key from parent to the left node
                     left_keys.push(parent_keys[parent_key_idx].clone());
                     // 2. Update the parent key with the first key of the right sibling
-                    parent_keys[parent_key_idx] = right_keys.remove(0); 
+                    parent_keys[parent_key_idx] = right_keys.remove(0);
                     // 3. Borrow a child from the right sibling
                     let borrowed_child = right_children.remove(0);
                     left_children.push(borrowed_child);
@@ -1065,7 +1170,8 @@ where
             _ => {
                 return Err(TreeError::BackendAny(
                     "Expected matching node types for borrowing".to_string(),
-                ).into());
+                )
+                .into());
             }
         }
         // Write the updated nodes back to storage
@@ -1099,8 +1205,12 @@ where
         };
         match (&mut left_sibling, &mut *node) {
             (
-                Node::Leaf { keys: left_keys, .. },
-                Node::Leaf { keys: right_keys, .. },
+                Node::Leaf {
+                    keys: left_keys, ..
+                },
+                Node::Leaf {
+                    keys: right_keys, ..
+                },
             ) => {
                 // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
@@ -1112,17 +1222,21 @@ where
                 // Update the parent node
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children.remove(idx);
-                track.reclaim(children[idx-1])?; // Reclaim the left sibling node
+                track.reclaim(children[idx - 1])?; // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node ID
                 // Update the parent keys
                 if !parent_keys.is_empty() {
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
                 }
                 Ok(Some(merged_node_id))
-            },
+            }
             (
-                Node::Internal { keys: left_keys, .. },
-                Node::Internal { keys: right_keys, .. },
+                Node::Internal {
+                    keys: left_keys, ..
+                },
+                Node::Internal {
+                    keys: right_keys, ..
+                },
             ) => {
                 // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
@@ -1137,15 +1251,14 @@ where
                 // Update the parent node
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children.remove(idx);
-                track.reclaim(children[idx-1])?; // Reclaim the left sibling node
+                track.reclaim(children[idx - 1])?; // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
-            },
-            _ => {
-                Err(TreeError::BackendAny(
-                    "Expected matching node types for merging".to_string(),
-                ).into())
             }
+            _ => Err(
+                TreeError::BackendAny("Expected matching node types for merging".to_string())
+                    .into(),
+            ),
         }
     }
 
@@ -1163,7 +1276,7 @@ where
         if right_idx >= children.len() {
             return Ok(None);
         }
-        
+
         let right_sibling_id = children[right_idx];
         let parent_key_idx = idx; // The key in the parent node that separates the two children
         let Some(mut right_sibling) = self.read_node(right_sibling_id)? else {
@@ -1171,8 +1284,12 @@ where
         };
         match (&mut *node, &mut right_sibling) {
             (
-                Node::Leaf { keys: left_keys, .. },
-                Node::Leaf { keys: right_keys, .. },
+                Node::Leaf {
+                    keys: left_keys, ..
+                },
+                Node::Leaf {
+                    keys: right_keys, ..
+                },
             ) => {
                 // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
@@ -1191,10 +1308,14 @@ where
                     parent_keys.remove(parent_key_idx); // Update the parent key with the first key of the merged node
                 }
                 Ok(Some(merged_node_id))
-            },
+            }
             (
-                Node::Internal { keys: left_keys, .. },
-                Node::Internal { keys: right_keys, .. },
+                Node::Internal {
+                    keys: left_keys, ..
+                },
+                Node::Internal {
+                    keys: right_keys, ..
+                },
             ) => {
                 // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
@@ -1212,12 +1333,11 @@ where
                 track.reclaim(children[idx])?; // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
-            },
-            _ => {
-                Err(TreeError::BackendAny(
-                    "Expected matching node types for merging".to_string(),
-                ).into())
             }
+            _ => Err(
+                TreeError::BackendAny("Expected matching node types for merging".to_string())
+                    .into(),
+            ),
         }
     }
 
@@ -1225,17 +1345,26 @@ where
     pub fn merge_nodes(
         &self,
         left_node: &mut Node<K, V>,
-        right_node: &mut Node<K, V>
+        right_node: &mut Node<K, V>,
     ) -> Result<Node<K, V>> {
-        match(&mut *left_node, right_node) { // Match on a new mutable reference to the left node 
-        (
-            Node::Leaf { keys: left_keys, values: left_values },
-            Node::Leaf { keys: right_keys, values: right_values },
-        ) => {  // Check if the total number of keys exceeds the maximum allowed
+        match (&mut *left_node, right_node) {
+            // Match on a new mutable reference to the left node
+            (
+                Node::Leaf {
+                    keys: left_keys,
+                    values: left_values,
+                },
+                Node::Leaf {
+                    keys: right_keys,
+                    values: right_values,
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
-                    ).into());
+                    )
+                    .into());
                 }
                 // Merge the two leaf nodes
                 left_keys.append(right_keys); // Move keys from right to left
@@ -1244,15 +1373,22 @@ where
                     keys: std::mem::take(left_keys),
                     values: std::mem::take(left_values),
                 })
-            },
-        (
-            Node::Internal { keys: left_keys, children: left_children },
-            Node::Internal { keys: right_keys, children: right_children },
-        ) => {                
+            }
+            (
+                Node::Internal {
+                    keys: left_keys,
+                    children: left_children,
+                },
+                Node::Internal {
+                    keys: right_keys,
+                    children: right_children,
+                },
+            ) => {
                 if left_keys.len() + right_keys.len() > self.max_keys {
                     return Err(TreeError::BackendAny(
                         "Cannot merge internal nodes, total keys exceed max keys".to_string(),
-                    ).into());
+                    )
+                    .into());
                 }
                 left_keys.append(right_keys);
                 left_children.append(right_children);
@@ -1261,10 +1397,8 @@ where
                     keys: std::mem::take(left_keys),
                     children: std::mem::take(left_children),
                 })
-             },
-        _ => Err(TreeError::BackendAny(
-            "Expected leaf nodes for merging".to_string(),
-        ).into()),
+            }
+            _ => Err(TreeError::BackendAny("Expected leaf nodes for merging".to_string()).into()),
         }
     }
 
@@ -1314,7 +1448,7 @@ where
         // 1. Write new metadata (to double-buffered slot)
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
         let target_slot = new_txn_id % 2;
-        
+
         // Commit the metadata for the new root
         self.storage.commit_metadata(
             target_slot as u8,
@@ -1329,14 +1463,14 @@ where
         let current = unsafe { &mut *current_ptr };
         // Flush the storage to ensure all changes are written
         self.storage.flush()?;
-        
+
         current.root_node_id = new_root_id;
         current.txn_id = new_txn_id;
 
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
         let _new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
-        
+
         let safe_epoch = self.epoch_mgr.oldest_active();
         let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
         for pid in reclaimed {
@@ -1350,7 +1484,11 @@ where
     }
 
     // Attempts to commit the transaction with the given metadata.
-    pub fn try_commit(&self, base_version: &BaseVersion, new_meta: StagedMetadata) -> Result<(), CommitError> {
+    pub fn try_commit(
+        &self,
+        base_version: &BaseVersion,
+        new_meta: StagedMetadata,
+    ) -> Result<(), CommitError> {
         #[cfg(any(test, feature = "testing"))]
         {
             let injected: Result<(), CommitError> = Ok(());
@@ -1391,16 +1529,17 @@ where
         match result {
             // ✅ cas has succeeded, proceed with commit to storage
             Ok(old_ptr) => {
-                // 3. Commit metadata to the double-buffered slot 
+                // 3. Commit metadata to the double-buffered slot
                 let slot = new_txn_id % 2;
 
-                let res = self.storage.commit_metadata_with_object(
-                    slot as u8,
-                    &metadata,
-                );
+                let res = self
+                    .storage
+                    .commit_metadata_with_object(slot as u8, &metadata);
                 if let Err(e) = res {
                     // ❌ commit failed, restore old metadata
-                    unsafe { drop(Box::from_raw(new_ptr)); } // Discard new metadata
+                    unsafe {
+                        drop(Box::from_raw(new_ptr));
+                    } // Discard new metadata
                     self.committed.store(current_ptr, Ordering::Release); // Restore old metadata
                     return Err(CommitError::Io(e));
                 }
@@ -1425,7 +1564,9 @@ where
             }
             Err(_) => {
                 // ❌ Lost race, discard new metadata
-                unsafe { drop(Box::from_raw(new_ptr)); }
+                unsafe {
+                    drop(Box::from_raw(new_ptr));
+                }
                 Err(CommitError::RebaseRequired)
             }
         }
@@ -1435,7 +1576,7 @@ where
     pub fn metadata(&self) -> &Metadata {
         unsafe { &*self.committed.load(Ordering::Acquire) }
     }
-    
+
     // Safe accessor for current committed metadata
     pub fn metadata_ptr(&self) -> *const Metadata {
         unsafe { &*self.committed.load(Ordering::Acquire) }
@@ -1469,11 +1610,7 @@ where
     }
 
     // Recursive implementation of traversal.
-    pub fn traverse_inner(
-        &self,
-        node_id: NodeId,
-        result: &mut Vec<(K, V)>,
-    ) -> Result<()> {
+    pub fn traverse_inner(&self, node_id: NodeId, result: &mut Vec<(K, V)>) -> Result<()> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
                 for (i, child_id) in children.iter().enumerate() {
@@ -1498,29 +1635,25 @@ where
     }
 
     pub fn get_root_id(&self) -> NodeId {
-        let ptr = self.committed
-            .load(Ordering::Acquire);
+        let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.root_node_id
     }
 
     pub fn get_height(&self) -> usize {
-        let ptr = self.committed
-            .load(Ordering::Acquire);
+        let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.height
     }
 
     pub fn get_size(&self) -> usize {
-        let ptr = self.committed
-            .load(Ordering::Acquire);
+        let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.size
     }
 
     pub fn get_order(&self) -> usize {
-        let ptr = self.committed
-            .load(Ordering::Acquire);
+        let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.order
     }
@@ -1538,7 +1671,6 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1551,11 +1683,17 @@ mod tests {
         let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
 
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let base = BaseVersion {
+            committed_ptr: tree.metadata_ptr(),
+        };
+        let staged = StagedMetadata {
+            root_id: 42,
+            height: 3,
+            size: 10,
+        };
 
         let res = tree.try_commit(&base, staged);
-        
+
         assert!(res.is_ok(), "Commit should succeed");
 
         let m = tree.metadata();
@@ -1568,9 +1706,15 @@ mod tests {
     fn commit_happy_path_2() {
         let storage = TestStorage::new(); // Reset the test storage state
         let h = test_tree::<u64, u64, TestStorage>(storage, 128);
-        let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
+        let base = BaseVersion {
+            committed_ptr: h.tree.metadata_ptr(),
+        };
 
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let staged = StagedMetadata {
+            root_id: 42,
+            height: 3,
+            size: 10,
+        };
         h.tree.try_commit(&base, staged).expect("commit ok");
 
         let m = h.tree.metadata();
@@ -1593,12 +1737,18 @@ mod tests {
     #[test]
     fn commit_aborts_on_conflict() {
         let storage = TestStorage::new(); // Reset the test storage state
-        storage.inject_commit_failure(true); 
+        storage.inject_commit_failure(true);
         let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let base = BaseVersion {
+            committed_ptr: tree.metadata_ptr(),
+        };
+        let staged = StagedMetadata {
+            root_id: 42,
+            height: 3,
+            size: 10,
+        };
 
         let result = tree.try_commit(&base, staged);
         println!("Commit result: {:?}", result);
@@ -1614,8 +1764,22 @@ mod tests {
 
         for i in 0..5 {
             loop {
-                let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
-                if h.tree.try_commit(&base, StagedMetadata { root_id: 100 + i, height: 3, size: i as usize }).is_ok() { break; }
+                let base = BaseVersion {
+                    committed_ptr: h.tree.metadata_ptr(),
+                };
+                if h.tree
+                    .try_commit(
+                        &base,
+                        StagedMetadata {
+                            root_id: 100 + i,
+                            height: 3,
+                            size: i as usize,
+                        },
+                    )
+                    .is_ok()
+                {
+                    break;
+                }
             }
             let now = h.tree.metadata().txn_id;
             assert_eq!(now, prev + 1);
@@ -1629,8 +1793,19 @@ mod tests {
         let storage = TestStorage::new(); // Reset the test storage state
         let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         for i in 0..6 {
-            let base = BaseVersion { committed_ptr: h.tree.metadata_ptr() };
-            h.tree.try_commit(&base, StagedMetadata { root_id: 200 + i, height: 3, size: i as usize }).unwrap();
+            let base = BaseVersion {
+                committed_ptr: h.tree.metadata_ptr(),
+            };
+            h.tree
+                .try_commit(
+                    &base,
+                    StagedMetadata {
+                        root_id: 200 + i,
+                        height: 3,
+                        size: i as usize,
+                    },
+                )
+                .unwrap();
             let (slot, txn, ..) = h.storage.last_commit().unwrap();
             assert_eq!(slot, (txn % 2) as u8);
         }
@@ -1640,36 +1815,53 @@ mod tests {
     #[test]
     fn commit_metadata_write_failure_is_abort() {
         let storage = TestStorage::new(); // Reset the test storage state
-        storage.inject_commit_failure(true); 
+        storage.inject_commit_failure(true);
         let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let base = BaseVersion {
+            committed_ptr: tree.metadata_ptr(),
+        };
+        let staged = StagedMetadata {
+            root_id: 42,
+            height: 3,
+            size: 10,
+        };
 
         let md_before = tree.metadata(); // Ensure metadata is still valid
         let result = tree.try_commit(&base, staged);
         assert!(result.is_err(), "Commit should fail due to storage failure");
         let md_after = tree.metadata(); // Ensure metadata is still valid
-        assert_eq!(md_before.root_node_id, md_after.root_node_id, "Root node ID should not change on commit failure");
+        assert_eq!(
+            md_before.root_node_id, md_after.root_node_id,
+            "Root node ID should not change on commit failure"
+        );
     }
 
     // commit should publish data regardless of a storage flush failure
     #[test]
     fn flush_failure_after_cas_keeps_published_state() {
         let storage = TestStorage::new(); // Reset the test storage state
-        storage.inject_flush_failure(true); 
+        storage.inject_flush_failure(true);
         let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
-        let base = BaseVersion { committed_ptr: tree.metadata_ptr() };
-        let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+        let base = BaseVersion {
+            committed_ptr: tree.metadata_ptr(),
+        };
+        let staged = StagedMetadata {
+            root_id: 42,
+            height: 3,
+            size: 10,
+        };
 
         let md_before = tree.metadata(); // Ensure metadata is still valid
         let result = tree.try_commit(&base, staged);
         assert!(result.is_err(), "Commit should fail due to flush failure");
         let md_after = tree.metadata(); // Ensure metadata is still valid
-        assert_ne!(md_before.root_node_id, md_after.root_node_id, "Metadata should be published regardless of flush failure");
+        assert_ne!(
+            md_before.root_node_id, md_after.root_node_id,
+            "Metadata should be published regardless of flush failure"
+        );
     }
 }
-

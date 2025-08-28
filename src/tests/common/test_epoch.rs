@@ -20,7 +20,9 @@ pub struct TestEpoch {
 
 impl TestEpoch {
     pub fn new() -> Self {
-        Self { state: Arc::new(Mutex::new(EpochState::default())) }
+        Self {
+            state: Arc::new(Mutex::new(EpochState::default())),
+        }
     }
 
     pub fn set_oldest_active(&self, e: u64) {
