@@ -9,7 +9,7 @@ pub const LEAF_NODE_VERSION: u8 = 0;
 
 // A design for storing leaf nodes based on a Page-Local Heap
 // [HEADER (fixed)]
-// [RECORD OFFSETS: N * u16]
+// [ENTRY SLOTS (KV OFFSETS): N * u16]
 // [RECORD AREA: N × [klen][vlen][key][value]]
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
@@ -374,5 +374,19 @@ mod tests {
         let (retrieved_key, retrieved_value) = page.get_entry(idx_rand).unwrap();
         assert_eq!(retrieved_value, value.as_bytes());
         assert_eq!(retrieved_key, key.as_bytes());
+        
+        for i in idx_rand+1..iterations {
+            let mut key = format!("key{}", i);
+            let mut value = format!("value{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+                value.push_str(&format!("value{}", i));
+            }
+            println!("getting value at {}", i);
+            let (retrieved_key, retrieved_value) = page.get_entry(i+1).unwrap();
+            println!("Retrieved {:?}, want {:?}", String::from_utf8_lossy(retrieved_key), String::from_utf8_lossy(key.as_bytes()));
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, value.as_bytes());
+        }
     }
 }
