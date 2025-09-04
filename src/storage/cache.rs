@@ -6,7 +6,9 @@ use std::cell::RefCell;
 use std::num::NonZeroUsize;
 
 const CACHE_CAPACITY: usize = 100; // Default cache capacity
-//
+
+type CacheError = std::io::Error;
+
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
 pub struct CacheLayer<K, V, B: NodeStorage<K, V>>
 where
@@ -39,12 +41,13 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     V: ValueCodec + Clone,
     B: NodeStorage<K, V>,
 {
-    fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
+    type Error = CacheError;
+    fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, Self::Error> {
         if let Some(node) = self.cache.borrow().peek(&id) {
             // If the node is found in the cache, we return a deep copy of it.
             return Ok(Some(node.clone()));
         }
-        let node = self.backend.read_node(id)?;
+        let node = self.backend.read_node(id).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Backend read error: {}", e)))?;
         if let Some(n) = node.clone() { // Clone the node into the cache
             self.cache.borrow_mut().put(id, n);
             Ok(node)
@@ -54,9 +57,9 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         }
     }
 
-    fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error> {
+    fn write_node(&self, node: &Node<K, V>) -> Result<u64, Self::Error> {
         // Write the node to the backend storage
-        let id = self.backend.write_node(node)?;
+        let id = self.backend.write_node(node).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Backend write error: {}", e)))?;
         self.cache.borrow_mut().put(id, node.clone()).ok_or(io::Error::other(
             "Cache write failed: cache is full or node already exists", // TODO rethink this error message
         ))?;
@@ -74,9 +77,9 @@ impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
         self.backend.free_node(id)
     }
 
-    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, Self::Error> {
         todo!{}
     }
 
-    fn read_node_view(&self, _node: NodeId) -> Result<Option<NodeView>, anyhow::Error> { todo!{} }
+    fn read_node_view(&self, _node: NodeId) -> Result<Option<NodeView>, Self::Error> { todo!{} }
 }

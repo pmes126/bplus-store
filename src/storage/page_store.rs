@@ -5,8 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::layout::PAGE_SIZE;
+use crate::metadata::INITIAL_PAGE_ID;
 use crate::storage::PageStorage;
-use crate::storage::metadata::INITIAL_PAGE_ID;
+
+pub use crate::storage::page_store;
 
 pub struct PageStore {
     file: Arc<File>,

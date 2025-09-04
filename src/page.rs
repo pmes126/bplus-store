@@ -3,10 +3,11 @@ pub mod leaf_page;
 
 pub use internal_page::InternalPage;
 pub use leaf_page::LeafPage;
-use thiserror::Error;
 
 pub const LEAF_NODE_TAG: u64 = 1;
 pub const INTERNAL_NODE_TAG: u64 = 0;
+
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PageCodecError {

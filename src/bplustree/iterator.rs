@@ -1,9 +1,9 @@
 #![allow(dead_code)]
-
+use crate::api::TreeError;
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
-use crate::storage::{KeyCodec, NodeStorage, ValueCodec};
-use std::fmt::Debug;
+use crate::codec::{KeyCodec, ValueCodec};
+use crate::storage::NodeStorage;
 use std::sync::Arc;
 
 struct TraversalFrame {
@@ -33,11 +33,11 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
+impl<'a, K: Clone, V, S> BPlusTreeIter<'a, K, V, S>
 where
     S: NodeStorage<K, V>,
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
+    K: KeyCodec + Ord,
+    V: ValueCodec,
 {
     pub fn new(
         storage: &'a S,
@@ -87,7 +87,7 @@ where
                         None => 0,
                     };
                     self.index = pos;
-                    self.current_leaf = node.clone();
+                    self.current_leaf = node;
                     return Ok(());
                 }
                 None => {
@@ -99,19 +99,18 @@ where
     }
 }
 
-impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
+impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
 where
     S: NodeStorage<K, V>,
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
 {
-    type Item = Result<(K, V), anyhow::Error>;
+    type Item = Result<(K, V), TreeError>;
 
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf
-            {
+            if let Some(Node::Leaf { keys, values, .. }) = &mut self.current_leaf {
                 if self.index < keys.len() {
                     let (k, v) = (&keys[self.index], &values[self.index]);
                     if k > &self.end {

@@ -1,35 +1,16 @@
 use crate::bplustree::{Node, NodeView};
+use crate::codec::{CodecError, KeyCodec, NodeCodec, ValueCodec};
 use crate::layout::PAGE_SIZE;
-use crate::storage::page::INTERNAL_NODE_TAG;
-use crate::storage::page::InternalPage;
-use crate::storage::page::LEAF_NODE_TAG;
-use crate::storage::page::LeafPage;
-use crate::storage::{KeyCodec, NodeCodec, ValueCodec};
-use thiserror::Error;
+use crate::page::INTERNAL_NODE_TAG;
+use crate::page::InternalPage;
+use crate::page::LEAF_NODE_TAG;
+use crate::page::LeafPage;
 
 pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
 
 const MAX_KEY_SIZE: usize = 256; // Maximum key size for internal nodes
 const MAX_VAL_SIZE: usize = 256; // Maximum key size for internal nodes
-
-#[derive(Debug, Error)]
-pub enum CodecError {
-    #[error("Error decoding value: {msg}")]
-    DecodeFailure { msg: String },
-    #[error("Error encoding value: {msg}")]
-    EncodeFailure { msg: String },
-    #[error("Error converting from byte slice: {source}")]
-    FromSliceError {
-        #[from]
-        source: std::array::TryFromSliceError,
-    },
-    #[error("IO error: {source}")]
-    Io {
-        #[from]
-        source: std::io::Error,
-    },
-}
 
 impl KeyCodec for u64 {
     fn encode_key(&self, out: &mut [u8]) -> Result<usize, CodecError> {

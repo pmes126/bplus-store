@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::storage::MetadataStorage;
-use crate::storage::NodeStorage;
-use crate::storage::metadata::Metadata;
-use crate::storage::metadata::MetadataPage;
+use crate::metadata::Metadata;
+use crate::metadata::MetadataPage;
+use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -23,7 +22,7 @@ pub struct TestStorage {
     pub state: Arc<Mutex<StorageState>>,
     pub fail_commit: Arc<AtomicBool>,
     pub fail_flush: Arc<AtomicBool>,
-    root_node_id: u64, // This can be used to simulate a root node ID
+    root_node_id: u64,
 }
 
 impl TestStorage {
@@ -149,25 +148,25 @@ impl MetadataStorage for TestStorage {
 
 impl<K, V> NodeStorage<K, V> for TestStorage
 where
-    K: crate::storage::KeyCodec + Ord,
-    V: crate::storage::ValueCodec,
+    K: crate::codec::KeyCodec + Ord,
+    V: crate::codec::ValueCodec,
 {
-    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
+    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, StorageError> {
         // Simulate reading a node by returning None
         Ok(None)
     }
 
-    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, anyhow::Error> {
+    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, StorageError> {
         // Simulate writing a node by returning a dummy ID
         Ok(0)
     }
 
-    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, anyhow::Error> {
+    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, StorageError> {
         // Simulate reading a node view by returning None
         Ok(None)
     }
 
-    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, StorageError> {
         // Simulate writing a node view by returning a dummy ID
         Ok(0)
     }
