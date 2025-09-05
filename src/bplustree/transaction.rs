@@ -3,7 +3,6 @@ use crate::storage::KeyCodec;
 use crate::storage::ValueCodec;
 use crate::storage::{MetadataStorage, NodeStorage};
 use anyhow::Result;
-use std::fmt::Debug;
 
 enum WriteOp<K, V> {
     Insert(K, V),
@@ -32,7 +31,7 @@ where
     initial_root_id: u64,      // Current root ID of the tree
 }
 
-impl<K: Debug, V: Debug, S> WriteTransaction<K, V, S>
+impl<K, V, S> WriteTransaction<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,

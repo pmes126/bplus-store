@@ -171,15 +171,6 @@ impl TxnTracker for TransactionTracker {
     }
 }
 
-pub struct SharedBPlusTree<K, V, S>
-where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
-{
-    inner: Arc<BPlusTree<K, V, S>>,
-}
-
 pub struct WriteResult {
     pub new_root_id: NodeId,
     pub reclaimed_nodes: Vec<NodeId>,
@@ -188,7 +179,29 @@ pub struct WriteResult {
     pub new_size: usize,
 }
 
-impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
+pub struct SharedBPlusTree<K, V, S>
+where
+    K: KeyCodec + Ord + Clone,
+    V: ValueCodec + Clone,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+{
+    inner: Arc<BPlusTree<K, V, S>>,
+}
+
+impl<K, V, S> Clone for SharedBPlusTree<K, V, S> 
+where
+    K: KeyCodec + Ord + Clone,
+    V: ValueCodec + Clone,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<K, V, S> SharedBPlusTree<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
@@ -228,7 +241,7 @@ where
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
-            return Err(anyhow::anyhow!("Failed to delete key: {:?}", key));
+            return Err(anyhow::anyhow!("Failed to delete key"));
         };
         let write_res = WriteResult {
             new_root_id,
@@ -332,7 +345,7 @@ where
 }
 
 // BPlusTree implementation
-impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
+impl<K, V, S> BPlusTree<K, V, S>
 where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
