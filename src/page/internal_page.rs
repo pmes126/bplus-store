@@ -1,7 +1,7 @@
 use crate::layout::MAX_ENTRIES;
 use crate::layout::PAGE_SIZE;
-use crate::storage::page::INTERNAL_NODE_TAG;
-use crate::storage::page::PageCodecError;
+use crate::page::INTERNAL_NODE_TAG;
+use crate::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[repr(C)]

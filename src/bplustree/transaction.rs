@@ -1,6 +1,5 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::storage::KeyCodec;
-use crate::storage::ValueCodec;
+use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::{MetadataStorage, NodeStorage};
 use anyhow::Result;
 

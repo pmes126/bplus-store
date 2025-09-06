@@ -2,8 +2,8 @@
 use crate::bplustree::{Node, NodeView};
 use crate::storage::MetadataStorage;
 use crate::storage::NodeStorage;
-use crate::storage::metadata::Metadata;
-use crate::storage::metadata::MetadataPage;
+use crate::metadata::Metadata;
+use crate::metadata::MetadataPage;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},

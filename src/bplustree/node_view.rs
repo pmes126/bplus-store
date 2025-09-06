@@ -1,4 +1,4 @@
-use crate::storage::page::{InternalPage, LeafPage};
+use crate::page::{InternalPage, LeafPage};
 use anyhow::Result;
 use std::cmp::Ordering;
 

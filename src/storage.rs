@@ -1,9 +1,14 @@
 use crate::bplustree::{Node, NodeView};
+use crate::codec::{CodecError, KeyCodec, ValueCodec};
 use crate::layout::PAGE_SIZE;
-use crate::storage::codec::CodecError;
-use crate::storage::metadata::{Metadata, MetadataPage};
+use crate::metadata::{Metadata, MetadataPage};
 use anyhow::Result;
 use std::path::Path;
+use std::error::Error;
+
+/// Implementations
+pub mod file_store;
+pub mod page_store;
 
 /// Unified storage interface for B+ tree logic
 pub trait PageStorage {
@@ -30,49 +35,23 @@ pub trait PageStorage {
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
-/// Trait for node storage operations
-pub trait KeyCodec {
-    fn encode_key(&self, out: &mut [u8]) -> Result<usize, CodecError>;
-    fn decode_key(buf: &[u8]) -> Self
-    where
-        Self: Sized;
-    fn compare_encoded(a: &[u8], b: &[u8]) -> std::cmp::Ordering;
-    fn encoded_len(&self) -> usize;
-}
-
-pub trait ValueCodec {
-    fn encode_value(&self, out: &mut [u8]) -> Result<usize, CodecError>;
-    fn decode_value(buf: &[u8]) -> Self
-    where
-        Self: Sized;
-    fn encoded_len(&self) -> usize;
-}
-
-pub trait NodeCodec<K, V>
-where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
-{
-    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
-    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
-}
-
 pub trait NodeStorage<K, V>
 where
     K: KeyCodec,
     V: ValueCodec,
 {
+    type Error: Error + Send + Sync + 'static; 
     /// Reads a node from storage by its ID
-    fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>;
+    fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, Self::Error>;
 
     /// Writes a node to storage
-    fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error>;
+    fn write_node(&self, node: &Node<K, V>) -> Result<u64, Self::Error>;
 
     /// Reads a node view (undecoded) from storage by its ID
-    fn read_node_view(&self, id: u64) -> Result<Option<NodeView>, anyhow::Error>;
+    fn read_node_view(&self, id: u64) -> Result<Option<NodeView>, Self::Error>;
 
     /// Writes a node view (encoded) to storage by its ID
-    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, anyhow::Error>;
+    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, Self::Error>;
 
     /// Flushes any cached writes to persistent storage
     fn flush(&self) -> Result<(), std::io::Error>;
@@ -111,4 +90,38 @@ pub trait MetadataStorage {
         slot: u8,
         metadata: &Metadata,
     ) -> Result<(), std::io::Error>;
+}
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("io: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+
+    #[error("page {pid} not found")]
+    NotFound { pid: u64 },
+
+    #[error("page {pid} corrupted: {msg}")]
+    EncDecFailure { pid: u64, msg: &'static str },
+
+    #[error("out of space")]
+    OutOfSpace,
+
+    #[error("invariant violation: {0}")]
+    Invariant(&'static str),
+}
+
+impl From<CodecError> for StorageError {
+    fn from(e: CodecError) -> Self {
+        match e {
+            CodecError::Io { source } => StorageError::Io { source },
+            CodecError::EncodeFailure { pid, msg } => StorageError::EncDecFailure { pid, msg: msg.into() },
+            CodecError::DecodeFailure { pid, msg } => StorageError::EncDecFailure { pid, msg: msg },
+            _ => StorageError::Invariant("unknown codec error"),
+        }
+    }
 }

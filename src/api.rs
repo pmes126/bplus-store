@@ -9,15 +9,32 @@
 //! DbBytes/TypedDb, streaming iterators, and a write txn.
 
 use std::marker::PhantomData;
-use anyhow::Result;
 
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
-use crate::storage::{KeyCodec, MetadataStorage, NodeStorage, ValueCodec};
+use crate::storage::{MetadataStorage, NodeStorage};
+use crate::codec::{KeyCodec, ValueCodec};
 
 pub use crate::bplustree::transaction::{
     WriteTransaction as WriteTxn,
 };
+
+// ============================
+// KV Error type
+// ============================
+
+pub use crate::bplustree::tree::{TreeError, CommitError};
+
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum ApiError {
+    #[error(transparent)]
+    Tree(#[from] TreeError),
+    #[error(transparent)]
+    Commit(#[from] CommitError),
+}
+
+pub type Result<T> = std::result::Result<T, ApiError>;
 
 // ============================
 // Bytes-level DB (Vec<u8>)

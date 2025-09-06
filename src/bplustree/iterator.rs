@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
-use crate::storage::{KeyCodec, NodeStorage, ValueCodec};
+use crate::codec::{KeyCodec, ValueCodec};
+use crate::storage::NodeStorage;
 use std::sync::Arc;
 
 struct TraversalFrame {

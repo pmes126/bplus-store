@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::fmt::Debug;
+use std::fmt::{format, Debug};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
@@ -8,14 +8,12 @@ use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
-use crate::storage::CodecError;
-use crate::storage::KeyCodec;
-use crate::storage::ValueCodec;
-use crate::storage::metadata;
-use crate::storage::{
-    Metadata, MetadataStorage, NodeStorage, {METADATA_PAGE_1, METADATA_PAGE_2},
+use crate::codec::{KeyCodec, ValueCodec, CodecError};
+use crate::storage::{NodeStorage, MetadataStorage};
+use crate::metadata::{
+    Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
-use anyhow::Result;
+use std::result::Result;
 use thiserror::Error;
 
 pub type NodeId = u64; // Type for node IDs
@@ -34,6 +32,7 @@ pub enum InsertResult<N> {
 }
 
 /// Result of deleting from a B+ tree node
+#[derive(Debug, Error)]
 pub enum DeleteResult<N> {
     /// Node was updated in-place (no underflow)
     Deleted(N),
@@ -50,7 +49,8 @@ pub enum SplitResult<K, N> {
 }
 
 #[derive(Debug, Error)]
-pub enum TreeError {
+pub enum TreeError
+{
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -65,6 +65,9 @@ pub enum TreeError {
 
     #[error("Node Not Found: {0}")]
     NodeNotFound(String),
+
+    #[error("Storage error")]
+    Storage(#[from]),
 }
 
 #[derive(Debug, Error)]
@@ -89,8 +92,8 @@ pub enum CommitError {
 }
 
 pub trait TxnTracker {
-    fn reclaim(&mut self, node_id: NodeId) -> Result<()>;
-    fn add_new(&mut self, node_id: NodeId) -> Result<()>;
+    fn reclaim(&mut self, node_id: NodeId);
+    fn add_new(&mut self, node_id: NodeId);
     fn record_staged_height(&mut self, height: usize);
     fn record_staged_size(&mut self, size: usize);
 }
@@ -155,13 +158,11 @@ impl TransactionTracker {
 }
 
 impl TxnTracker for TransactionTracker {
-    fn reclaim(&mut self, node_id: NodeId) -> Result<()> {
+    fn reclaim(&mut self, node_id: NodeId) {
         self.reclaimed.push(node_id);
-        Ok(())
     }
-    fn add_new(&mut self, node_id: NodeId) -> Result<()> {
+    fn add_new(&mut self, node_id: NodeId) {
         self.added.push(node_id);
-        Ok(())
     }
     fn record_staged_height(&mut self, height: usize) {
         self.staged_height = Some(height);
@@ -217,7 +218,7 @@ where
         Self { inner: tree }
     }
 
-    pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult> {
+    pub fn insert_with_root(&self, key: K, value: V, root_id: NodeId) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
@@ -232,16 +233,16 @@ where
         Ok(write_res)
     }
 
-    pub fn insert(&self, key: K, value: V) -> Result<WriteResult> {
+    pub fn insert(&self, key: K, value: V) -> Result<WriteResult, TreeError> {
         let root_id = self.inner.get_root_id();
         self.insert_with_root(key, value, root_id)
     }
 
-    pub fn delete_with_root(&self, key: &K, root_id: NodeId) -> Result<WriteResult> {
+    pub fn delete_with_root(&self, key: &K, root_id: NodeId) -> Result<WriteResult, TreeError> {
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
-            return Err(anyhow::anyhow!("Failed to delete key"));
+            return Err(TreeError::BackendAny(format!("Failed to delete key: {:?}", delete_res)).into());
         };
         let write_res = WriteResult {
             new_root_id,
@@ -253,11 +254,11 @@ where
         Ok(write_res)
     }
 
-    pub fn search(&self, key: &K) -> Result<Option<V>> {
+    pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         self.inner.search(key)
     }
 
-    pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+    pub fn search_with_root(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         self.inner.search_inner_undecoded(key, root_id)
     }
 
@@ -277,7 +278,7 @@ where
         self.inner.txn_id.load(Ordering::SeqCst)
     }
 
-    pub fn flush(&mut self) -> Result<()> {
+    pub fn flush(&mut self) -> Result<(), TreeError> {
         self.inner.storage.flush()?;
         Ok(())
     }
@@ -313,7 +314,7 @@ where
         }
     }
 
-    pub fn traverse(&self) -> Result<Vec<(K, V)>> {
+    pub fn traverse(&self) -> Result<Vec<(K, V)>, TreeError> {
         self.inner.traverse()
     }
 
@@ -322,7 +323,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         self.inner.search_range(root_id, start, end)
     }
 
@@ -330,7 +331,7 @@ where
         &'a self,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
     }
@@ -339,7 +340,7 @@ where
         Arc::clone(&self.inner.epoch_mgr)
     }
 
-    pub fn reclaim_node(&self, node_id: NodeId) -> Result<()> {
+    pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
         self.inner.reclaim_node(node_id)
     }
 }
@@ -380,8 +381,8 @@ where
             size: 0,             // Initial size
             order,
         };
-        let mut metadata_1 = metadata::new_metadata_page_with_object(&md1);
-        let mut metadata_2 = metadata::new_metadata_page_with_object(&md2);
+        let mut metadata_1 = Metadata::new_metadata_page_with_object(&md1);
+        let mut metadata_2 = Metadata::new_metadata_page_with_object(&md2);
         storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
         storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
 
@@ -447,14 +448,14 @@ where
     }
 
     // Reads a node from the B+ tree storage, using the cache if available.
-    fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>> {
-        self.storage.read_node(id)
+    fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>, TreeError> {
+        self.storage.read_node(id).map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e.to_string())))
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
-    fn write_node(&self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64> {
-        let new_id = self.storage.write_node(node)?;
-        tracker.add_new(new_id)?;
+    fn write_node(&self, node: &Node<K, V>, tracker: &mut impl TxnTracker) -> Result<u64, TreeError> {
+        let new_id = self.storage.write_node(node).map_err(|e| TreeError::BackendAny(format!("failed to write node {}:", e.to_string())))?;
+        tracker.add_new(new_id);
         Ok(new_id)
     }
 
@@ -464,7 +465,7 @@ where
         &self,
         key: &K,
         root_id: NodeId,
-    ) -> Result<(Vec<PathNode>, Node<K, V>)> {
+    ) -> Result<(Vec<PathNode>, Node<K, V>), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
 
@@ -473,7 +474,7 @@ where
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
-            match self.storage.read_node_view(current_id)? {
+            match self.storage.read_node_view(current_id).map_err(|e| e.into())? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         // Found the leaf node, return the path and node
@@ -520,7 +521,7 @@ where
         &self,
         key: &K,
         root_id: NodeId,
-    ) -> Result<(Vec<PathNode>, Node<K, V>)> {
+    ) -> Result<(Vec<PathNode>, Node<K, V>), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
 
@@ -552,7 +553,7 @@ where
     }
 
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn insert(&self, key: K, value: V, track: &mut impl TxnTracker) -> Result<NodeId> {
+    pub fn insert(&self, key: K, value: V, track: &mut impl TxnTracker) -> Result<NodeId, TreeError> {
         let root_id = self.get_root_id();
         self.insert_inner(key, value, root_id, track)
     }
@@ -564,7 +565,7 @@ where
         value: V,
         root_id: NodeId,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
 
@@ -600,7 +601,7 @@ where
         path: Vec<(NodeId, usize)>,
         leaf_node: Node<K, V>,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         let SplitResult::SplitNodes {
             left_node,
             right_node,
@@ -614,7 +615,7 @@ where
 
     // Splits a leaf node into two nodes and returns the new right node, the left node, and the
     // first key of the right node to be pushed up to the parent.
-    fn split_leaf_node(&self, mut leaf_node: Node<K, V>) -> Result<SplitResult<K, Node<K, V>>> {
+    fn split_leaf_node(&self, mut leaf_node: Node<K, V>) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
         // Equally split the keys and values between the two nodes.
         if let Node::Leaf { keys, values } = &mut leaf_node {
             let mid = keys.len() / 2;
@@ -651,7 +652,7 @@ where
     fn split_internal_node(
         &self,
         mut internal_node: Node<K, V>,
-    ) -> Result<SplitResult<K, Node<K, V>>> {
+    ) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
         if let Node::Internal { keys, children } = &mut internal_node {
             // Index to split the keys and values, right node will have
             // values past mid + 1, split node will be at mid and removed and left node will have
@@ -688,7 +689,7 @@ where
         path: Vec<(u64, usize)>,
         node: &Node<K, V>,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         let new_node_id = self.write_node(node, track)?;
         if path.is_empty() {
             Ok(new_node_id)
@@ -704,7 +705,7 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self
                 .read_node(parent_id)?
@@ -727,7 +728,13 @@ where
                 .into());
             }
             // Reclaim the original child node and update the child pointer
-            track.reclaim(children[insert_pos])?;
+            track.reclaim(children[insert_pos]).map_err(|e| {
+                TreeError::BackendAny(format!(
+                    "Failed to reclaim node {}: {}",
+                    children[insert_pos],
+                    e.to_string()
+                ))
+            })?;
             children[insert_pos] = updated_child_id;
             // Propagate up the path
             updated_child_id = self.write_node(&parent_node, track)?;
@@ -744,7 +751,7 @@ where
         mut right: NodeId,
         mut key: K,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
@@ -794,13 +801,13 @@ where
     }
 
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn search(&self, key: &K) -> Result<Option<V>> {
+    pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         let root_id = self.get_root_id();
         self.search_inner_undecoded(key, root_id)
     }
 
     // Search for a key and return the value if exists
-    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+    pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
         loop {
@@ -826,7 +833,7 @@ where
         }
     }
 
-    pub fn search_inner_undecoded(&self, key: &K, root_id: NodeId) -> Result<Option<V>> {
+    pub fn search_inner_undecoded(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
@@ -835,7 +842,8 @@ where
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
-            match self.storage.read_node_view(current_id)? {
+            match self.storage.read_node_view(current_id).map_err(|e| TreeError::BackendAny(e.to_string()))
+    ? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         match node.lower_bound(encode_buf.as_ref()) {
@@ -886,7 +894,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         if start > end {
             return Ok(None); // Invalid range
         }
@@ -906,7 +914,7 @@ where
         key: &K,
         root_id: NodeId,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         let res = self.delete_inner(key, root_id, track)?;
         match res {
             DeleteResult::NotFound => {
@@ -922,7 +930,7 @@ where
         key: &K,
         root_id: NodeId,
         track: &mut impl TxnTracker,
-    ) -> Result<DeleteResult<NodeId>> {
+    ) -> Result<DeleteResult<NodeId>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let (path, mut node) = self.get_insertion_path_undecoded(key, root_id)?;
         let Node::Leaf { keys, values, .. } = &mut node else {
@@ -955,7 +963,7 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut node: Node<K, V>,
         track: &mut impl TxnTracker,
-    ) -> Result<NodeId> {
+    ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.read_node(parent_id)? else {
                 return Err(TreeError::NodeNotFound("Parent node not found".to_string()).into());
@@ -1033,7 +1041,7 @@ where
         children: &mut [NodeId],
         idx: usize,
         track: &mut impl TxnTracker,
-    ) -> Result<bool> {
+    ) -> Result<bool, TreeError> {
         if idx == 0 {
             return Ok(false);
         }
@@ -1122,7 +1130,7 @@ where
         children: &mut [NodeId],
         idx: usize,
         track: &mut impl TxnTracker,
-    ) -> Result<bool> {
+    ) -> Result<bool, TreeError> {
         if idx >= children.len() {
             return Ok(false); // No right sibling to borrow from
         }
@@ -1209,7 +1217,7 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
         track: &mut impl TxnTracker,
-    ) -> Result<Option<NodeId>> {
+    ) -> Result<Option<NodeId>, TreeError> {
         if idx == 0 {
             return Ok(None);
         }
@@ -1285,7 +1293,7 @@ where
         children: &mut Vec<NodeId>,
         idx: usize,
         track: &mut impl TxnTracker,
-    ) -> Result<Option<NodeId>> {
+    ) -> Result<Option<NodeId>, TreeError> {
         // Check if there is a right sibling to merge with
         let right_idx = idx + 1;
         if right_idx >= children.len() {
@@ -1361,7 +1369,7 @@ where
         &self,
         left_node: &mut Node<K, V>,
         right_node: &mut Node<K, V>,
-    ) -> Result<Node<K, V>> {
+    ) -> Result<Node<K, V>,TreeError> {
         match (&mut *left_node, right_node) {
             // Match on a new mutable reference to the left node
             (
@@ -1418,7 +1426,7 @@ where
     }
 
     // Reclaims a node by adding it to the reclamation candidates for the current epoch.
-    pub fn reclaim_node(&self, node_id: NodeId) -> Result<()> {
+    pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
         let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
             TreeError::BackendAny("Failed to get epoch for current thread".to_string())
         })?;
@@ -1440,7 +1448,7 @@ where
     }
 
     // Version of commit to be used for single threaded commits, use for testing and debugging
-    pub fn commit(&self, new_root_id: NodeId, _height: usize, _size: usize) -> Result<()> {
+    pub fn commit(&self, new_root_id: NodeId, _height: usize, _size: usize) -> Result<(), TreeError> {
         // Now commit the new root
         // 1. Write new metadata (to double-buffered slot)
         let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1595,7 +1603,7 @@ where
     }
 
     // Traverses the B+ tree and returns all key-value pairs in a vector.
-    pub fn traverse(&self) -> Result<Vec<(K, V)>> {
+    pub fn traverse(&self) -> Result<Vec<(K, V)>, TreeError> {
         let mut result = Vec::new();
         let root_id = self.get_root_id();
         if root_id == 0 {
@@ -1607,7 +1615,7 @@ where
     }
 
     // Recursive implementation of traversal.
-    pub fn traverse_inner(&self, node_id: NodeId, result: &mut Vec<(K, V)>) -> Result<()> {
+    pub fn traverse_inner(&self, node_id: NodeId, result: &mut Vec<(K, V)>) -> Result<(), TreeError> {
         match self.read_node(node_id)? {
             Some(Node::Internal { keys, children }) => {
                 for (i, child_id) in children.iter().enumerate() {

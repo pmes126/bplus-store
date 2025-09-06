@@ -18,10 +18,13 @@ fn main() -> anyhow::Result<()> {
     let k2 = 2u64;
     let v2 = "Some Other String value".to_string();
 
-    db.put(k1, v1)?;
-    db.put(k2, v2)?;
+    let mut txn = db.begin_write()?;
+    txn.insert(k1, v1.clone())?;
+    txn.insert(k2, v2.clone())?;
+    txn.commit()?;
 
-    ////assert_eq!(db.get(b"alpha")?, Some(b"1".to_vec()));
+    assert_eq!(db.get(&k1)?, Some(v1));
+    assert_eq!(db.get(&k2)?, Some(v2));
 
     let rows = db.scan_range(&k1, &k2)?.unwrap();
     for res in rows {

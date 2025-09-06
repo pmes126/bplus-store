@@ -1,7 +1,7 @@
 use crate::layout::MAX_ENTRIES;
 use crate::layout::PAGE_SIZE;
-use crate::storage::page::LEAF_NODE_TAG;
-use crate::storage::page::PageCodecError;
+use crate::page::LEAF_NODE_TAG;
+use crate::page::PageCodecError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 pub const LEAF_NODE_VERSION: u8 = 0;

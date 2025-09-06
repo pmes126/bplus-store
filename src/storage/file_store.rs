@@ -1,22 +1,36 @@
+use crate::storage::{PageStorage, MetadataStorage, NodeStorage, Metadata};
 use crate::bplustree::Node;
 use crate::bplustree::NodeView;
 use crate::layout::PAGE_SIZE;
-use crate::storage::codec::NoopNodeViewCodec;
-use crate::storage::{
-    MetadataStorage, NodeStorage, PageStorage,
-    codec::DefaultNodeCodec,
-    metadata::Metadata,
-    {
-        KeyCodec, NodeCodec, ValueCodec,
-        metadata::{
-            METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page,
-            new_metadata_page_with_object,
-        },
-    },
-};
+use crate::codec::bincode::DefaultNodeCodec;
+use crate::codec::bincode::NoopNodeViewCodec;
+use crate::codec::{ KeyCodec, NodeCodec, ValueCodec };
+use crate::metadata::{ METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page, new_metadata_page_with_object };
+
+use thiserror::Error;
 use anyhow::Result;
 use std::path::Path;
 use zerocopy::AsBytes;
+
+pub use crate::storage::file_store;
+
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("Error in storage ops: {msg}")]
+    StorageAny { msg: String },
+    #[error("IO error: {source}")]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+    #[error("Codec error: {source}")]
+    Codec {
+        #[from]
+        source: crate::codec::CodecError,
+    },
+}
+
+
 
 pub struct FileStore<S: PageStorage> {
     store: S,
@@ -114,7 +128,9 @@ where
     K: KeyCodec + Ord,
     V: ValueCodec,
 {
-    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, anyhow::Error>
+    type Error = StorageError;
+
+    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, StorageError>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -124,7 +140,7 @@ where
         DefaultNodeCodec::decode(&buf).map_or(Ok(None), |node| Ok(Some(node)))
     }
 
-    fn write_node(&self, node: &Node<K, V>) -> Result<u64, anyhow::Error>
+    fn write_node(&self, node: &Node<K, V>) -> Result<u64, StorageError>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -134,13 +150,13 @@ where
         Ok(res)
     }
 
-    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, anyhow::Error> {
+    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, StorageError> {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
         NoopNodeViewCodec::decode(&buf).map(|view| Ok(Some(view)))?
     }
 
-    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, StorageError> {
         let buf = NoopNodeViewCodec::encode(&node_view)?;
         let res = self.store.write_page(&buf)?;
         Ok(res)
