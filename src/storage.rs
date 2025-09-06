@@ -102,14 +102,14 @@ pub enum StorageError {
         source: std::io::Error,
     },
 
-    #[error("page {pid} not found")]
-    NotFound { pid: u64 },
+    //#[error("page {pid} not found")]
+    //NotFound { pid: u64 },
 
     #[error("page corrupted: {msg}")]
-    EncDecFailure { msg: &'static str },
+    EncDecFailure { msg: String },
 
-    #[error("out of space")]
-    OutOfSpace,
+    #[error("Storage error: {msg}")]
+    StorageAny { msg: String },
 
     #[error("invariant violation: {0}")]
     Invariant(&'static str),
@@ -119,8 +119,8 @@ impl From<CodecError> for StorageError {
     fn from(e: CodecError) -> Self {
         match e {
             CodecError::Io { source } => StorageError::Io { source },
-            CodecError::EncodeFailure { msg } => StorageError::EncDecFailure { msg: msg.into() },
-            CodecError::DecodeFailure { msg } => StorageError::EncDecFailure { msg: msg },
+            CodecError::EncodeFailure { msg } => StorageError::EncDecFailure { msg },
+            CodecError::DecodeFailure { msg } => StorageError::EncDecFailure { msg },
             _ => StorageError::Invariant("unknown codec error"),
         }
     }

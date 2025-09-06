@@ -1,4 +1,4 @@
-use crate::storage::{PageStorage, MetadataStorage, NodeStorage, Metadata};
+use crate::storage::{PageStorage, MetadataStorage, NodeStorage, Metadata, StorageError};
 use crate::bplustree::Node;
 use crate::bplustree::NodeView;
 use crate::layout::PAGE_SIZE;
@@ -15,9 +15,10 @@ use zerocopy::AsBytes;
 pub use crate::storage::file_store;
 
 #[derive(Debug, Error)]
-pub enum StorageError {
+pub enum FileStoreError {
     #[error("Error in storage ops: {msg}")]
-    StorageAny { msg: String },
+    FileStoreAny { msg: String },
+
     #[error("IO error: {source}")]
     Io {
         #[from]
@@ -29,8 +30,6 @@ pub enum StorageError {
         source: crate::codec::CodecError,
     },
 }
-
-
 
 pub struct FileStore<S: PageStorage> {
     store: S,
@@ -128,9 +127,9 @@ where
     K: KeyCodec + Ord,
     V: ValueCodec,
 {
-    type Error = StorageError;
+    type Error = FileStoreError;
 
-    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, StorageError>
+    fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, Self::Error>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -140,7 +139,7 @@ where
         DefaultNodeCodec::decode(&buf).map_or(Ok(None), |node| Ok(Some(node)))
     }
 
-    fn write_node(&self, node: &Node<K, V>) -> Result<u64, StorageError>
+    fn write_node(&self, node: &Node<K, V>) -> Result<u64, Self::Error>
     where
         K: KeyCodec,
         V: ValueCodec,
@@ -150,13 +149,13 @@ where
         Ok(res)
     }
 
-    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, StorageError> {
+    fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, Self::Error> {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
         NoopNodeViewCodec::decode(&buf).map(|view| Ok(Some(view)))?
     }
 
-    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, StorageError> {
+    fn write_node_view(&self, node_view: &NodeView) -> Result<u64, Self::Error> {
         let buf = NoopNodeViewCodec::encode(&node_view)?;
         let res = self.store.write_page(&buf)?;
         Ok(res)
@@ -168,5 +167,16 @@ where
 
     fn free_node(&self, id: u64) -> Result<(), std::io::Error> {
         self.store.free_page(id)
+    }
+}
+
+impl From<FileStoreError> for StorageError {
+    fn from(e: FileStoreError) -> Self {
+        match e {
+            FileStoreError::Io{ source }         => StorageError::Io{ source },
+            FileStoreError::FileStoreAny { msg } => StorageError::StorageAny{ msg },
+            FileStoreError::Codec { source }     => StorageError::EncDecFailure { msg: source.to_string() },
+            _ => StorageError::Invariant("unknown codec error"),
+        }
     }
 }

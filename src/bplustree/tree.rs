@@ -9,7 +9,7 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{KeyCodec, ValueCodec, CodecError};
-use crate::storage::{NodeStorage, MetadataStorage};
+use crate::storage::{NodeStorage, MetadataStorage, StorageError};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
@@ -67,8 +67,8 @@ pub enum TreeError
     #[error("Node Not Found: {0}")]
     NodeNotFound(String),
 
-    #[error("Storage error")]
-    Storage(#[from]),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
 }
 
 #[derive(Debug, Error)]
@@ -352,6 +352,7 @@ where
     K: KeyCodec + Clone + Ord,
     V: ValueCodec + Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    StorageError: From<S::Error>,
 {
     pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
