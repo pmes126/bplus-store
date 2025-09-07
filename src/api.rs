@@ -11,7 +11,7 @@
 use std::marker::PhantomData;
 
 use crate::bplustree::iterator::BPlusTreeIter;
-use crate::bplustree::tree::{BPlusTree, SharedBPlusTree};
+use crate::bplustree::tree::{BPlusTree, BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::{MetadataStorage, NodeStorage};
 
@@ -65,16 +65,34 @@ where
 
     /// Put raw key/value.
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
-        self.inner.insert(key.to_vec(), val.to_vec())?;
+        let base_version = BaseVersion {
+            committed_ptr: self.inner.get_metadata_ptr(),
+        };
+        let res = self.inner.insert(key.to_vec(), val.to_vec())?;
+        let staged_update = StagedMetadata {
+            root_id: res.new_root_id,
+            height: res.new_height,
+            size: res.new_size,
+        };
+        self.inner.try_commit(&base_version, staged_update)?;
         Ok(())
     }
 
     /// Delete by key.
     pub fn delete(&self, key: &[u8]) -> Result<()> {
         let root_id = self.inner.get_root_id();
-        self.inner
-            .delete_with_root(&key.to_vec(), root_id)
-            .map_err(ApiError::from)
+        let base_version = BaseVersion {
+            committed_ptr: self.inner.get_metadata_ptr(),
+        };
+        let res = self.inner.delete_with_root(&key.to_vec(), root_id)?;
+
+        let staged_update = StagedMetadata {
+            root_id: res.new_root_id,
+            height: res.new_height,
+            size: res.new_size,
+        };
+        self.inner.try_commit(&base_version, staged_update)?;
+        Ok(())
     }
 
     /// Streaming scan over [start, end). Returns None if tree is empty.
@@ -125,7 +143,7 @@ where
 {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(|res| res.map_err(ApiError::from))
     }
 }
 
@@ -161,13 +179,35 @@ where
     pub fn get(&self, key: &K) -> Result<Option<V>> {
         self.inner.search(key).map_err(ApiError::from)
     }
-    pub fn put(&self, key: K, value: V) -> Result<()> {
-        self.inner.insert(key, value)?;
+
+    pub fn put(&self, key: K, val: V) -> Result<()> {
+        let base_version = BaseVersion {
+            committed_ptr: self.inner.get_metadata_ptr(),
+        };
+        let res = self.inner.insert(key, val)?;
+        let staged_update = StagedMetadata {
+            root_id: res.new_root_id,
+            height: res.new_height,
+            size: res.new_size,
+        };
+        self.inner.try_commit(&base_version, staged_update)?;
         Ok(())
     }
+
     pub fn delete(&self, key: &K) -> Result<()> {
         let root_id = self.inner.get_root_id();
-        self.inner.delete_with_root(key, root_id).map(|_| ())
+        let base_version = BaseVersion {
+            committed_ptr: self.inner.get_metadata_ptr(),
+        };
+        let res = self.inner.delete_with_root(&key, root_id)?;
+
+        let staged_update = StagedMetadata {
+            root_id: res.new_root_id,
+            height: res.new_height,
+            size: res.new_size,
+        };
+        self.inner.try_commit(&base_version, staged_update)?;
+        Ok(())
     }
 
     pub fn scan_range<'a>(&'a self, start: &K, end: &K) -> Result<Option<TypedIter<'a, K, V, S>>> {
@@ -197,7 +237,7 @@ where
 {
     type Item = Result<(K, V)>;
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
+        self.inner.next().map(|res| res.map_err(ApiError::from))
     }
 }
 

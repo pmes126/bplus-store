@@ -218,6 +218,55 @@ impl LeafPage {
         Ok(())
     }
 
+    // Delete entry at idx and shift all entries after idx to the left by the size of the deleted entry
+    pub fn delete_entry_at(&mut self, idx: usize) -> Result<(), PageCodecError> {
+        if idx >= self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Index out of bounds".to_string(),
+            });
+        }
+
+        let key_len_offset = self.slots.offsets[idx] as usize;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to convert bytes to LeafPage".to_string(),
+            })?;
+
+        let key_length = u16::from_le_bytes(arr) as usize;
+
+        let value_len_offset = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to read bytes as slice".to_string(),
+            })?;
+        let value_length = u16::from_le_bytes(arr) as usize;
+
+        let total_entry_size = LEN_SIZE * 2 + key_length + value_length;
+
+        // Shift data in the blob to remove the entry
+        let start_of_entry = key_len_offset;
+        let end_of_entry = start_of_entry + total_entry_size;
+        let shift_size = self.header.free_start as usize - end_of_entry;
+
+        self.data
+            .blob
+            .copy_within(end_of_entry..end_of_entry + shift_size, start_of_entry);
+
+        // Update offsets in slots, decrease offsets of entries after idx and shift left by 1
+        for i in (idx + 1)..self.header.entry_count as usize {
+            self.slots.offsets[i - 1] = self.slots.offsets[i] - total_entry_size as u16;
+        }
+        self.slots.offsets[self.header.entry_count as usize - 1] = 0; // Clear last slot
+
+        // Update free_start and entry_count
+        self.header.free_start -= total_entry_size as u64;
+        self.header.entry_count -= 1;
+
+        Ok(())
+    }
+
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
         if idx >= self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {
@@ -426,6 +475,36 @@ mod tests {
             let (retrieved_key, retrieved_value) = page.get_entry(i + 1).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
             assert_eq!(retrieved_value, value.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_leaf_page_split() {
+        let mut page = LeafPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4"];
+        let values = [
+            "value1",
+            "value2value2",
+            "value3value3value3",
+            "value4value4value4value4",
+        ];
+        // Insert multiple entries
+        for (&key, &value) in keys.iter().zip(&values) {
+            assert!(page.insert_entry(key.as_bytes(), value.as_bytes()).is_ok());
+        }
+        let split_idx = 2;
+        let new_page = page.split_off(split_idx).unwrap();
+        assert_eq!(page.len(), split_idx);
+        assert_eq!(new_page.len(), keys.len() - split_idx);
+        for (i, key) in keys.iter().enumerate().take(split_idx) {
+            let (retrieved_key, retrieved_value) = page.get_entry(i).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, values[i].as_bytes());
+        }
+        for (i, key) in keys.iter().enumerate().skip(split_idx) {
+            let (retrieved_key, retrieved_value) = new_page.get_entry(i - split_idx).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, values[i].as_bytes());
         }
     }
 }

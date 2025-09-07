@@ -1,4 +1,8 @@
-# bplus_tree
+# cow-bptree
+
+> Status: **alpha** — APIs may change.  
+> MSRV: **1.77**  
+> License: **MIT OR Apache-2.0**
 
 Embedded, copy-on-write **B+-tree** key-value store in Rust.  
 Zero network. **Multi-writer** with optimistic commits (CAS). **Snapshot** readers via epochs. Streaming range scans.
@@ -10,25 +14,37 @@ Zero network. **Multi-writer** with optimistic commits (CAS). **Snapshot** reade
 ## Why
 
 - **Predictable perf:** slotted pages, bounded fanout, no surprise heap storms.
+- **Multi-writer:** high write concurrency without blocking, multiple writers proceed in parallel; losers just retry.
+- **Crash-safe:** atomic metadata updates; no fsck.
+- **Space-efficient:** copy-on-write, epoch-based reclamation.
 - **Embedded-first:** link it like a library, call `get/put/delete/scan`.
 - **Clean API:** bytes-level for engines; typed façade for apps.
-- **OCC writes:** multiple writers proceed in parallel; losers just retry.
 - **Real snapshots:** readers pin epochs and never block writers.
 
 ---
 
 ## Features
 
-- Copy-on-write pages with epoch-pinned read snapshots
+- COW page mutation via in-memory views over `[u8; PAGE_SIZE]`, persisted with `PageStorage` and epoch-pinned read snapshots
 - **Multiple concurrent writers** (optimistic concurrency; CAS on metadata)
 - Range scans with a streaming iterator
 - Batched write transaction (stage → commit → reclaim)
 - Pluggable storage via `NodeStorage` / `MetadataStorage`
 - Built-in codecs for `Vec<u8>`, `u64` (big-endian), `String` (UTF-8)
-
+- `insert`, `get`, `remove`, `range` (forward).
+- Generic `Codec` for K/V encode/decode.
 ---
 
 ## Quick start
+
+## Installation
+
+Add the crate (once published):
+
+```toml
+[dependencies]
+cow-bptree = "0.1"
+```
 
 ### Build
 ```bash
@@ -218,4 +234,41 @@ tests/
 
 ## License
 
-TBD (MIT/Apache-2.0 recommended).
+Dual-licensed under MIT or Apache-2.0.
+You may choose either license.
+
+---
+## Contribution
+PRs welcome! Please open an issue for discussion first.
+
+---
+
+## TODO / Known Gaps
+
+Priorities: P0 = must-have for public use, P1 = nice soon, P2 = later
+
+- [x] P0: Epoch-based reclamation, make sure leak-free on panic paths
+- [x] P0: Recovery path on startup: detect last good metadata/page epoch; handle torn writes; checksum validation
+- [x] P0: More Benchmarks (Criterion)
+- [x] P0: CI (build, test, lint)
+- [x] P1: More tests (edge cases, error paths)
+- [x] P1: More provided codecs (u32, i64, etc.)
+- [x] P1: Fuzz testing (e.g., cargo-fuzz)
+- [x] P1: More storage backends (in-memory, etc.)
+- [x] P1: Page size tuning (configurable PAGE_SIZE)
+- [x] P1: Write transaction batching (multiple ops per commit)
+- [x] P1: Better error types (distinguish not-found, conflicts, etc.)
+- [x] P1: More documentation (design doc, usage guide)
+- [x] P1: More examples (complex usage patterns)
+- [x] P2: Prefix scans & RangeBounds helpers
+- [x] P2: Background GC tuning (adaptive frequency)
+- [x] P2: Optional network service + driver (gRPC)
+- [x] P2: Support for large values (overflow pages) Or calculate max value size based on order and page size
+- [x] P2: Performance optimizations (hot paths)
+- [x] P2: Async support (async storage backends)  
+- [x] P2: Monitoring & metrics (operation counts, latencies)
+- [x] P2: Advanced features (transactions, secondary indexes)
+- [x] P2: API stability (semver, deprecation policy)
+- [x] P2: Contributor guidelines (code of conduct, contributing doc)
+- [x] P2: Roadmap & vision (long-term goals)
+- [x] P2: Prefix compression / fence keys on internal nodes.
