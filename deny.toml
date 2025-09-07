@@ -1,0 +1,23 @@
+# deny.toml
+[advisories]
+vulnerability = "deny"
+yanked = "warn"
+unmaintained = "warn"
+notice = "warn"
+ignore = []  # fill with advisory IDs you intentionally accept (with a comment in PR)
+
+[bans]
+wildcards = "deny"          # no version = "*"
+multiple-versions = "warn"  # allow dupes for now, just warn
+
+[licenses]
+unlicensed = "deny"
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-DFS-2016"]
+copyleft = "warn"
+confidence-threshold = 0.8
+
+[sources]
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []  # add specific git URLs if you use git deps

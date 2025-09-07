@@ -170,7 +170,7 @@ where
 mod tests {
     use super::*;
     use crate::bplustree::tree::CommitError;
-    use crate::storage::metadata::Metadata;
+    use crate::metadata::Metadata;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
     #[test]
