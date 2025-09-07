@@ -477,4 +477,34 @@ mod tests {
             assert_eq!(retrieved_value, value.as_bytes());
         }
     }
+
+    #[test]
+    fn test_leaf_page_split() {
+        let mut page = LeafPage::new();
+        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4"];
+        let values = [
+            "value1",
+            "value2value2",
+            "value3value3value3",
+            "value4value4value4value4",
+        ];
+        // Insert multiple entries
+        for (&key, &value) in keys.iter().zip(&values) {
+            assert!(page.insert_entry(key.as_bytes(), value.as_bytes()).is_ok());
+        }
+        let split_idx = 2;
+        let new_page = page.split_off(split_idx).unwrap();
+        assert_eq!(page.len(), split_idx);
+        assert_eq!(new_page.len(), keys.len() - split_idx);
+        for (i, key) in keys.iter().enumerate().take(split_idx) {
+            let (retrieved_key, retrieved_value) = page.get_entry(i).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, values[i].as_bytes());
+        }
+        for (i, key) in keys.iter().enumerate().skip(split_idx) {
+            let (retrieved_key, retrieved_value) = new_page.get_entry(i - split_idx).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            assert_eq!(retrieved_value, values[i].as_bytes());
+        }
+    }
 }
