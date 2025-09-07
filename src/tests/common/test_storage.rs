@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::storage::MetadataStorage;
-use crate::storage::NodeStorage;
+use crate::storage::{NodeStorage, MetadataStorage, StorageError};
 use crate::metadata::Metadata;
 use crate::metadata::MetadataPage;
 use std::sync::{
@@ -152,22 +151,22 @@ where
     K: crate::codec::KeyCodec + Ord,
     V: crate::codec::ValueCodec,
 {
-    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
+    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, StorageError> {
         // Simulate reading a node by returning None
         Ok(None)
     }
 
-    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, anyhow::Error> {
+    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, StorageError> {
         // Simulate writing a node by returning a dummy ID
         Ok(0)
     }
 
-    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, anyhow::Error> {
+    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, StorageError> {
         // Simulate reading a node view by returning None
         Ok(None)
     }
 
-    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, anyhow::Error> {
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, StorageError> {
         // Simulate writing a node view by returning a dummy ID
         Ok(0)
     }
