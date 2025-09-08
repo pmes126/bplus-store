@@ -2,7 +2,6 @@
 use crate::api::TreeError;
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
-use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::NodeStorage;
 use std::sync::Arc;
 
@@ -13,8 +12,8 @@ struct TraversalFrame {
 
 pub struct BPlusTreeIter<'a, K, V, S>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V>,
 {
     storage: &'a S,
@@ -33,11 +32,11 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K: Clone, V, S> BPlusTreeIter<'a, K, V, S>
+impl<'a, K, V, S> BPlusTreeIter<'a, K, V, S>
 where
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V>,
-    K: KeyCodec + Ord,
-    V: ValueCodec,
 {
     pub fn new(
         storage: &'a S,
@@ -101,9 +100,9 @@ where
 
 impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
 where
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V>,
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
 {
     type Item = Result<(K, V), TreeError>;
 

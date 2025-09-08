@@ -1,6 +1,5 @@
 use crate::page::{InternalPage, LeafPage};
 use anyhow::Result;
-use std::cmp::Ordering;
 
 pub type NodeId = u64;
 
@@ -23,47 +22,41 @@ impl NodeView {
     }
 
     #[inline]
-    pub fn key_bytes_at(&self, idx: usize) -> &[u8] {
-        match self {
-            NodeView::Internal { page } => page.key_bytes_at(idx).unwrap(),
-            NodeView::Leaf { page } => page.key_bytes_at(idx).unwrap(),
-        }
-    }
-
-    #[inline]
     pub fn keys_len(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.header.entry_count as usize,
-            NodeView::Leaf { page } => page.header.entry_count as usize,
+            NodeView::Internal { page } => page.key_count() as usize,
+            NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
 
-    /// Lower bound using bytewise compare
-    pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
-        let mut lo = 0usize;
-        let mut hi = self.keys_len();
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            match self.key_bytes_at(mid).cmp(probe) {
-                Ordering::Less => lo = mid + 1,    // move to the right
-                Ordering::Equal => return Ok(mid), // found exact match
-                Ordering::Greater => hi = mid,
+    pub fn value_bytes_at(&self, i: usize) -> Result<Option<&[u8]>> {
+        match self {
+            NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
+            NodeView::Leaf { page } => {
+                let value = page.read_value_at(i)?;
+                Ok(Some(value))
             }
         }
-        Err(lo) // return the insertion point   
+    }
+
+    pub fn get_child_for_key(&self, _probe: &[u8]) -> Result<Option<(NodeId, usize)>> {
+        match self {
+            NodeView::Leaf { .. } => Ok(None), // Leaf nodes do not have children
+            // Internal nodes: find the child pointer for the given key
+            NodeView::Internal { .. } => {
+                Ok(None) // Placeholder: Implement child pointer search
+            }
+        }
     }
 
     /// Get the child pointer at index i
     #[inline]
-    pub fn child_ptr_at(&self, i: usize) -> Result<Option<u64>> {
+    pub fn child_ptr_at(&self, idx: usize) -> Result<Option<u64>> {
         match self {
-            NodeView::Internal { page } => {
-                if i == 0 {
-                    return Ok(Some(page.header.leftmost_child)); // No child pointer for index 0
-                }
-                let idx = i - 1; // Internal nodes have child pointers at i-1
-                page.child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
-            }
+            NodeView::Internal { page } => page
+                .read_child_at(idx)
+                .map(Some)
+                .map_err(|e| anyhow::anyhow!(e)),
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }
     }
@@ -74,17 +67,69 @@ impl NodeView {
         match self {
             NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
             NodeView::Leaf { page } => {
-                let value = page.value_bytes_at(i)?;
+                let value = page.read_value_at(i)?;
                 Ok(Some(value.to_vec()))
             }
         }
     }
 
-    /// Insert a key-value pair or key-child pointer into the node at a given index
+    /// Get the key at index i
     #[inline]
-    pub fn insert_at(
+    pub fn key_at(&self, i: usize) -> Result<Vec<u8>> {
+        let mut scratch = Vec::new();
+        match self {
+            NodeView::Internal { page } => {
+                let key = page.get_key_at(i, &mut scratch)?;
+                Ok(key.to_vec())
+            }
+            NodeView::Leaf { page } => {
+                let key = page.get_key_at(i, &mut scratch)?;
+                Ok(key.to_vec())
+            }
+        }
+    }
+
+    /// Get the first key in the node
+    #[inline]
+    pub fn first_key(&self) -> Result<Vec<u8>> {
+        self.key_at(0)
+    }
+
+    /// Find the insertion index for a given key. This is using a comparator from the key format
+    pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
+        match self {
+            NodeView::Internal { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound(probe, &mut scratch)
+            }
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound(probe, &mut scratch)
+            }
+        }
+    }
+
+    /// Find the insertion index for a given key. Taking a comparator as a parameter
+    pub fn lower_bound_cmp(
+        &self,
+        probe: &[u8],
+        cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
+    ) -> Result<usize, usize> {
+        match self {
+            NodeView::Internal { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound_cmp(probe, &mut scratch, cmp)
+            }
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound_cmp(probe, &mut scratch, cmp)
+            }
+        }
+    }
+
+    /// Insert a key-value pair or key-child pointer into the node
+    pub fn insert(
         &mut self,
-        idx: usize,
         key: &[u8],
         value: Option<&[u8]>,
         child_ptr: Option<u64>,
@@ -92,7 +137,7 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 if let Some(ptr) = child_ptr {
-                    page.insert_entry_at(idx, key, ptr)
+                    page.insert_encoded(key, ptr)
                         .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!(
@@ -102,7 +147,7 @@ impl NodeView {
             }
             NodeView::Leaf { page } => {
                 if let Some(val) = value {
-                    page.insert_entry_at(idx, key, val)
+                    page.insert_encoded(key, val)
                         .map_err(|e| anyhow::anyhow!(e))
                 } else {
                     Err(anyhow::anyhow!("Leaf nodes require a value for insertion"))
@@ -111,12 +156,48 @@ impl NodeView {
         }
     }
 
+    /// Insert a key-value pair into a leaf node for a given index
+    pub fn insert_at(&mut self, idx: usize, key: &[u8], value: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot insert"
+            )),
+            NodeView::Leaf { page } => page
+                .insert_at(idx, key, value)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    /// Replace the value at a given index in a leaf node
+    #[inline]
+    pub fn replace_at(&mut self, idx: usize, value: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot replace"
+            )),
+            NodeView::Leaf { page } => page
+                .overwrite_value_at(idx, value)
+                .map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
+    /// Remove the entry at a given index from the node
+    #[inline]
+    pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot replace"
+            )),
+            NodeView::Leaf { page } => page.delete_at(idx).map_err(|e| anyhow::anyhow!(e)),
+        }
+    }
+
     /// Get the entry count of the node
     #[inline]
     pub fn entry_count(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.header.entry_count as usize,
-            NodeView::Leaf { page } => page.header.entry_count as usize,
+            NodeView::Internal { page } => page.key_count() as usize,
+            NodeView::Leaf { page } => page.key_count() as usize,
         }
     }
 
@@ -124,13 +205,31 @@ impl NodeView {
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                //println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
+                let new_page = InternalPage::new(page.fmt().format_id());
+                //page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                let mut new_page = LeafPage::new(page.fmt().format_id());
+                page.split_off_into(idx, &mut new_page)
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
             }
+        }
+    }
+
+    /// Replace the child pointer at a given index in an internal node
+    pub fn replace_child_at(&mut self, idx: usize, child_ptr: u64) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                let child_idx = idx;
+                page.replace_child_at(child_idx, child_ptr)
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children to replace"
+            )),
         }
     }
 }

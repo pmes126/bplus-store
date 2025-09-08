@@ -12,8 +12,8 @@ type CacheError = std::io::Error;
 // CacheLayer is a decorator around a backend storage that caches nodes in memory.
 pub struct CacheLayer<K, V, B: NodeStorage<K, V>>
 where
-    K: KeyCodec + Clone,
-    V: ValueCodec + Clone,
+    K: Clone,
+    V: Clone,
 {
     backend: B,
     cache: RefCell<LruCache<NodeId, Node<K, V>>>,
@@ -22,8 +22,8 @@ where
 // Implement the initialization for CacheLayer with a specified capacity and backend storage.
 impl<K, V, B> CacheLayer<K, V, B>
 where
-    K: KeyCodec + Clone,
-    V: ValueCodec + Clone,
+    K: Clone,
+    V: Clone,
     B: NodeStorage<K, V>,
 {
     fn new(capacity: usize, backend: B) -> Self {
@@ -37,8 +37,8 @@ where
 // Implement the NodeStorage trait
 impl<K, V, B> NodeStorage<K, V> for CacheLayer<K, V, B>
     where
-    K: KeyCodec + Clone,
-    V: ValueCodec + Clone,
+    K: Clone,
+    V: Clone,
     B: NodeStorage<K, V>,
 {
     type Error = CacheError;

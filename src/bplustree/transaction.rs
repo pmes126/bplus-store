@@ -1,7 +1,8 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::codec::{KeyCodec, ValueCodec};
 use crate::storage::{MetadataStorage, NodeStorage};
 use anyhow::Result;
+
+use std::fmt::Debug;
 
 enum WriteOp<K, V> {
     Insert(K, V),
@@ -15,33 +16,28 @@ pub enum TxnStatus {
 
 pub const MAX_COMMIT_RETRIES: usize = 10;
 
-pub struct WriteTransaction<K, V, S>
+pub struct WriteTransaction<K, V>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
 {
-    tree: SharedBPlusTree<K, V, S>,
     staged_update: Option<StagedMetadata>, // Staged metadata root ID
     tree_base_version: BaseVersion,        // Base version of the tree at transaction start
     changes: Vec<WriteOp<K, V>>,
     reclaimed_nodes: Vec<u64>, // Pages to be reclaimed
-    staged_nodes: Vec<u64>,    // Pages to be reclaimed
     initial_root_id: u64,      // Current root ID of the tree
 }
 
-impl<K, V, S> WriteTransaction<K, V, S>
+impl<K: Debug, V: Debug> WriteTransaction<K, V>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
 {
-    pub fn new(tree: SharedBPlusTree<K, V, S>) -> Self {
+    pub fn new<S>(tree: SharedBPlusTree<K, V, S>) -> Self
+    where
+        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    {
         Self {
-            tree: tree.clone(),
-            tree_base_version: BaseVersion {
-                committed_ptr: tree.get_metadata_ptr(),
-            }, // Store initial root ID for reference
             staged_update: {
                 // No staged update initially
                 let res = tree.get_snapshot();
@@ -51,13 +47,14 @@ where
                     size: res.size,
                 })
             },
+            tree_base_version: BaseVersion {
+                committed_ptr: tree.get_metadata_ptr(),
+            },
+            initial_root_id: tree.get_root_id(),
             changes: Vec::new(),
-            staged_nodes: Vec::new(),
             reclaimed_nodes: Vec::new(),
-            initial_root_id: tree.get_root_id(), // Get the initial root ID
         }
     }
-
     // Get the root ID of the intermediate staged tree, if there is one, otherwise return the
     // current root ID
     pub fn get_root_id(&self) -> u64 {
@@ -67,97 +64,90 @@ where
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Result<()> {
-        self.changes
-            .push(WriteOp::Insert(key.clone(), value.clone()));
-        let root_id = self.get_root_id();
-
-        let res = self.tree.insert_with_root(key, value, root_id)?;
-        self.reclaimed_nodes.extend(res.reclaimed_nodes);
-
-        self.staged_nodes.extend(res.staged_nodes);
-        self.staged_update = Some(StagedMetadata {
-            root_id: res.new_root_id,
-            height: res.new_height,
-            size: res.new_size,
-        });
+        self.changes.push(WriteOp::Insert(key, value));
         Ok(())
     }
 
+    // Stage only.
     pub fn delete(&mut self, key: &K) -> Result<()> {
         self.changes.push(WriteOp::Delete(key.clone()));
-        let res = self.tree.delete_with_root(key, self.get_root_id())?;
-        self.reclaimed_nodes.extend(res.reclaimed_nodes);
-        self.staged_nodes.extend(res.staged_nodes);
-        self.staged_update = Some(StagedMetadata {
-            root_id: res.new_root_id,
-            height: res.new_height,
-            size: res.new_size,
-        });
         Ok(())
     }
 
-    pub fn commit(&mut self) -> Result<TxnStatus> {
+    // Replay staged ops from base/root; tree handles encoding inside.
+    pub fn commit<S>(&mut self, tree: &SharedBPlusTree<K, V, S>) -> Result<TxnStatus>
+    where
+        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    {
         for _ in 0..MAX_COMMIT_RETRIES {
-            let staged_update = self
-                .staged_update
-                .take()
-                .expect("Staged update should be set before commit");
-            let res = self.tree.try_commit(&self.tree_base_version, staged_update);
-            if res.is_ok() {
-                self.changes.clear();
-                // Add all staged nodes to the epoch manager for reclamation, we use epoch 0 as
-                // there will no longer be any active readers for this transaction
-                for node_id in self.reclaimed_nodes.drain(..) {
-                    self.tree.get_epoch_mgr().add_reclaim_candidate(0, node_id);
+            // Rebuild speculative state by replaying changes from the saved base root.
+            let mut staged_update: Option<StagedMetadata> = None;
+            let mut staged_nodes: Vec<u64> = Vec::new();
+            let mut reclaimed_nodes_local: Vec<u64> = Vec::new();
+            let mut current_root = self.initial_root_id;
+
+            for op in &self.changes {
+                match op {
+                    WriteOp::Insert(k, v) => {
+                        let wr = tree.insert_with_root(k.clone(), v.clone(), current_root)?;
+                        reclaimed_nodes_local.extend(wr.reclaimed_nodes);
+                        staged_nodes.extend(wr.staged_nodes);
+                        current_root = wr.new_root_id;
+                        staged_update = Some(StagedMetadata {
+                            root_id: wr.new_root_id,
+                            height: wr.new_height,
+                            size: wr.new_size,
+                        });
+                    }
+                    WriteOp::Delete(k) => {
+                        let wr = tree.delete_with_root(k, current_root)?;
+                        reclaimed_nodes_local.extend(wr.reclaimed_nodes);
+                        staged_nodes.extend(wr.staged_nodes);
+                        current_root = wr.new_root_id;
+                        staged_update = Some(StagedMetadata {
+                            root_id: wr.new_root_id,
+                            height: wr.new_height,
+                            size: wr.new_size,
+                        });
+                    }
                 }
+            }
+
+            let staged_update = match staged_update {
+                Some(su) => su,
+                None => {
+                    // No ops: try to publish a no-op metadata (same root) if your API requires it,
+                    // or just return early. Here we no-op-commit to keep the flow consistent.
+                    StagedMetadata {
+                        root_id: current_root,
+                        height: tree.get_height(),
+                        size: tree.get_size(),
+                    }
+                }
+            };
+
+            let res = tree.try_commit(&self.tree_base_version, staged_update);
+            if res.is_ok() {
+                // Publish all reclaimed pages after success.
+                for id in reclaimed_nodes_local.drain(..) {
+                    tree.get_epoch_mgr().add_reclaim_candidate(0, id);
+                }
+                self.reclaimed_nodes.clear();
+                self.changes.clear();
                 return Ok(TxnStatus::Committed);
             } else {
-                // Root changed — retry entire transaction
-                self.initial_root_id = self.tree.get_root_id(); // Update initial root ID
-                self.tree_base_version = BaseVersion {
-                    committed_ptr: self.tree.get_metadata_ptr(),
-                };
-                self.reclaimed_nodes.clear(); // reset collected reclaim info
-                for node_id in self.staged_nodes.drain(..) {
-                    self.tree.get_epoch_mgr().add_reclaim_candidate(0, node_id);
+                // Conflict: clean up speculative nodes, refresh base+root, and retry.
+                for id in staged_nodes.drain(..) {
+                    tree.get_epoch_mgr().add_reclaim_candidate(0, id);
                 }
-                self.rebase()?;
+                self.reclaimed_nodes.clear();
+                self.tree_base_version = BaseVersion {
+                    committed_ptr: tree.get_metadata_ptr(),
+                };
+                self.initial_root_id = tree.get_root_id();
             }
         }
         Ok(TxnStatus::Aborted) // Too many retries, abort transaction
-    }
-
-    // Rebase the transaction by applying all changes to the tree
-    fn rebase(&mut self) -> Result<()> {
-        for op in &self.changes {
-            let root_id = self
-                .staged_update
-                .as_ref()
-                .map_or(self.initial_root_id, |u| u.root_id);
-            match op {
-                WriteOp::Insert(k, v) => {
-                    let write_res = self.tree.insert_with_root(k.clone(), v.clone(), root_id)?;
-                    self.reclaimed_nodes.extend(write_res.reclaimed_nodes);
-                    self.staged_nodes.extend(write_res.staged_nodes);
-                    self.staged_update = Some(StagedMetadata {
-                        root_id: write_res.new_root_id,
-                        height: write_res.new_height,
-                        size: write_res.new_size,
-                    });
-                }
-                WriteOp::Delete(k) => {
-                    let write_res = self.tree.delete_with_root(k, self.tree.get_root_id())?;
-                    self.reclaimed_nodes.extend(write_res.reclaimed_nodes);
-                    self.staged_nodes.extend(write_res.staged_nodes);
-                    self.staged_update = Some(StagedMetadata {
-                        root_id: write_res.new_root_id,
-                        height: write_res.new_height,
-                        size: write_res.new_size,
-                    });
-                }
-            }
-        }
-        Ok(())
     }
 
     #[cfg(test)]

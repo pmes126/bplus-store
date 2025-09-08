@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
+use crate::codec::{DefaultKC, DefaultVC, KeyCodecDefault, ValueCodecDefault};
 use crate::metadata::Metadata;
 use crate::metadata::MetadataPage;
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
@@ -8,7 +9,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-// Import your trait (adjust the path to your crate’s module layout)
 #[derive(Default, Debug)]
 pub struct StorageState {
     commits: Vec<(u8, u64, u64, usize, usize, usize)>, // (slot, txn_id, root_id, height, order, size)
@@ -148,9 +148,13 @@ impl MetadataStorage for TestStorage {
 
 impl<K, V> NodeStorage<K, V> for TestStorage
 where
-    K: crate::codec::KeyCodec + Ord,
-    V: crate::codec::ValueCodec,
+    K: Ord + Clone,
+    V: Clone,
+    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
+    type KC = DefaultKC<K>;
+    type VC = DefaultVC<V>;
+
     fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, StorageError> {
         // Simulate reading a node by returning None
         Ok(None)

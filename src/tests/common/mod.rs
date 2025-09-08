@@ -4,7 +4,7 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::transaction::WriteTransaction;
 use crate::bplustree::tree::BPlusTree;
 use crate::bplustree::tree::SharedBPlusTree;
-use crate::codec::{KeyCodec, ValueCodec};
+use crate::codec::{KeyCodecDefault, ValueCodecDefault};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
 use crate::storage::{MetadataStorage, NodeStorage};
@@ -18,8 +18,8 @@ pub mod test_storage;
 
 pub struct TestHarness<K, V, S: Send + Sync>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     pub tree: Arc<BPlusTree<K, V, S>>,
@@ -29,8 +29,8 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<K, V, S>(storage: S, order: usize) -> TestHarness<K, V, S>
 where
-    K: KeyCodec + Clone + Ord + std::fmt::Debug + 'static,
-    V: ValueCodec + Clone + std::fmt::Debug + 'static,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
 {
     let tree =
@@ -49,9 +49,9 @@ pub fn test_tree_with_epoch<K, V, S>(
     order: usize,
 ) -> TestHarness<K, V, S>
 where
-    K: KeyCodec + Clone + Ord + std::fmt::Debug,
-    V: ValueCodec + Clone + std::fmt::Debug,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
 {
     let tree = Arc::new(BPlusTree::new_with_deps(
         storage.clone(),
@@ -80,8 +80,9 @@ pub fn make_tree_generic<K, V>(
     order: usize,
 ) -> Result<SharedBPlusTree<K, V, FileStore<PageStore>>, anyhow::Error>
 where
-    K: Debug + KeyCodec + Ord + Clone,
-    V: Debug + ValueCodec + Clone,
+    K: Debug + Ord + Clone,
+    V: Debug + Clone,
+    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
     let file_path = dir.path().join("tree.data");
 
@@ -101,10 +102,10 @@ pub fn load_tree(
 }
 
 #[cfg(any(test, feature = "testing"))]
-pub fn test_trx<K, V, S>(tree: SharedBPlusTree<K, V, S>) -> WriteTransaction<K, V, S>
+pub fn test_trx<K, V, S>(tree: SharedBPlusTree<K, V, S>) -> WriteTransaction<K, V>
 where
-    K: KeyCodec + Clone + Ord + Debug,
-    V: ValueCodec + Clone + Debug,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync,
 {
     WriteTransaction::new(tree.clone())

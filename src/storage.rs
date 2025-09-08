@@ -16,22 +16,16 @@ use thiserror::Error;
 pub enum StorageError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
     #[error(transparent)]
     Codec(#[from] CodecError),
-
-    #[error("page corrupted: {0}")]
-    CodecFailure(&'static str),
-
+    #[error("page corrupted: {msg}")]
+    CodecError { msg: String },
     #[error("Storage error: {msg}")]
     StorageAny { msg: String },
-
     #[error("page {pid} not found")]
     NotFound { pid: NodeId },
-
     #[error("invariant: {0}")]
     Invariant(&'static str),
-
     #[error("backend error: {source}")]
     Other {
         #[source]
@@ -64,11 +58,10 @@ pub trait PageStorage {
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
-pub trait NodeStorage<K, V>
-where
-    K: KeyCodec,
-    V: ValueCodec,
-{
+pub trait NodeStorage<K: Ord + Clone, V: Clone>: Send + Sync + 'static {
+    // Default key and value codecs used  by an implementation
+    type KC: KeyCodec<K>;
+    type VC: ValueCodec<V>;
     /// Reads a node from storage by its ID
     fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, StorageError>;
 

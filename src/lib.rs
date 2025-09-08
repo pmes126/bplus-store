@@ -2,9 +2,10 @@
 
 pub mod api;
 pub mod bplustree;
+pub mod codec;
 pub mod storage;
 
-pub(crate) mod codec;
+pub(crate) mod keyfmt;
 pub(crate) mod layout;
 pub(crate) mod metadata;
 pub(crate) mod page;

@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     let mut txn = db.begin_write()?;
     txn.insert(k1, v1.clone())?;
     txn.insert(k2, v2.clone())?;
-    txn.commit()?;
+    txn.commit(db.get_inner())?;
 
     assert_eq!(db.get(&k1)?, Some(v1));
     assert_eq!(db.get(&k2)?, Some(v2));
