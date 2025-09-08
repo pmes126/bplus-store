@@ -56,12 +56,15 @@ impl ValueCodec for u64 {
 }
 
 impl KeyCodec for String {
+    #[inline]
     fn encode_key(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
         let size = self.len();
         buf[..size].copy_from_slice(self.as_bytes());
         Ok(size)
     }
 
+    // We need to copy the bytes to a Vec to ensure they are owned
+    #[inline]
     fn decode_key(buf: &[u8]) -> Self {
         String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
     }

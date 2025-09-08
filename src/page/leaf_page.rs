@@ -158,6 +158,10 @@ impl LeafPage {
             });
         }
 
+        if self.header.entry_count == idx as u64 {
+            return self.insert_entry(key, value);
+        }
+
         // We need to memcpy the contents from idx to idx + required space and write the key value
         // pair in the space between
         let insertion_point = self.slots.offsets[idx] as usize;
@@ -267,6 +271,7 @@ impl LeafPage {
         Ok(())
     }
 
+    // Get entry at idx according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
         if idx >= self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {
@@ -300,6 +305,99 @@ impl LeafPage {
         Ok((key, value))
     }
 
+    // Replace value at idx with new_value, shifting data if necessary
+    pub fn replace_value_at(
+        &mut self,
+        idx: usize,
+        new_value: &[u8],
+    ) -> Result<(), PageCodecError> {
+        if idx >= self.header.entry_count as usize {
+            return Err(PageCodecError::IndexOutOfBounds {
+                msg: "Index out of bounds".to_string(),
+            });
+        }
+        // Key length offset
+        let key_len_offset = self.slots.offsets[idx] as usize;
+        let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to convert bytes to LeafPage".to_string(),
+            })?;
+
+        // Key length
+        let key_length = u16::from_le_bytes(arr) as usize;
+
+        // Value length offset
+        let value_len_offset = key_len_offset + LEN_SIZE;
+        let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
+            .try_into()
+            .map_err(|_| PageCodecError::FromBytesError {
+                msg: "Failed to read bytes as slice".to_string(),
+            })?;
+        // Value length
+        let old_value_length = u16::from_le_bytes(arr) as usize;
+        let new_value_len = new_value.len() as u16;
+        // Key offset
+        let key_offset = value_len_offset + LEN_SIZE;
+        // Value offset
+        let value_offset = key_offset + key_length;
+        let additional_space_needed = new_value_len as isize - old_value_length as isize;
+        if additional_space_needed > 0
+            && (self.header.free_start as isize + additional_space_needed) > DATA_SIZE as isize
+        {
+            return Err(PageCodecError::PageFull {
+                msg: "Not enough space to replace value".to_string(),
+            });
+        }
+        // Shift data if new value is larger or smaller
+        if additional_space_needed != 0 {
+            // Old value start and end
+            let start_of_value = value_offset;
+            let end_of_value = start_of_value + old_value_length;
+            let shift_size = self.header.free_start as usize - end_of_value;
+            // Create some additional space at the end of the old value if needed
+            if additional_space_needed > 0 {
+                // Shift right
+                self.data.blob.copy_within(
+                    end_of_value..end_of_value + shift_size,
+                    (end_of_value as isize + additional_space_needed) as usize,
+                );
+            } else {
+                // Shift left
+                self.data.blob.copy_within(
+                    end_of_value..end_of_value + shift_size,
+                    (end_of_value as isize + additional_space_needed) as usize,
+                );
+                // Clear the freed space at the end
+                let clear_start = (self.header.free_start as isize + additional_space_needed) as usize;
+                let clear_end = self.header.free_start as usize;
+                self.data.blob[clear_start..clear_end].fill(0);
+            }
+
+            // Update offsets in slots for entries after idx
+            for i in (idx + 1)..self.header.entry_count as usize {
+                self.slots.offsets[i] =
+                    (self.slots.offsets[i] as isize + additional_space_needed) as u16;
+            }
+
+            // Update free_start
+            self.header.free_start = (self.header.free_start as isize + additional_space_needed) as u64;
+        }
+
+        // Write the new value length
+        let raw = new_value_len.to_le_bytes();
+        let end = value_len_offset + raw.len();
+
+        self.data.blob[value_len_offset..end].copy_from_slice(raw.as_ref());
+
+        // Write the new value
+        let end = value_offset + new_value.len();
+
+        self.data.blob[value_offset..end].copy_from_slice(new_value);
+
+        Ok(())
+    }
+
     /// Return key bytes at slot i (no decode) klen vlen key value
     /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
@@ -311,6 +409,7 @@ impl LeafPage {
     }
 
     /// Return value bytes at slot i (no decode)
+    /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
     pub fn value_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
         let key_len_offset = self.slots.offsets[i] as usize;
@@ -322,6 +421,7 @@ impl LeafPage {
         let value_len_offset = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] =
             self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)].try_into()?;
+
         let value_length = u16::from_le_bytes(arr);
 
         let key_offset = value_len_offset + LEN_SIZE;
@@ -505,6 +605,48 @@ mod tests {
             let (retrieved_key, retrieved_value) = new_page.get_entry(i - split_idx).unwrap();
             assert_eq!(retrieved_key, key.as_bytes());
             assert_eq!(retrieved_value, values[i].as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_leaf_page_replace_value() {
+        let mut page = LeafPage::new();
+        let key = b"test_key";
+        let val = b"test_value";
+
+        // Insert an entry
+        assert!(page.insert_entry(key, val).is_ok());
+
+        // Replace the value
+        let new_val = b"new_test_value";
+        assert!(page.replace_value_at(0, new_val).is_ok());
+
+        // Retrieve the entry
+        let (retrieved_key, retrieved_value) = page.get_entry(0).unwrap();
+        assert_eq!(retrieved_key, key.as_bytes());
+        assert_eq!(retrieved_value, new_val);
+
+        let keys = ["key1", "key2key2", "key3key3key3", "key4key4key4key4", "key5key5key5key5key5"];
+        let values = [
+            "value1",
+            "value2value2",
+            "value3value3value3",
+            "value4value4value4value4",
+            "value5value5value5value5value5",
+        ];
+        // Insert multiple entries
+        for (&key, &value) in keys.iter().zip(&values) {
+            assert!(page.insert_entry(key.as_bytes(), value.as_bytes()).is_ok());
+        }
+        // Replace the value
+        let new_val = b"new_test_value";
+        for replace_idx in 1..page.len() {
+            assert!(page.replace_value_at(replace_idx, new_val).is_ok());
+            let (k, _) = page.get_entry(replace_idx).unwrap();
+            // Retrieve the entry
+            let (retrieved_key, retrieved_value) = page.get_entry(replace_idx).unwrap();
+            assert_eq!(retrieved_key, k);
+            assert_eq!(retrieved_value, new_val);
         }
     }
 }

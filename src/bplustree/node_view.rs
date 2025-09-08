@@ -80,8 +80,28 @@ impl NodeView {
         }
     }
 
-    /// Insert a key-value pair or key-child pointer into the node at a given index
+    /// Get the key at index i
     #[inline]
+    pub fn key_at(&self, i: usize) -> Result<Vec<u8>> {
+        match self {
+            NodeView::Internal { page } => {
+                let key = page.key_bytes_at(i)?;
+                Ok(key.to_vec())
+            }
+            NodeView::Leaf { page } => {
+                let key = page.key_bytes_at(i)?;
+                Ok(key.to_vec())
+            }
+        }
+    }
+
+    /// Get the first key in the node
+    #[inline]
+    pub fn first_key(&self) -> Result<Vec<u8>> {
+        self.key_at(0)
+    }
+
+    /// Insert a key-value pair or key-child pointer into the node at a given index
     pub fn insert_at(
         &mut self,
         idx: usize,
@@ -111,6 +131,33 @@ impl NodeView {
         }
     }
 
+    /// Replace the value at a given index in a leaf node
+    #[inline]
+    pub fn replace_value_at(&mut self, idx: usize, value: &[u8]) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot replace"
+            )),
+            NodeView::Leaf { page } => {
+                page.replace_value_at(idx, value)
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
+        }
+    }
+
+    /// Remove the entry at a given index from the node
+    #[inline]
+    pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { .. } => Err(anyhow::anyhow!(
+                "Internal nodes do not store values, cannot replace"
+            )),
+            NodeView::Leaf { page } => {
+                page.delete_entry_at(idx).map_err(|e| anyhow::anyhow!(e))
+            }
+        }
+    }
+
     /// Get the entry count of the node
     #[inline]
     pub fn entry_count(&self) -> usize {
@@ -131,6 +178,25 @@ impl NodeView {
                 let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
             }
+        }
+    }
+
+    /// Replace the child pointer at a given index in an internal node
+    pub fn replace_child_at(&mut self, idx: usize, child_ptr: u64) -> Result<(), anyhow::Error> {
+        match self {
+            NodeView::Internal { page } => {
+                if idx == 0 {
+                    page.header.leftmost_child = child_ptr;
+                    Ok(())
+                } else {
+                    let child_idx = idx;
+                    page.replace_child_at(child_idx, child_ptr)
+                        .map_err(|e| anyhow::anyhow!(e))
+                }
+            }
+            NodeView::Leaf { .. } => Err(anyhow::anyhow!(
+                "Leaf nodes do not have children to replace"
+            )),
         }
     }
 }

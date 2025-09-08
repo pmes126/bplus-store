@@ -1,3 +1,6 @@
+use crate::bplustree::node_view::NodeView;
+use crate::codec::{KeyCodec, ValueCodec, NodeCodec, bincode::DefaultNodeCodec};
+
 pub type NodeId = u64;
 
 /// In-memory representation of a node
@@ -15,15 +18,14 @@ pub enum Node<K, V> {
 
 impl<K, V> Node<K, V>
 where
-    K: Ord,
-    V: Clone,
+    K: Ord + KeyCodec + Clone,
+    V: Clone + ValueCodec,
 {
     pub fn is_empty(&self) -> bool {
         match self {
             Node::Internal { keys, children } => keys.is_empty() && children.is_empty(),
             Node::Leaf { keys, values } => keys.is_empty() && values.is_empty(),
-        }
-    }
+        } }
 
     pub fn is_underflowed(&self, min_keys: usize) -> bool {
         match self {
@@ -45,5 +47,24 @@ where
 
     pub fn is_internal(&self) -> bool {
         matches!(self, Node::Internal { .. })
+    }
+
+    pub fn from_node_view(node_view: NodeView) -> Result<Self, crate::codec::CodecError> {
+        match node_view {
+            NodeView::Internal { page } => {
+                let page_raw = page.to_bytes()
+                    .map_err(|e| crate::codec::CodecError::EncodeFailure {
+                         msg: e.to_string(),
+                    })?;
+                DefaultNodeCodec::decode(page_raw)
+            }
+            NodeView::Leaf { page } => {
+                let page_raw = page.to_bytes()
+                    .map_err(|e| crate::codec::CodecError::EncodeFailure {
+                         msg: e.to_string(),
+                    })?;
+                DefaultNodeCodec::decode(page_raw)
+            }
+        }
     }
 }

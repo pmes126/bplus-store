@@ -48,6 +48,7 @@ impl InternalPage {
         }
     }
 
+    #[inline]
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
         InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError {
             msg: "Failed to convert bytes to LeafPage".to_string(),
@@ -122,6 +123,10 @@ impl InternalPage {
             });
         }
 
+        if self.header.entry_count == idx as u64 {
+            return self.insert_entry(key, child);
+        }
+
         let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE;
 
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
@@ -184,6 +189,7 @@ impl InternalPage {
         Ok(())
     }
 
+    #[inline]
     pub fn write_leftmost_child(&mut self, child: u64) {
         self.header.leftmost_child = child;
     }
@@ -283,6 +289,7 @@ impl InternalPage {
         Ok(())
     }
 
+    #[inline]
     pub fn get_child_at(&self, idx: usize) -> Result<u64, PageCodecError> {
         if idx == 0 {
             return Ok(self.header.leftmost_child);
@@ -340,6 +347,7 @@ impl InternalPage {
         Ok(array)
     }
 
+    // Splits the page at idx, moving entries from idx to the end to a new page
     pub fn split_off(&mut self, idx: usize) -> Result<InternalPage, PageCodecError> {
         if idx >= self.header.entry_count as usize {
             return Err(PageCodecError::IndexOutOfBounds {

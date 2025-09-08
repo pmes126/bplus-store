@@ -227,7 +227,7 @@ where
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
-            .insert_inner(key, value, root_id, &mut collector)?;
+            .insert_inner_view(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -476,6 +476,21 @@ where
         Ok(new_id)
     }
 
+    // Writes a node to the B+ tree storage and updates the cache.
+    fn write_node_view(
+        &self,
+        node: &NodeView,
+        tracker: &mut impl TxnTracker,
+    ) -> Result<u64, TreeError> {
+        let new_id = self
+            .storage
+            .write_node_view(node)
+            .map_err(|e| TreeError::BackendAny(format!("failed to write node {}:", e)))?;
+        tracker.add_new(new_id);
+        Ok(new_id)
+    }
+
+
     // Returns the path of where a key should be inserted, without decoding the nodes for
     // efficiency.
     pub fn get_insertion_path_undecoded(
@@ -532,6 +547,58 @@ where
         }
     }
 
+    // Returns the path of where a key should be inserted, without decoding the nodes for
+    // efficiency.
+    pub fn get_insertion_path_undecoded_view(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<Vec<PathNode>, TreeError> {
+        let mut path = vec![];
+        let mut current_id = root_id;
+
+        let mut encode_buf = vec![0u8; key.encoded_len()];
+        key.encode_key(encode_buf.as_mut())
+            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+        // Find insertion point
+        loop {
+            match self.storage.read_node_view(current_id)? {
+                Some(node) => match &node {
+                    NodeView::Leaf { .. } => {
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) => i,
+                            Err(i) => i,
+                        };
+                        path.push((current_id, i)); // Record the current node and index
+                        return Ok(path);
+                    }
+                    NodeView::Internal { .. } => {
+                        // Find the insertion point in the internal node
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        };
+                        path.push((current_id, i)); // Record the current node and index
+                        let child = node.child_ptr_at(i)?; // Move to the child node
+                        if let Some(child_id) = child {
+                            current_id = child_id; // Continue iteration
+                        } else {
+                            TreeError::BackendAny(format!(
+                                "Internal node cannot retrieve child at index {}",
+                                i
+                            ));
+                        }
+                    }
+                },
+                None => {
+                    // Node not found, this should not happen as we are traversing the path
+                    return Err(TreeError::BackendAny(
+                        "Node not found while getting insertion path".to_string(),
+                    ));
+                }
+            }
+        }
+    }
     // Returns the path of where a key should be inserted.
     pub fn get_insertion_path(
         &self,
@@ -615,6 +682,64 @@ where
         }
     }
 
+    // Inserts a key-value pair into the B+ tree.
+    pub fn insert_inner_view(
+        &self,
+        key: K,
+        value: V,
+        root_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        let _guard = self.epoch_mgr.pin();
+        let mut path = self.get_insertion_path_undecoded_view(&key, root_id)?;
+        let (leaf_node_id, _idx) = path.pop().ok_or_else(|| {
+            TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
+        })?;
+        let mut leaf_node = self
+            .storage
+            .read_node_view(leaf_node_id)?
+            .ok_or_else(|| {
+                TreeError::NodeNotFound(format!(
+                    "Leaf node with ID {} not found",
+                    leaf_node_id
+                ))
+            })?;
+
+        let NodeView::Leaf { .. } = &mut leaf_node else {
+            return Err(TreeError::BackendAny(
+                "Expected a leaf node for insertion".to_string(),
+            ));
+        };
+
+        let mut key_buf = vec![0u8; key.encoded_len()];
+        let mut val_buf = vec![0u8; value.encoded_len()];
+        key.encode_key(key_buf.as_mut())
+            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+        value
+            .encode_value(val_buf.as_mut())
+            .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
+
+        // Find the insertion point in the internal node
+        match leaf_node.lower_bound(key_buf.as_ref()) {
+            Ok(i) => {
+                // Key exists, replace the value
+                leaf_node.replace_value_at(i, &val_buf)?;
+            }
+            Err(i) => {
+                leaf_node.insert_at(i, &key_buf, Some(&val_buf), None)?;
+            },
+        };
+
+        track.record_staged_size(self.get_size() + 1); // Update staged size
+        track.record_staged_height(self.get_height()); // Update staged height - could be increased later
+
+        if leaf_node.keys_len() > self.max_keys {
+            self.handle_leaf_split_view(path, leaf_node, track)
+        } else {
+            self.write_and_propagate_view(path, &leaf_node, track)
+        }
+    }
+
     // Handles the split of a leaf node when it exceeds the maximum number of keys.
     fn handle_leaf_split(
         &self,
@@ -629,6 +754,24 @@ where
         } = self.split_leaf_node(leaf_node)?;
         let right_id = self.write_node(&right_node, track)?;
         let left_id = self.write_node(&left_node, track)?;
+
+        self.propagate_split(path, left_id, right_id, split_key, track)
+    }
+
+    // Handles the split of a leaf node when it exceeds the maximum number of keys.
+    fn handle_leaf_split_view(
+        &self,
+        path: Vec<(NodeId, usize)>,
+        leaf_node: NodeView,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        let SplitResult::SplitNodes {
+            left_node,
+            right_node,
+            split_key,
+        } = self.split_leaf_node_view(leaf_node)?;
+        let right_id = self.write_node_view(&right_node, track)?;
+        let left_id = self.write_node_view(&left_node, track)?;
 
         self.propagate_split(path, left_id, right_id, split_key, track)
     }
@@ -664,6 +807,32 @@ where
                 left_node: left_leaf,
                 right_node: right_leaf,
                 split_key: split_key.clone(),
+            })
+        } else {
+            Err(TreeError::BackendAny(
+                "Expected a leaf node for splitting".to_string(),
+            ))
+        }
+    }
+
+    // Splits a leaf node into two nodes and returns the new right node, the left node, and the
+    // first key of the right node to be pushed up to the parent.
+    fn split_leaf_node_view(
+        &self,
+        mut leaf_node: NodeView,
+    ) -> Result<SplitResult<K, NodeView>, TreeError> {
+        // Equally split the keys and values between the two nodes.
+        if let NodeView::Leaf { .. } = &mut leaf_node {
+            let mid = leaf_node.keys_len() / 2;
+            let split_idx = mid; // Index to split the keys and values
+            let right_node = leaf_node.split_off(split_idx)?;
+            let split_key = right_node.first_key()?;
+            let k = K::decode_key(split_key.as_ref());
+
+            Ok(SplitResult::SplitNodes {
+                left_node: leaf_node,
+                right_node,
+                split_key: k,
             })
         } else {
             Err(TreeError::BackendAny(
@@ -725,6 +894,22 @@ where
             Ok(new_root)
         }
     }
+    
+    // Writes a node view and propagates the update to the parent nodes.
+    fn write_and_propagate_view(
+        &self,
+        path: Vec<(u64, usize)>,
+        node: &NodeView,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        let new_node_id = self.write_node_view(node, track)?;
+        if path.is_empty() {
+            Ok(new_node_id)
+        } else {
+            let new_root = self.propagate_node_view_update(path, new_node_id, track)?;
+            Ok(new_root)
+        }
+    }
 
     // Propagates an update to the parent nodes after a node has been updated or split.
     fn propagate_node_update(
@@ -757,6 +942,47 @@ where
             children[insert_pos] = updated_child_id;
             // Propagate up the path
             updated_child_id = self.write_node(&parent_node, track)?;
+        }
+        Ok(updated_child_id) // Return the new root ID
+    }
+
+    // Propagates an update to a node view
+    fn propagate_node_view_update(
+        &self,
+        mut path: Vec<(NodeId, usize)>,
+        mut updated_child_id: NodeId,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        while let Some((parent_id, insert_pos)) = path.pop() {
+            let mut parent_node = self
+                .storage
+                .read_node_view(parent_id)?
+                .ok_or_else(|| TreeError::NodeNotFound("Parent node not found".to_string()))?;
+
+            let NodeView::Internal {
+                ..
+            } = parent_node
+            else {
+                return Err(TreeError::BackendAny(
+                    "Expected internal node while updating parents".to_string(),
+                ));
+            };
+            if insert_pos > parent_node.keys_len() + 1 {
+                return Err(TreeError::BackendAny(format!(
+                    "Insert position {} out of bounds for children in node {}",
+                    insert_pos, parent_id
+                )));
+            }
+            // Reclaim the original child node and update the child pointer
+            track.reclaim(parent_node.child_ptr_at(insert_pos)?.ok_or_else(|| {
+                TreeError::BackendAny(format!(
+                    "Child pointer at index {} in node {} is None",
+                    insert_pos, parent_id
+                ))
+            })?);
+            parent_node.replace_child_at(insert_pos, updated_child_id)?;
+            // Propagate up the path
+            updated_child_id = self.write_node_view(&parent_node, track)?;
         }
         Ok(updated_child_id) // Return the new root ID
     }
@@ -823,7 +1049,7 @@ where
         self.search_inner_undecoded(key, root_id)
     }
 
-    // Search for a key and return the value if exists
+    // Search for a key and return the value if exists by decoding the nodes.
     pub fn search_inner(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
@@ -850,6 +1076,7 @@ where
         }
     }
 
+    // Search for a key and return the value if exists, without decoding the nodes for efficiency.
     pub fn search_inner_undecoded(&self, key: &K, root_id: NodeId) -> Result<Option<V>, TreeError> {
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
@@ -951,27 +1178,40 @@ where
         track: &mut impl TxnTracker,
     ) -> Result<DeleteResult<NodeId>, TreeError> {
         let _guard = self.epoch_mgr.pin();
-        let (path, mut node) = self.get_insertion_path_undecoded(key, root_id)?;
-        let Node::Leaf { keys, values, .. } = &mut node else {
-            return Err(TreeError::BackendAny("Expected leaf node".to_string()));
-        };
-        let Ok(index) = keys.binary_search(key) else {
-            return Ok(DeleteResult::NotFound);
+
+        let mut path = self.get_insertion_path_undecoded_view(key, root_id)?;
+        let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
+            TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
+        })?;
+        let mut leaf_node = self
+            .storage
+            .read_node_view(leaf_node_id)?
+            .ok_or_else(|| {
+                TreeError::NodeNotFound(format!(
+                    "Leaf node with ID {} not found",
+                    leaf_node_id
+                ))
+            })?;
+
+        let NodeView::Leaf { .. } = &mut leaf_node else {
+            return Err(TreeError::BackendAny(
+                "Expected a leaf node for deletion".to_string(),
+            ));
         };
 
-        // Update leaf node
-        keys.remove(index);
-        values.remove(index);
+        leaf_node.delete_at(idx)?;
 
         track.record_staged_size(self.get_size().saturating_sub(1));
         track.record_staged_height(self.get_height()); // Update staged height, it may be decreased later
 
         // no underflow if the node has enough keys or it is the root node
-        if keys.len() >= self.min_leaf_keys || path.is_empty() {
-            let new_root_id = self.write_and_propagate(path, &node, track)?;
+        if leaf_node.entry_count() >= self.min_leaf_keys || path.is_empty() {
+            let new_root_id = self.write_and_propagate_view(path, &leaf_node, track)?;
             return Ok(DeleteResult::Deleted(new_root_id));
         }
 
+        // materialize the leaf node for easy underflow handling
+        let node = Node::from_node_view(leaf_node)?;
         let new_root_id = self.handle_underflow(path, node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
     }
