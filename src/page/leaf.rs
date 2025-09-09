@@ -1,21 +1,15 @@
 //! page::leaf — slotted leaf page with pluggable key-block format.
-//
-// Layout (within a PAGE_SIZE buffer):
-//
-//  [header (fixed 8 bytes)]
-//  [KEY BLOCK bytes ...]                ← managed by KeyBlockFormat
-//  [FREE SPACE ...]
-//  [VALUE ARENA bytes ... grows downward from the end of free space up toward slot dir]
-//  [SLOT DIR entries ... at end of page, grows upward from PAGE_SIZE]
-//
-// Slot dir entry is fixed-size (4 bytes): (val_off: u16, val_len: u16).
-//
-// Invariants:
-// - header.key_count == number of keys == number of slots
-// - slot_dir_off() = PAGE_SIZE - key_count * SLOT_SIZE
-// - values occupy [values_hi .. slot_dir_off())
-// - free space is [keys_end .. values_hi)
-// - keys_end = HEADER_SIZE + key_block_len
+//!
+//! Layout (in a PAGE_SIZE buffer):
+//!   [ header ][ KEY BLOCK ][ SLOT DIR ][     FREE     ][ VALUE ARENA ↓ from page end ]
+//!    0        ^            ^ slots_end                               ^ values_hi
+//!             keys_end = HEADER + key_block_len
+//!             slots_end = keys_end + key_count * SLOT_SIZE
+//!
+//! Invariants:
+//! - slots_end <= values_hi <= PAGE_SIZE
+//! - key_count == number of slots
+//! - slot i stores {val_off, val_len} into VALUE ARENA (values themselves are append-only, compacted lazily)
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
@@ -58,11 +52,11 @@ const LEN_SIZE: usize = std::mem::size_of::<u16>();
 #[repr(transparent)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct Header<'a> {
-    kind: &'a mut u8,
-    keyfmt_id: &'a mut u8,
-    key_count: &'a mut u16,
-    key_block_len: &'a mut u16,
-    values_hi: &'a mut u16,
+    kind: u8,
+    keyfmt_id: u8,
+    key_count: u16,
+    key_block_len: u16,
+    values_hi: u16,
 }
 
 // Borrowed/mutable view over a leaf page buffer.
@@ -97,15 +91,15 @@ impl<'a> LeafPage<'a> {
 
     // --- header accessors ---
 
-    #[inline] fn keyfmt_id(&self) -> u8 { self.buf[HDR_KEYFMT_ID] }
-    #[inline] fn key_count(&self) -> u16 { read_u16_le(self.buf, HDR_KEY_COUNT) }
-    #[inline] fn set_key_count(&mut self, n: u16) { write_u16_le(self.buf, HDR_KEY_COUNT, n) }
+    #[inline] fn keyfmt_id(&self) -> u8 { self.header.keyfmt_id }
+    #[inline] fn key_count(&self) -> u16 { self.header.key_count }
+    #[inline] fn set_key_count(&mut self, n: u16) { self.header.key_count = n; }
 
-    #[inline] fn key_block_len(&self) -> u16 { read_u16_le(self.buf, HDR_KEY_BLOCK_LEN) }
-    #[inline] fn set_key_block_len(&mut self, n: u16) { write_u16_le(self.buf, HDR_KEY_BLOCK_LEN, n) }
+    #[inline] fn key_block_len(&self) -> u16 { self.header.key_block_len }
+    #[inline] fn set_key_block_len(&mut self, n: u16) { self.header.key_block_len = n; }
 
-    #[inline] fn values_hi(&self) -> u16 { read_u16_le(self.buf, HDR_VALUES_HI) }
-    #[inline] fn set_values_hi(&mut self, off: u16) { write_u16_le(self.buf, HDR_VALUES_HI, off) }
+    #[inline] fn values_hi(&self) -> u16 { self.header.values_hi }
+    #[inline] fn set_values_hi(&mut self, off: u16) { self.header.values_hi = off }
 
     // --- derived regions ---
 
@@ -115,20 +109,6 @@ impl<'a> LeafPage<'a> {
     #[inline] fn key_block_mut(&mut self) -> &mut [u8] {
         let end = self.keys_end();
         &mut self.buf[self.keys_start()..end]
-    }
-
-    #[inline] fn slot_dir_off(&self) -> usize {
-        PAGE_SIZE - self.key_count() as usize * SLOT_SIZE
-    }
-    #[inline] fn values_range(&self) -> core::ops::Range<usize> {
-        self.values_hi() as usize .. self.slot_dir_off()
-    }
-    #[inline] fn free_range(&self) -> core::ops::Range<usize> {
-        self.keys_end() .. self.values_hi() as usize
-    }
-    #[inline] fn free_bytes(&self) -> usize {
-        let r = self.free_range();
-        r.end.saturating_sub(r.start)
     }
 
     // Resolve runtime key format
@@ -141,253 +121,238 @@ impl<'a> LeafPage<'a> {
     fn key_run<'s>(&'s self) -> PageKeyRun<'s> {
         PageKeyRun { body: self.key_block(), fmt: self.fmt() }
     }
-
     // ---- search ----
-
-    /// Binary seek using the key format; returns (insertion index, found).
+    /// Seek on encoded key bytes; returns (insertion index, found).
     pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> (usize, bool) {
-        let (i, found) = self.key_run().seek(key_enc, scratch);
-        debug_assert!(i <= self.key_count() as usize);
-        (i, found)
+        self.fmt().seek(self.key_block(), key_enc, scratch)
     }
 
-    // ---- read value by index ----
+    // -------- value access --------
 
     pub fn read_value_at(&self, idx: usize) -> Result<&[u8], PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::Bounds); }
         let slot = self.read_slot(idx)?;
         let off = slot.val_off as usize;
         let len = slot.val_len as usize;
-        let vr = self.values_range();
-        if off < vr.start || off.checked_add(len).unwrap_or(usize::MAX) > vr.end {
-            return Err(PageError::Corrupt("slot points outside value arena"));
+        let lo = self.values_hi_usize();
+        let hi = self.slots_end();
+        if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
+            return Err(PageError::Corrupt("slot outside arena"));
         }
         Ok(&self.buf[off..off + len])
     }
 
-    // ---- insert ----
+    /// Overwrite metadata to point to a new location (doesn't move the old bytes).
+    pub fn overwrite_value_at(&mut self, idx: usize, val_off: u16, val_len: u16) -> Result<(), PageError> {
+        self.write_slot(idx, LeafSlot { val_off, val_len })
+    }
 
-    /// Insert a new (key,value) where `key_enc` is the order-preserving encoded key bytes.
-    pub fn insert(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
-        // 0) space check (rough): need value bytes + one slot; key delta rebuilt in-place
-        let need = val_bytes.len() + SLOT_SIZE;
-        if self.free_bytes() < need {
-            return Err(PageError::NoSpace);
-        }
+    // -------- slot access --------
+    // -------- insert (encoded key & value) --------
 
-        // 1) allocate value into arena (growing down from the end)
-        let (val_off, val_len) = self.value_arena_alloc(val_bytes)?;
-
-        // 2) find index
+    pub fn insert_encoded(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
+        // 1) find position
         let mut scratch = Vec::new();
         let (idx, found) = self.find_slot(key_enc, &mut scratch);
+
         if found {
-            // Your policy: overwrite? return error? For now, treat as upsert: replace value.
+            // Upsert policy: allocate new tail and repoint the slot (no key changes).
+            let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
             self.overwrite_value_at(idx, val_off, val_len)?;
             return Ok(());
         }
 
-        // 3) insert slot into directory
+        // 2) build new key block bytes (correctness-first: rebuild whole block)
+        let old_kb = self.key_block();
+        let old_len = old_kb.len();
+
+        let mut all_owned: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize + 1);
+        for i in 0..self.key_count() as usize {
+            let k = self.decode_key_at(i, &mut scratch);
+            all_owned.push(k.to_vec());
+        }
+        all_owned.insert(idx, key_enc.to_vec());
+
+        let mut refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
+        let mut new_kb = Vec::new();
+        self.fmt().encode_all(&refs, &mut new_kb);
+        let new_len = new_kb.len();
+
+        let delta_k = new_len as isize - old_len as isize;
+
+        // 3) plan slot & value growth and verify capacity
+        let key_count = self.key_count() as usize;
+        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
+        let new_slots_end = new_keys_end + (key_count + 1) * SLOT_SIZE;
+        let new_values_hi = self.values_hi_usize().checked_sub(val_bytes.len()).ok_or(PageError::NoSpace)?;
+        if new_slots_end > new_values_hi {
+            return Err(PageError::NoSpace);
+        }
+
+        // 4) move slots by Δk to keep them flush with the key block
+        self.move_slot_dir(delta_k)?;
+
+        // 5) write new key block and commit len
+        {
+            let dst = &mut self.buf[self.keys_start()..self.keys_start()+new_len];
+            dst.copy_from_slice(&new_kb);
+            self.set_key_block_len(new_len as u16);
+        }
+
+        // 6) place value at the tail (just below current slots)
+        let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // writes values_hi
+
+        // 7) insert slot at idx
         self.slot_dir_insert(idx, LeafSlot { val_off, val_len })?;
-
-        // 4) re-encode a small key window [s..e) containing the insertion point
-        let (s, e) = self.window_for_insert(idx);
-        let mut new_keys: Vec<&[u8]> = Vec::with_capacity(e - s + 1);
-        // collect keys s..idx
-        for j in s..idx {
-            new_keys.push(self.key_at(j, &mut scratch));
-        }
-        // the new key
-        new_keys.push(key_enc);
-        // collect keys idx..e
-        for j in idx..e {
-            new_keys.push(self.key_at(j, &mut scratch));
-        }
-
-        // rebuild
-        let mut out = Vec::new();
-        self.key_run().rebuild_window(s, e, &new_keys, &mut out);
-        self.splice_key_block(s, e, &out)?;
-
-        // bump counts
-        let kc = self.key_count().checked_add(1).ok_or(PageError::Corrupt("key_count overflow"))?;
-        self.set_key_count(kc);
+        self.set_key_count(self.key_count() + 1);
 
         Ok(())
     }
 
-    // ---- delete ----
+    // -------- delete (by index) --------
 
     pub fn delete_at(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::Bounds); }
 
-        // 1) free policy: we don't reclaim value space (classic slotted page).
-        //    You can add a free-list later. For now, only remove slot.
+        // Rebuild key block without key idx
+        let old_kb = self.key_block();
+        let old_len = old_kb.len();
+
+        let mut scratch = Vec::new();
+        let mut all_owned: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize - 1);
+        for i in 0..self.key_count() as usize {
+            if i == idx { continue; }
+            all_owned.push(self.decode_key_at(i, &mut scratch).to_vec());
+        }
+        let mut refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
+        let mut new_kb = Vec::new();
+        self.fmt().encode_all(&refs, &mut new_kb);
+        let new_len = new_kb.len();
+        let delta_k = new_len as isize - old_len as isize; // likely negative
+
+        // capacity is a non-issue on delete (releasing space), but we'll still move slots first if shrinking negative after write
+        // Move slots by Δk (can be negative)
+        self.move_slot_dir(delta_k)?;
+
+        // Write new key block
+        {
+            let dst = &mut self.buf[self.keys_start()..self.keys_start()+new_len];
+            dst.copy_from_slice(&new_kb);
+            self.set_key_block_len(new_len as u16);
+        }
+
+        // Remove slot idx
         self.slot_dir_remove(idx)?;
+        self.set_key_count(self.key_count() - 1);
 
-        // 2) rebuild a small window around idx (drop key at idx)
-        let (s, e) = self.window_for_delete(idx);
-        let mut scratch = Vec::new();
-        let mut new_keys: Vec<&[u8]> = Vec::with_capacity(e - s - 1);
-        for j in s..e {
-            if j == idx { continue; }
-            new_keys.push(self.key_at(j, &mut scratch));
-        }
-        let mut out = Vec::new();
-        self.key_run().rebuild_window(s, e, &new_keys, &mut out);
-        self.splice_key_block(s, e, &out)?;
-
-        // 3) dec count
-        let kc = self.key_count().checked_sub(1).ok_or(PageError::Corrupt("underflow key_count"))?;
-        self.set_key_count(kc);
         Ok(())
     }
 
-    // ---- internal helpers ----
+    // -------- compaction (optional) --------
 
-    /// Decode the i-th encoded key BYTES into scratch and return it.
-    fn key_at<'s>(&self, i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
-        self.fmt().decode_at(self.key_block(), i, scratch)
+    /// Pack value bytes tightly at the end and fix slot offsets.
+    pub fn compact_values(&mut self) {
+        let n = self.key_count() as usize;
+        let mut write = PAGE_SIZE;
+        // Copy values in reverse order to avoid overlap
+        for i in (0..n).rev() {
+            let slot = self.read_slot(i).unwrap();
+            let off = slot.val_off as usize;
+            let len = slot.val_len as usize;
+            write -= len;
+            // memmove
+            self.buf.copy_within(off..off+len, write);
+            // update slot
+            self.write_slot(i, LeafSlot { val_off: write as u16, val_len: len as u16 }).unwrap();
+        }
+        self.set_values_hi(write as u16);
     }
 
-    /// Choose a rebuild window for insert (format-specific; default: the whole block for Raw).
-    fn window_for_insert(&self, idx: usize) -> (usize, usize) {
-        // For Prefix+Restarts, expand to [prev_restart(idx) .. next_restart_ge(idx)]
-        // For Raw, tiny window is fine (just the inserted index).
-        // We'll default to a small window of size 1 around idx.
-        (idx, idx) // [s..e) half-open; when s==e we'll treat as "insert at idx"
-    }
+    // ====== internals ======
 
-    /// Choose a rebuild window for delete.
-    fn window_for_delete(&self, idx: usize) -> (usize, usize) {
-        // Default: just the deleted index
-        (idx, idx + 1)
-    }
-
-    /// Splice the key-block bytes: replace [s..e) logical entries with `out` bytes.
-    fn splice_key_block(&mut self, s: usize, e: usize, out: &[u8]) -> Result<(), PageError> {
-        // Compute byte offsets of logical entries s and e within the key-block.
-        // For Raw, this is straightforward; for Prefix, you'll compute from restart metadata.
-        // To keep this file format-agnostic, we lean on the format to give us byte ranges.
-        // Minimal approach: rebuild ENTIRE block using encode_all for now (correctness first).
-        // TODO: optimize to in-place splice by teaching KeyBlockFormat to expose byte ranges.
-        let mut all_keys: Vec<Vec<u8>> = Vec::with_capacity(self.key_count() as usize);
-        let mut scratch = Vec::new();
-        for i in 0..self.key_count() as usize {
-            if i >= s && i < e {
-                continue; // replaced by `out` keys we already encoded
+    /// Move the entire slot directory by Δk bytes to keep it flush with the key block.
+    fn move_slot_dir(&mut self, delta_k: isize) -> Result<(), PageError> {
+        if delta_k == 0 { return Ok(()); }
+        let k0 = self.keys_end();   // current end of keys (before commit of new len)
+        let s0 = self.slots_end();  // current end of slots
+        if delta_k > 0 {
+            let dk = delta_k as usize;
+            // Ensure room to move slots forward by dk
+            if s0 + dk > self.values_hi_usize() {
+                return Err(PageError::NoSpace);
             }
-            all_keys.push(self.key_at(i, &mut scratch).to_vec());
+            // move forward
+            self.buf.copy_within(k0..s0, k0 + dk);
+        } else {
+            let dk = (-delta_k) as usize;
+            // move backward
+            self.buf.copy_within(k0..s0, k0 - dk);
         }
-        // Insert the new ones at s
-        let mut res: Vec<&[u8]> = Vec::with_capacity(all_keys.len() + out.len());
-        for (i, k) in all_keys.iter().enumerate() {
-            if i == s { /* fallthrough after pushing new */ }
-            // We'll just rebuild everything for now; use encode_all:
-        }
-        // Fallback correctness path:
-        let mut rebuilt = Vec::new();
-        // We need the set [0..key_count'] in order. We've already adjusted key_count
-        // in insert/delete, so derive final list by re-seeking. Simpler: parse `out`
-        // caller-building made `out` be a full window re-encode, not individual keys;
-        // so we must rebuild all keys explicitly here. To avoid confusion,
-        // prefer the simpler, correct approach:
-        self.rebuild_all_keys_using_format()?;
         Ok(())
     }
 
-    /// Correctness-first: rebuild the entire key block from decoded keys.
-    fn rebuild_all_keys_using_format(&mut self) -> Result<(), PageError> {
-        let mut scratch = Vec::new();
-        let mut keys: Vec<&[u8]> = Vec::with_capacity(self.key_count() as usize);
-        for i in 0..self.key_count() as usize {
-            keys.push(self.key_at(i, &mut scratch));
-        }
-        let mut out = Vec::new();
-        self.fmt().encode_all(&keys, &mut out);
-        // write back
-        let need = HEADER_SIZE + out.len();
-        if need > self.values_hi() as usize {
-            return Err(PageError::NoSpace);
-        }
-        // move free space boundary and copy
-        self.set_key_block_len(out.len() as u16);
-        self.key_block_mut().copy_from_slice(&out);
-        Ok(())
+    /// Decode i-th encoded key bytes into scratch and return a view.
+    fn decode_key_at<'s>(&self, i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
+        self.fmt().decode_at(self.key_block(), i, scratch)
     }
 
     // ---- slot dir ops ----
 
+    fn slot_off_for(&self, idx: usize) -> usize {
+        self.slots_base() + idx * SLOT_SIZE
+    }
+
     fn read_slot(&self, idx: usize) -> Result<LeafSlot, PageError> {
-        let kc = self.key_count() as usize;
-        if idx >= kc { return Err(PageError::Bounds); }
-        let base = self.slot_dir_off() + idx * SLOT_SIZE;
-        let off = read_u16_le(self.buf, base);
-        let len = read_u16_le(self.buf, base + LEN_SIZE);
-        Ok(LeafSlot { val_off: off, val_len: len })
+        if idx >= self.key_count() as usize { return Err(PageError::Bounds); }
+        let base = self.slot_off_for(idx);
+        Ok(LeafSlot { val_off: read_u16_le(self.buf, base), val_len: read_u16_le(self.buf, base + 2) })
     }
 
     fn write_slot(&mut self, idx: usize, slot: LeafSlot) -> Result<(), PageError> {
-        let kc = self.key_count() as usize;
-        if idx > kc { return Err(PageError::Bounds); }
-        let base = self.slot_dir_off() + idx * SLOT_SIZE;
+        if idx > self.key_count() as usize { return Err(PageError::Bounds); }
+        let base = self.slot_off_for(idx);
         write_u16_le(self.buf, base, slot.val_off);
-        write_u16_le(self.buf, base + LEN_SIZE, slot.val_len);
+        write_u16_le(self.buf, base + 2, slot.val_len);
         Ok(())
     }
 
     fn slot_dir_insert(&mut self, idx: usize, slot: LeafSlot) -> Result<(), PageError> {
         let kc = self.key_count() as usize;
         if idx > kc { return Err(PageError::Bounds); }
-        // new slot dir starts one slot earlier
-        let new_slot_off = PAGE_SIZE - (kc + 1) * SLOT_SIZE;
-        // Is there space? (free space does not account for slot dir growth; check explicitly.)
-        if new_slot_off < self.values_hi() as usize {
-            return Err(PageError::NoSpace);
-        }
-        // shift existing slots right by one from idx..kc-1
-        for i in (idx..kc).rev() {
-            let src = self.slot_dir_off() + i * SLOT_SIZE;
-            let dst = src + SLOT_SIZE;
-            self.buf.copy_within(src..src + SLOT_SIZE, dst);
-        }
-        // write new slot
-        let base = new_slot_off + idx * SLOT_SIZE;
-        write_u16_le(self.buf, base, slot.val_off);
-        write_u16_le(self.buf, base + LEN_SIZE, slot.val_len);
+        // shift right by one entry
+        let base = self.slots_base();
+        let from = base + idx * SLOT_SIZE;
+        let to   = base + (kc + 1) * SLOT_SIZE;
+        self.buf.copy_within(from..from + kc * SLOT_SIZE - idx * SLOT_SIZE, from + SLOT_SIZE);
+        // write new
+        write_u16_le(self.buf, from, slot.val_off);
+        write_u16_le(self.buf, from + 2, slot.val_len);
         Ok(())
     }
 
     fn slot_dir_remove(&mut self, idx: usize) -> Result<(), PageError> {
         let kc = self.key_count() as usize;
         if idx >= kc { return Err(PageError::Bounds); }
-        // shift left idx+1..kc-1
-        for i in idx + 1..kc {
-            let src = self.slot_dir_off() + i * SLOT_SIZE;
-            let dst = src - SLOT_SIZE;
-            self.buf.copy_within(src..src + SLOT_SIZE, dst);
-        }
-        // (optional) zero the now-free last slot
-        let last_off = PAGE_SIZE - SLOT_SIZE;
-        self.buf[last_off..].fill(0);
+        let base = self.slots_base();
+        let from = base + (idx + 1) * SLOT_SIZE;
+        let to   = base + kc * SLOT_SIZE;
+        // shift left by one
+        self.buf.copy_within(from..to, from - SLOT_SIZE);
+        // zero last slot (optional)
+        let last = base + (kc - 1) * SLOT_SIZE;
+        for b in &mut self.buf[last..last + SLOT_SIZE] { *b = 0; }
         Ok(())
     }
 
     // ---- value arena ----
 
-    fn value_arena_alloc(&mut self, val: &[u8]) -> Result<(u16, u16), PageError> {
-        // val len must fit in u16
-        let len = u16::try_from(val.len()).map_err(|_| PageError::NoSpace)?;
-        let free = self.free_bytes();
-        // Reserve also one slot worth? We checked earlier before calling.
-        if free < len { return Err(PageError::NoSpace); }
-        // values_hi grows downward
-        let new_hi = self.values_hi()
-            .checked_sub(len).ok_or(PageError::NoSpace)?;
-        if new_hi < self.keys_end() { return Err(PageError::NoSpace); }
-        self.buf[new_hi..new_hi + len].copy_from_slice(val);
-        self.set_values_hi(new_hi);
-        Ok((new_hi, len))
+    /// Allocate value at tail **below current slots** (uses header.values_hi and slot count).
+    fn alloc_value_tail(&mut self, val: &[u8]) -> Result<(u16, u16), PageError> {
+        let val_len = val.len();
+        let new_hi = self.values_hi_usize().checked_sub(val_len).ok_or(PageError::NoSpace)?;
+        if new_hi < self.slots_end() { return Err(PageError::NoSpace); }
+        self.buf[new_hi..new_hi + val_len].copy_from_slice(val);
+        self.set_values_hi(new_hi as u16);
+        Ok((new_hi as u16, val_len as u16))
     }
 }
 
@@ -396,6 +361,7 @@ struct PageKeyRun<'a> {
     body: &'a [u8],
     fmt:  &'a dyn KeyBlockFormat,
 }
+
 impl<'a> PageKeyRun<'a> {
     fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> (usize, bool) {
         self.fmt.seek(self.body, needle, scratch)
