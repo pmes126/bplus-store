@@ -5,6 +5,7 @@ use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
+use crate::page::leaf;
 
 pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
@@ -12,61 +13,89 @@ pub struct NoopNodeViewCodec;
 const MAX_KEY_SIZE: usize = 256; // Maximum key size for internal nodes
 const MAX_VAL_SIZE: usize = 256; // Maximum key size for internal nodes
 
-impl KeyCodec for u64 {
-    fn encode_key(&self, out: &mut [u8]) -> Result<usize, CodecError> {
+pub struct BeU64;
+pub struct Utf8;
+pub struct RawBuf;
+
+impl KeyCodec<u64> for BeU64 {
+    fn encode_key(key: &u64, out: &mut [u8]) -> Result<usize, CodecError> {
         let size = std::mem::size_of::<u64>();
-        out[..size].copy_from_slice(&self.to_be_bytes());
+        out[..size].copy_from_slice(&key.to_be_bytes());
         Ok(size)
     }
 
-    fn decode_key(buf: &[u8]) -> Self {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(&buf[..8]);
-        //u64::from_le_bytes(arr)
-        u64::from_be_bytes(arr)
-    }
-
-    fn compare_encoded(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
-        u64::decode_key(a).cmp(&u64::decode_key(b))
+    fn decode_key(buf: &[u8]) -> Result<u64, CodecError> {
+        Ok(u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?))
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
+    fn compare_encoded(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
+        debug_assert_eq!(a.len(), core::mem::size_of::<u64>());
+        debug_assert_eq!(b.len(), core::mem::size_of::<u64>());
+        a.cmp(b) // bytewise lexicographic compare == numeric compare for BE fixed-width
+    }
+
+    #[inline]
+    fn encoded_len(_key: &u64) -> usize {
         std::mem::size_of::<u64>()
     }
 }
 
-impl ValueCodec for u64 {
-    fn encode_value(&self, out: &mut [u8]) -> Result<usize, CodecError> {
+impl ValueCodec<u64> for BeU64 {
+    fn encode_value(v: &u64, out: &mut [u8]) -> Result<usize, CodecError> {
         let size = std::mem::size_of::<u64>();
-        out[..size].copy_from_slice(&self.to_be_bytes());
+        out[..size].copy_from_slice(&v.to_be_bytes());
         Ok(size)
     }
 
-    fn decode_value(buf: &[u8]) -> Self {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(&buf[..8]);
-        u64::from_le_bytes(arr)
+    fn decode_value(buf: &[u8]) -> Result<u64, CodecError> {
+        Ok(u64::from_le_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?))
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
+    fn encoded_len(_value: &u64) -> usize {
         std::mem::size_of::<u64>()
     }
 }
 
-impl KeyCodec for String {
+impl KeyCodec<i64> for BeU64 {
+    fn encode_key(key: &i64, out: &mut [u8]) -> Result<usize, CodecError> {
+        let size = std::mem::size_of::<i64>();
+        let t = (*key as u64) ^ 0x8000_0000_0000_0000u64;
+        out[..size].copy_from_slice(&t.to_be_bytes());
+        Ok(size)
+    }
+
+    fn decode_key(buf: &[u8]) -> Result<i64, CodecError> {
+        let u = u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?);
+        Ok((u ^ 0x8000_0000_0000_0000u64) as i64)
+    }
+
     #[inline]
-    fn encode_key(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
-        let size = self.len();
-        buf[..size].copy_from_slice(self.as_bytes());
+    fn compare_encoded(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
+        debug_assert_eq!(a.len(), core::mem::size_of::<u64>());
+        debug_assert_eq!(b.len(), core::mem::size_of::<u64>());
+        a.cmp(b) // bytewise lexicographic compare == numeric compare for BE fixed-width
+    }
+
+    #[inline]
+    fn encoded_len(_key: &i64) -> usize {
+        std::mem::size_of::<i64>()
+    }
+}
+
+impl KeyCodec<String> for Utf8 {
+    #[inline]
+    fn encode_key(key: &String, buf: &mut [u8]) -> Result<usize, CodecError> {
+        let size = key.len();
+        buf[..size].copy_from_slice(key.as_bytes());
         Ok(size)
     }
 
     // We need to copy the bytes to a Vec to ensure they are owned
     #[inline]
-    fn decode_key(buf: &[u8]) -> Self {
-        String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
+    fn decode_key(buf: &[u8]) -> Result<String, CodecError> {
+        String::from_utf8(buf.to_vec()).map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
     }
 
     #[inline]
@@ -75,37 +104,37 @@ impl KeyCodec for String {
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
-        self.len()
+    fn encoded_len(k: &String) -> usize {
+        k.len()
     }
 }
 
-impl ValueCodec for String {
-    fn encode_value(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
-        let size = self.len();
-        buf[..size].copy_from_slice(self.as_bytes());
+impl ValueCodec<String> for Utf8 {
+    fn encode_value(v: &String, buf: &mut [u8]) -> Result<usize, CodecError> {
+        let size = v.len();
+        buf[..size].copy_from_slice(v.as_bytes());
         Ok(size)
     }
 
-    fn decode_value(buf: &[u8]) -> Self {
-        String::from_utf8(buf.to_vec()).expect("Invalid UTF-8 sequence")
+    fn decode_value(buf: &[u8]) -> Result<String, CodecError> {
+        String::from_utf8(buf.to_vec()).map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
-        self.len()
+    fn encoded_len(v: &String) -> usize {
+        v.len()
     }
 }
 
-impl KeyCodec for Vec<u8> {
-    fn encode_key(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
-        let size = self.len();
-        buf[..size].copy_from_slice(self.as_slice());
+impl KeyCodec<Vec<u8>> for RawBuf {
+    fn encode_key(k: &Vec<u8>, buf: &mut [u8]) -> Result<usize, CodecError> {
+        let size = k.len();
+        buf[..size].copy_from_slice(k.as_slice());
         Ok(size)
     }
 
-    fn decode_key(buf: &[u8]) -> Self {
-        buf.to_vec()
+    fn decode_key(buf: &[u8]) -> Result<Vec<u8>, CodecError> {
+        Ok(buf.to_vec())
     }
 
     #[inline]
@@ -114,32 +143,34 @@ impl KeyCodec for Vec<u8> {
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
-        self.len()
+    fn encoded_len(key: &Vec<u8>) -> usize {
+        key.len()
     }
 }
 
-impl ValueCodec for Vec<u8> {
-    fn encode_value(&self, buf: &mut [u8]) -> Result<usize, CodecError> {
-        let size = self.len();
-        buf[..size].copy_from_slice(self.as_slice());
+impl ValueCodec<Vec<u8>> for RawBuf {
+    fn encode_value(value: &Vec<u8>, out: &mut [u8]) -> Result<usize, CodecError> {
+        let size = value.len();
+        out[..size].copy_from_slice(value.as_slice());
         Ok(size)
     }
 
-    fn decode_value(buf: &[u8]) -> Self {
-        buf.to_vec()
+    fn decode_value(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
+        Ok(bytes.to_vec())
     }
 
     #[inline]
-    fn encoded_len(&self) -> usize {
-        self.len()
+    fn encoded_len(value: &Vec<u8>) -> usize {
+        value.len()
     }
 }
 
-impl<K, V> NodeCodec<K, V> for DefaultNodeCodec
+impl<K, V, KC, VC> NodeCodec<K, V, KC, VC> for DefaultNodeCodec
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
+    K: Ord + Clone,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
 {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
         let node_type = u64::from_le_bytes(
@@ -162,8 +193,8 @@ where
                         let (key_bytes, value_bytes) = page
                             .get_entry(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                        keys.push(K::decode_key(key_bytes));
-                        values.push(V::decode_value(value_bytes));
+                        keys.push(KC::decode_key(key_bytes)?);
+                        values.push(VC::decode_value(value_bytes)?);
                     }
                 }
                 Ok(leaf)
@@ -182,7 +213,7 @@ where
                         let (key_bytes, child_ptr) = page
                             .get_entry(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
-                        keys.push(K::decode_key(key_bytes));
+                        keys.push(KC::decode_key(key_bytes)?);
                         children.push(child_ptr);
                     }
                 }
@@ -195,9 +226,6 @@ where
     }
 
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>
-    where
-        K: KeyCodec + Sized,
-        V: ValueCodec + Sized,
     {
         match node {
             Node::Leaf { keys, values } => {
@@ -206,13 +234,11 @@ where
                     let mut encode_buf_key: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                     let mut encode_buf_val: Vec<u8> = Vec::with_capacity(MAX_VAL_SIZE);
                     for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
-                        encode_buf_key.resize(key_ref.encoded_len(), 0);
-                        encode_buf_val.resize(value_ref.encoded_len(), 0);
-                        key_ref
-                            .encode_key(encode_buf_key.as_mut())
+                        encode_buf_key.resize(KC::encoded_len(key_ref), 0);
+                        encode_buf_val.resize(VC::encoded_len(value_ref), 0);
+                        KC::encode_key(key_ref, encode_buf_key.as_mut())
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-                        value_ref
-                            .encode_value(encode_buf_val.as_mut())
+                        VC::encode_value(value_ref, encode_buf_val.as_mut())
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                         page.insert_entry(&encode_buf_key, &encode_buf_val)
                             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
@@ -228,9 +254,7 @@ where
                 let entries = keys.iter().zip(children.iter().skip(1));
                 let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                 for (key_ref, child_ref) in entries {
-                    encode_buf.resize(key_ref.encoded_len(), 0);
-                    key_ref
-                        .encode_key(encode_buf.as_mut())
+                    KC::encode_key(key_ref, encode_buf.as_mut())
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                     page.insert_entry(&encode_buf, *child_ref)
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
@@ -267,6 +291,9 @@ impl NoopNodeViewCodec {
                 msg: "Invalid node type tag in page".to_string(),
             }),
         }
+        leaf::LeafPage::from_bytes(buf)
+            .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
+            .map(|page| NodeView::Leaf { page: *page })
     }
 
     pub fn encode(node: &NodeView) -> Result<[u8; PAGE_SIZE], CodecError> {

@@ -1,5 +1,5 @@
 use crate::bplustree::{Node, NodeId, NodeView};
-use crate::codec::{CodecError, KeyCodec, ValueCodec};
+use crate::codec::CodecError;
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
 use anyhow::Result;
@@ -20,8 +20,8 @@ pub enum StorageError {
     #[error(transparent)]
     Codec(#[from] CodecError),
 
-    #[error("page corrupted: {0}")]
-    CodecFailure(&'static str),
+    #[error("page corrupted: {msg}")]
+    CodecError { msg: String },
 
     #[error("Storage error: {msg}")]
     StorageAny { msg: String },
@@ -64,10 +64,12 @@ pub trait PageStorage {
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
-pub trait NodeStorage<K, V>
+pub trait NodeStorage<K, V, KC, VC>: Send + Sync + 'static
 where
-    K: KeyCodec,
-    V: ValueCodec,
+    K: ToOwned,
+    V: ToOwned,
+    KC: crate::codec::KeyCodec<K>,
+    VC: crate::codec::ValueCodec<V>,
 {
     /// Reads a node from storage by its ID
     fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, StorageError>;

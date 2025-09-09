@@ -9,6 +9,7 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{CodecError, KeyCodec, ValueCodec};
+use crate::codec::bincode::{BeU64};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
@@ -119,12 +120,15 @@ pub struct BaseVersion {
     pub committed_ptr: *const Metadata,
 }
 
+
 /// B+ tree structure with generic key and value types, and a storage backend
-pub struct BPlusTree<K, V, S: NodeStorage<K, V>>
+pub struct BPlusTree<K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord,
-    V: ValueCodec,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + ToOwned,
+    V: ToOwned,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
     max_keys: usize,
     min_internal_keys: usize,
@@ -135,7 +139,7 @@ where
     txn_id: AtomicU64,            // Slot of metadata storage
     committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
     // Phantom data to hold the types of keys and values
-    phantom: std::marker::PhantomData<(K, V)>,
+    phantom: std::marker::PhantomData<(K, V, KC, VC)>,
 }
 
 #[derive(Default)]
@@ -180,20 +184,22 @@ pub struct WriteResult {
     pub new_size: usize,
 }
 
-pub struct SharedBPlusTree<K, V, S>
+pub struct SharedBPlusTree<K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord + Clone,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone,
+    V: Clone,
+    KC: KeyCodec<K>, VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: Arc<BPlusTree<K, V, S>>,
+    inner: Arc<BPlusTree<K, V, KC, VC, S>>,
 }
 
-impl<K, V, S> Clone for SharedBPlusTree<K, V, S>
+impl<K, V, KC, VC, S> Clone for SharedBPlusTree<K, V, KC, VC, S>
 where
-    K: KeyCodec + Ord + Clone,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone,
+    V: Clone,
+    KC: KeyCodec<K>, VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -202,19 +208,20 @@ where
     }
 }
 
-impl<K, V, S> SharedBPlusTree<K, V, S>
+impl<K, V, KC, VC, S> SharedBPlusTree<K, V, KC, VC, S>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>, VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(tree: BPlusTree<K, V, S>) -> Self {
+    pub fn new(tree: BPlusTree<K, V, KC, VC, S>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
     }
 
-    pub fn from_arc(tree: Arc<BPlusTree<K, V, S>>) -> Self {
+    pub fn from_arc(tree: Arc<BPlusTree<K, V, KC, VC, S>>) -> Self {
         Self { inner: tree }
     }
 
@@ -311,7 +318,7 @@ where
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
 
-    pub fn arc(&self) -> Arc<BPlusTree<K, V, S>> {
+    pub fn arc(&self) -> Arc<BPlusTree<K, V, KC, VC, S>> {
         Arc::clone(&self.inner)
     }
 
@@ -354,13 +361,14 @@ where
 }
 
 // BPlusTree implementation
-impl<K, V, S> BPlusTree<K, V, S>
+impl<K, V, KC, VC, S> BPlusTree<K, V, KC, VC, S>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>, VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
+    pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, KC, VC, S>, TreeError> {
         let root_node = Node::Leaf {
             keys: Vec::with_capacity(order),
             values: Vec::with_capacity(order),
@@ -409,7 +417,7 @@ where
         })
     }
 
-    pub fn load(storage: S) -> Result<BPlusTree<K, V, S>, TreeError> {
+    pub fn load(storage: S) -> Result<BPlusTree<K, V, KC, VC, S>, TreeError> {
         println!("Loading B+ tree with root ID from storage");
         let md = storage.get_metadata()?;
         let md_ptr = Box::new(md);
@@ -501,8 +509,8 @@ where
         let mut path = vec![];
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; key.encoded_len()];
-        key.encode_key(encode_buf.as_mut())
+        let mut encode_buf = vec![0u8; KC::encoded_len(key)];
+        KC::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
@@ -557,8 +565,8 @@ where
         let mut path = vec![];
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; key.encoded_len()];
-        key.encode_key(encode_buf.as_mut())
+        let mut encode_buf = vec![0u8; KC::encoded_len(key)];
+        KC::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
@@ -711,12 +719,11 @@ where
             ));
         };
 
-        let mut key_buf = vec![0u8; key.encoded_len()];
-        let mut val_buf = vec![0u8; value.encoded_len()];
-        key.encode_key(key_buf.as_mut())
+        let mut key_buf = vec![0u8; KC::encoded_len(&key)];
+        let mut val_buf = vec![0u8; VC::encoded_len(&value)];
+        KC::encode_key(&key, key_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-        value
-            .encode_value(val_buf.as_mut())
+        VC::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
 
         // Find the insertion point in the internal node
@@ -827,7 +834,7 @@ where
             let split_idx = mid; // Index to split the keys and values
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
-            let k = K::decode_key(split_key.as_ref());
+            let k = KC::decode_key(split_key.as_ref())?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: leaf_node,
@@ -1081,8 +1088,8 @@ where
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; key.encoded_len()];
-        key.encode_key(encode_buf.as_mut())
+        let mut encode_buf = vec![0u8; KC::encoded_len(key)];
+        KC::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
@@ -1098,7 +1105,7 @@ where
                                 let val = node.value_at(i)?;
                                 match val {
                                     Some(val) => {
-                                        return Ok(Some(V::decode_value(val.as_ref())));
+                                        return Ok(Some(VC::decode_value(val.as_ref())?));
                                     }
                                     None => return Ok(None), // Key not found
                                 }

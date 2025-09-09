@@ -1,10 +1,8 @@
 use crate::layout::MAX_ENTRIES;
 use crate::layout::PAGE_SIZE;
 use crate::page::LEAF_NODE_TAG;
-use crate::page::PageCodecError;
+use crate::page::PageError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
-
-pub const LEAF_NODE_VERSION: u8 = 0;
 
 // A design for storing leaf nodes based on a Page-Local Heap
 // [HEADER (fixed)]
@@ -15,19 +13,12 @@ pub const LEAF_NODE_VERSION: u8 = 0;
 pub struct LeafPageHeader {
     pub node_type: u64,   // Node type (LEAF_NODE_TAG)
     pub entry_count: u64, // Number of key-value pairs
-    pub version: u64,     // Version of the leaf node
     pub free_start: u64,  // Offset for the next free space in the data area
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
-pub struct EntrySlots {
-    pub offsets: [u16; MAX_ENTRIES], // Fixed-size array for entry slots
+    pub offsets: [u16; MAX_ENTRIES], // Fixed-size array for entry header
 }
 
 const HEADER_SIZE_BYTES: usize = std::mem::size_of::<LeafPageHeader>();
-const ENTRY_SLOTS_SIZE: usize = std::mem::size_of::<EntrySlots>();
-const DATA_SIZE: usize = PAGE_SIZE - HEADER_SIZE_BYTES - ENTRY_SLOTS_SIZE;
+const DATA_SIZE: usize = PAGE_SIZE - HEADER_SIZE_BYTES;
 const LEN_SIZE: usize = std::mem::size_of::<u16>();
 
 #[repr(C)]
@@ -40,7 +31,6 @@ pub struct LeafData {
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafPage {
     pub header: LeafPageHeader,
-    pub slots: EntrySlots, // Slots for key-value pairs
     pub data: LeafData,
 }
 
@@ -50,10 +40,7 @@ impl LeafPage {
             header: LeafPageHeader {
                 node_type: LEAF_NODE_TAG,
                 entry_count: 0,
-                version: LEAF_NODE_VERSION as u64,
                 free_start: 0,
-            },
-            slots: EntrySlots {
                 offsets: [0u16; MAX_ENTRIES],
             },
             data: LeafData {
@@ -62,8 +49,8 @@ impl LeafPage {
         }
     }
 
-    pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        LeafPage::ref_from(buf).ok_or(PageCodecError::FromBytesError {
+    pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageError> {
+        LeafPage::ref_from(buf).ok_or(PageError::FromBytesError {
             msg: "Failed to convert bytes to LeafPage".to_string(),
         })
     }
@@ -90,7 +77,7 @@ impl LeafPage {
         let data = &mut self.data.blob[..];
 
         // Current entry index of entry_count has offset at the free_start position
-        self.slots.offsets[self.header.entry_count as usize] = self.header.free_start as u16;
+        self.header.offsets[self.header.entry_count as usize] = self.header.free_start as u16;
 
         // Calculate offsets and lengths for key and value
         // Write the key length
@@ -164,7 +151,7 @@ impl LeafPage {
 
         // We need to memcpy the contents from idx to idx + required space and write the key value
         // pair in the space between
-        let insertion_point = self.slots.offsets[idx] as usize;
+        let insertion_point = self.header.offsets[idx] as usize;
         let shift_count = self.header.free_start as usize - insertion_point;
         let src_idx = insertion_point;
         let dst_idx = src_idx + required_space;
@@ -178,9 +165,9 @@ impl LeafPage {
         let src_idx = idx;
         let end_idx = src_idx + shift_count;
         let dest_idx = src_idx + 1;
-        self.slots.offsets.copy_within(src_idx..end_idx, dest_idx);
+        self.header.offsets.copy_within(src_idx..end_idx, dest_idx);
         for i in dest_idx..dest_idx + shift_count {
-            self.slots.offsets[i] += required_space as u16;
+            self.header.offsets[i] += required_space as u16;
         }
 
         self.header.free_start += required_space as u64;
@@ -230,7 +217,7 @@ impl LeafPage {
             });
         }
 
-        let key_len_offset = self.slots.offsets[idx] as usize;
+        let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
             .map_err(|_| PageCodecError::FromBytesError {
@@ -258,11 +245,11 @@ impl LeafPage {
             .blob
             .copy_within(end_of_entry..end_of_entry + shift_size, start_of_entry);
 
-        // Update offsets in slots, decrease offsets of entries after idx and shift left by 1
+        // Update offsets in header, decrease offsets of entries after idx and shift left by 1
         for i in (idx + 1)..self.header.entry_count as usize {
-            self.slots.offsets[i - 1] = self.slots.offsets[i] - total_entry_size as u16;
+            self.header.offsets[i - 1] = self.header.offsets[i] - total_entry_size as u16;
         }
-        self.slots.offsets[self.header.entry_count as usize - 1] = 0; // Clear last slot
+        self.header.offsets[self.header.entry_count as usize - 1] = 0; // Clear last slot
 
         // Update free_start and entry_count
         self.header.free_start -= total_entry_size as u64;
@@ -279,7 +266,7 @@ impl LeafPage {
             });
         }
 
-        let key_len_offset = self.slots.offsets[idx] as usize;
+        let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
             .map_err(|_| PageCodecError::FromBytesError {
@@ -317,7 +304,7 @@ impl LeafPage {
             });
         }
         // Key length offset
-        let key_len_offset = self.slots.offsets[idx] as usize;
+        let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
             .map_err(|_| PageCodecError::FromBytesError {
@@ -374,10 +361,10 @@ impl LeafPage {
                 self.data.blob[clear_start..clear_end].fill(0);
             }
 
-            // Update offsets in slots for entries after idx
+            // Update offsets in header for entries after idx
             for i in (idx + 1)..self.header.entry_count as usize {
-                self.slots.offsets[i] =
-                    (self.slots.offsets[i] as isize + additional_space_needed) as u16;
+                self.header.offsets[i] =
+                    (self.header.offsets[i] as isize + additional_space_needed) as u16;
             }
 
             // Update free_start
@@ -402,7 +389,7 @@ impl LeafPage {
     /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
-        let off = self.slots.offsets[i] as usize;
+        let off = self.header.offsets[i] as usize;
         let len = u16::from_le_bytes(self.data.blob[off..off + LEN_SIZE].try_into()?) as usize;
         let k0 = off + LEN_SIZE * 2;
         Ok(&self.data.blob[k0..k0 + len])
@@ -412,7 +399,7 @@ impl LeafPage {
     /// according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
     #[inline]
     pub fn value_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
-        let key_len_offset = self.slots.offsets[i] as usize;
+        let key_len_offset = self.header.offsets[i] as usize;
         let arr: [u8; LEN_SIZE] =
             self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)].try_into()?;
 
@@ -477,11 +464,11 @@ impl LeafPage {
         }
 
         // Update the free_start of the original page to the offset of the idx entry
-        self.header.free_start = self.slots.offsets[idx] as u64;
+        self.header.free_start = self.header.offsets[idx] as u64;
         // Clear the data area from free_start to the end
         self.data.blob[self.header.free_start as usize..].fill(0);
         // Clear old offsets
-        self.slots.offsets[idx..self.header.entry_count as usize].fill(0);
+        self.header.offsets[idx..self.header.entry_count as usize].fill(0);
         // Adjust the entry count of the original page
         self.drain(idx)?;
 

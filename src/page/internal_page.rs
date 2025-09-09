@@ -11,7 +11,7 @@ pub struct InternalPageHeader {
     pub entry_count: u64, // number of keys
     pub free_start: u64,
     pub leftmost_child: u64, // leftmost child pointer, k keys for k+1 children
-    pub key_offsets: [u16; MAX_ENTRIES],
+    pub offsets: [u16; MAX_ENTRIES],
 }
 
 const HEADER_SIZE_BYTES: usize = std::mem::size_of::<InternalPageHeader>();
@@ -38,7 +38,7 @@ impl InternalPage {
             header: InternalPageHeader {
                 node_type: INTERNAL_NODE_TAG,
                 entry_count: 0,
-                key_offsets: [0; MAX_ENTRIES],
+                offsets: [0; MAX_ENTRIES],
                 free_start: 0,
                 leftmost_child: 0, // Initially no leftmost child
             },
@@ -73,7 +73,7 @@ impl InternalPage {
         let data = &mut self.data.blob[..];
 
         // Current entry index of entry_count has offset at the free_start position
-        self.header.key_offsets[self.header.entry_count as usize] = self.header.free_start as u16;
+        self.header.offsets[self.header.entry_count as usize] = self.header.free_start as u16;
 
         let key_len_offset = self.header.free_start as usize;
         let key_len = key.len() as u16;
@@ -137,7 +137,7 @@ impl InternalPage {
 
         // We need to memcpy the contents from idx to idx + required space and write the key value
         // pair in the space between
-        let insertion_point = self.header.key_offsets[idx] as usize;
+        let insertion_point = self.header.offsets[idx] as usize;
         let shift_count = self.header.free_start as usize - insertion_point;
         let src_idx = insertion_point;
         let dst_idx = src_idx + required_space;
@@ -152,10 +152,10 @@ impl InternalPage {
         let end_idx = src_idx + shift_count;
         let dest_idx = src_idx + 1;
         self.header
-            .key_offsets
+            .offsets
             .copy_within(src_idx..end_idx, dest_idx);
         for i in dest_idx..dest_idx + shift_count - 1 {
-            self.header.key_offsets[i] += required_space as u16;
+            self.header.offsets[i] += required_space as u16;
         }
 
         self.header.free_start += required_space as u64;
@@ -185,7 +185,7 @@ impl InternalPage {
 
         // Adjust count
         self.header.entry_count += 1;
-        self.header.key_offsets[self.header.entry_count as usize] = self.header.free_start as u16;
+        self.header.offsets[self.header.entry_count as usize] = self.header.free_start as u16;
         Ok(())
     }
 
@@ -207,7 +207,7 @@ impl InternalPage {
             return Ok(());
         }
 
-        let key_len_offset = self.header.key_offsets[idx - 1] as usize;
+        let key_len_offset = self.header.offsets[idx - 1] as usize;
         let mut end = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
             .try_into()
@@ -228,7 +228,7 @@ impl InternalPage {
     // Read from the key_offset->[key_len][key][child_ptr]
     pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
         // Read and decode the length of the key
-        let key_len_offset = self.header.key_offsets[idx] as usize;
+        let key_len_offset = self.header.offsets[idx] as usize;
         let mut end = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
             .try_into()
@@ -263,9 +263,9 @@ impl InternalPage {
             });
         }
 
-        let start_offset = self.header.key_offsets[idx] as usize;
+        let start_offset = self.header.offsets[idx] as usize;
         let end_offset = if idx + 1 < self.header.entry_count as usize {
-            self.header.key_offsets[idx + 1] as usize
+            self.header.offsets[idx + 1] as usize
         } else {
             self.header.free_start as usize
         };
@@ -278,9 +278,9 @@ impl InternalPage {
 
         // Update key offsets
         for i in idx..self.header.entry_count as usize - 1 {
-            self.header.key_offsets[i] = self.header.key_offsets[i + 1] - entry_size as u16;
+            self.header.offsets[i] = self.header.offsets[i + 1] - entry_size as u16;
         }
-        self.header.key_offsets[self.header.entry_count as usize - 1] = 0; // Clear last offset
+        self.header.offsets[self.header.entry_count as usize - 1] = 0; // Clear last offset
 
         // Update free_start and entry_count
         self.header.free_start -= entry_size as u64;
@@ -299,7 +299,7 @@ impl InternalPage {
 
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
-        let offset = self.header.key_offsets[i] as usize;
+        let offset = self.header.offsets[i] as usize;
 
         let len =
             u16::from_le_bytes(self.data.blob[offset..offset + LEN_SIZE].try_into()?) as usize;
@@ -310,7 +310,7 @@ impl InternalPage {
 
     #[inline]
     pub fn child_bytes_at(&self, i: usize) -> Result<&[u8], std::array::TryFromSliceError> {
-        let offset = self.header.key_offsets[i] as usize;
+        let offset = self.header.offsets[i] as usize;
         let key_len =
             u16::from_le_bytes(self.data.blob[offset..offset + LEN_SIZE].try_into()?) as usize;
         let c0 = offset + LEN_SIZE + key_len;
@@ -320,7 +320,7 @@ impl InternalPage {
     #[inline]
     pub fn child_at(&self, i: usize) -> Result<u64, PageCodecError> {
         // Read and decode the length of the key
-        let offset = self.header.key_offsets[i] as usize;
+        let offset = self.header.offsets[i] as usize;
         let end = offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] =
             self.data.blob[offset..end]
@@ -379,9 +379,9 @@ impl InternalPage {
         self.header.entry_count = idx as u64;
 
         // Update the free_start of the original page to the offset of the idx entry
-        self.header.free_start = self.header.key_offsets[idx] as u64;
+        self.header.free_start = self.header.offsets[idx] as u64;
         // Clear old offsets
-        self.header.key_offsets[idx..self.header.entry_count as usize].fill(0);
+        self.header.offsets[idx..self.header.entry_count as usize].fill(0);
 
         Ok(new_page)
     }

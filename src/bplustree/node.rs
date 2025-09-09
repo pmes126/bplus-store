@@ -1,5 +1,5 @@
 use crate::bplustree::node_view::NodeView;
-use crate::codec::{KeyCodec, ValueCodec, NodeCodec, bincode::DefaultNodeCodec};
+use crate::codec::{NodeCodec, bincode::DefaultNodeCodec};
 
 pub type NodeId = u64;
 
@@ -18,8 +18,8 @@ pub enum Node<K, V> {
 
 impl<K, V> Node<K, V>
 where
-    K: Ord + KeyCodec + Clone,
-    V: Clone + ValueCodec,
+    K: Ord + Clone,
+    V: Clone,
 {
     pub fn is_empty(&self) -> bool {
         match self {

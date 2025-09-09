@@ -211,7 +211,10 @@ examples/
 tests/
   api_basic.rs               # CRUD/scan/txn tests
 ```
+---
+KeyCodec turns K into raw, order-preserving bytes.
 
+KeyBlockFormat (Raw / Prefix with restarts) arranges many encoded keys inside a page:
 ---
 
 ## Gotchas
@@ -247,6 +250,7 @@ PRs welcome! Please open an issue for discussion first.
 
 Priorities: P0 = must-have for public use, P1 = nice soon, P2 = later
 
+- [x] P0: Remove anyhow usage
 - [x] P0: Epoch-based reclamation, make sure leak-free on panic paths
 - [x] P0: Recovery path on startup: detect last good metadata/page epoch; handle torn writes; checksum validation
 - [x] P0: More Benchmarks (Criterion)

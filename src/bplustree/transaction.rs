@@ -15,13 +15,15 @@ pub enum TxnStatus {
 
 pub const MAX_COMMIT_RETRIES: usize = 10;
 
-pub struct WriteTransaction<K, V, S>
+pub struct WriteTransaction<K, V, KC, VC, S>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    tree: SharedBPlusTree<K, V, S>,
+    tree: SharedBPlusTree<K, V, KC, VC, S>,
     staged_update: Option<StagedMetadata>, // Staged metadata root ID
     tree_base_version: BaseVersion,        // Base version of the tree at transaction start
     changes: Vec<WriteOp<K, V>>,
@@ -30,13 +32,15 @@ where
     initial_root_id: u64,      // Current root ID of the tree
 }
 
-impl<K, V, S> WriteTransaction<K, V, S>
+impl<K, V, KC, VC, S> WriteTransaction<K, V, KC, VC, S>
 where
-    K: KeyCodec + Clone + Ord,
-    V: ValueCodec + Clone,
-    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord,
+    V: Clone,
+    KC: KeyCodec<K>,
+    VC: ValueCodec<V>,
+    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(tree: SharedBPlusTree<K, V, S>) -> Self {
+    pub fn new(tree: SharedBPlusTree<K, V, KC, VC, S>) -> Self {
         Self {
             tree: tree.clone(),
             tree_base_version: BaseVersion {

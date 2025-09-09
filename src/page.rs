@@ -1,8 +1,9 @@
 pub mod internal_page;
 pub mod leaf_page;
+pub mod leaf;
 
 pub use internal_page::InternalPage;
-pub use leaf_page::LeafPage;
+pub use leaf::LeafPage;
 
 pub const LEAF_NODE_TAG: u64 = 1;
 pub const INTERNAL_NODE_TAG: u64 = 0;
@@ -10,7 +11,7 @@ pub const INTERNAL_NODE_TAG: u64 = 0;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum PageCodecError {
+pub enum PageError {
     #[error("Slice too short: {msg}")]
     OffsetOutOfBounds { msg: String },
     #[error("PageFull: {msg}")]
