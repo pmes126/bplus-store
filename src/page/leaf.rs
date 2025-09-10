@@ -19,7 +19,6 @@ use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyB
 use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
 use crate::page::PageError;
-// use crate::storage::PageId; // if you want to carry ids here
 
 // ------ header (packed via manual offsets; no unsafe) ------
 
