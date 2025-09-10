@@ -5,8 +5,8 @@ pub mod leaf;
 pub use internal_page::InternalPage;
 pub use leaf::LeafPage;
 
-pub const LEAF_NODE_TAG: u64 = 1;
-pub const INTERNAL_NODE_TAG: u64 = 0;
+pub const LEAF_NODE_TAG: u8 = 1;
+pub const INTERNAL_NODE_TAG: u8 = 0;
 
 use thiserror::Error;
 
@@ -14,10 +14,10 @@ use thiserror::Error;
 pub enum PageError {
     #[error("Slice too short: {msg}")]
     OffsetOutOfBounds { msg: String },
-    #[error("PageFull: {msg}")]
-    PageFull { msg: String },
-    #[error("Error decoding value: {msg}")]
-    IndexOutOfBounds { msg: String },
+    #[error("PageFull: ")]
+    PageFull {},
+    #[error("Index out of bounds")]
+    IndexOutOfBounds {},
     #[error("Error encoding value: {msg}")]
     InvalidPageSize { msg: String },
     #[error("Error converting from byte slice: {source}")]

@@ -173,7 +173,7 @@ where
     VC: ValueCodec<V>,
 {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError> {
-        let node_type = u64::from_le_bytes(
+        let node_type = u8::from_le_bytes(
             buf[0..8]
                 .try_into()
                 .map_err(|e| CodecError::FromSliceError { source: e })?,
@@ -189,7 +189,7 @@ where
                 };
 
                 if let Node::Leaf { keys, values } = &mut leaf {
-                    for i in 0..page.header.entry_count as usize {
+                    for i in 0..page. as usize {
                         let (key_bytes, value_bytes) = page
                             .get_entry(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;

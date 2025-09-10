@@ -14,7 +14,7 @@
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 // Hook these to your actual crate paths:
-use crate::keyfmt::KeyBlockFormat; // trait; and you'll provide a resolver by id
+use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
@@ -48,9 +48,9 @@ const SLOT_SIZE: usize = core::mem::size_of::<LeafSlot>();
 const LEN_SIZE: usize = std::mem::size_of::<u16>();
 
 // Borrowed/mutable view over a leaf page buffer.
-#[repr(transparent)]
+#[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
-pub struct Header<'a> {
+pub struct Header {
     kind: u8,
     keyfmt_id: u8,
     key_count: u16,
@@ -59,35 +59,41 @@ pub struct Header<'a> {
 }
 
 // Borrowed/mutable view over a leaf page buffer.
-#[repr(transparent)]
+#[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
-pub struct LeafPage<'a> {
-    header: Header<'a>,
-    buf: &'a mut [u8; PAGE_SIZE - std::mem::size_of::<Header>()],
+pub struct LeafPage {
+    header: Header,
+    buf: [u8; PAGE_SIZE - std::mem::size_of::<Header>()],
 }
 
-//assert_eq_size!(LeafPage<'_>, [u8; PAGE_SIZE]);
+//assert_eq_size!(LeafPage, [u8; PAGE_SIZE]);
 
-impl<'a> LeafPage<'a> {
+impl LeafPage {
     pub fn new(keyfmt_id: u8) -> Self {
         LeafPage {
             header: Header {
-                kind: &mut (LEAF_NODE_TAG),
-                keyfmt_id: &mut (keyfmt_id),
-                key_count: &mut 0u16,
-                key_block_len: &mut 0u16,
-                values_hi: &mut (PAGE_SIZE as u16),
+                kind: LEAF_NODE_TAG,
+                keyfmt_id,
+                key_count: 0u16,
+                key_block_len: 0u16,
+                values_hi: PAGE_SIZE as u16,
             },
-            buf: &mut [0u8; PAGE_SIZE - std::mem::size_of::<Header>()],
+            buf: [0u8; PAGE_SIZE - std::mem::size_of::<Header>()],
         }
     }
 
+    #[inline]
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageError> {
         LeafPage::ref_from(buf).ok_or(PageError::FromBytesError {
             msg: "Failed to convert bytes to LeafPage".to_string(),
         })
     }
 
+    #[inline]
+    pub fn to_bytes(&self) -> Result<&[u8; PAGE_SIZE], std::array::TryFromSliceError> {
+        let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
+        Ok(array)
+    }
     // --- header accessors ---
 
     #[inline] fn keyfmt_id(&self) -> u8 { self.header.keyfmt_id }
@@ -182,9 +188,9 @@ impl<'a> LeafPage<'a> {
         let key_count = self.key_count() as usize;
         let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
         let new_slots_end = new_keys_end + (key_count + 1) * SLOT_SIZE;
-        let new_values_hi = self.values_hi_usize().checked_sub(val_bytes.len()).ok_or(PageError::NoSpace)?;
+        let new_values_hi = self.values_hi().checked_sub(val_bytes.len()).ok_or(PageError::PageFull {} )?;
         if new_slots_end > new_values_hi {
-            return Err(PageError::NoSpace);
+            return Err(PageError::PageFull {});
         }
 
         // 4) move slots by Δk to keep them flush with the key block
@@ -210,7 +216,7 @@ impl<'a> LeafPage<'a> {
     // -------- delete (by index) --------
 
     pub fn delete_at(&mut self, idx: usize) -> Result<(), PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::Bounds); }
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds { msg: "LeafPage::delete_at".to_string() } ); }
 
         // Rebuild key block without key idx
         let old_kb = self.key_block();
@@ -222,7 +228,7 @@ impl<'a> LeafPage<'a> {
             if i == idx { continue; }
             all_owned.push(self.decode_key_at(i, &mut scratch).to_vec());
         }
-        let mut refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
+        let refs: Vec<&[u8]> = all_owned.iter().map(|v| v.as_slice()).collect();
         let mut new_kb = Vec::new();
         self.fmt().encode_all(&refs, &mut new_kb);
         let new_len = new_kb.len();
@@ -276,8 +282,8 @@ impl<'a> LeafPage<'a> {
         if delta_k > 0 {
             let dk = delta_k as usize;
             // Ensure room to move slots forward by dk
-            if s0 + dk > self.values_hi_usize() {
-                return Err(PageError::NoSpace);
+            if s0 + dk > self.values_hi() {
+                return Err(PageError::PageFull {});
             }
             // move forward
             self.buf.copy_within(k0..s0, k0 + dk);
@@ -301,36 +307,36 @@ impl<'a> LeafPage<'a> {
     }
 
     fn read_slot(&self, idx: usize) -> Result<LeafSlot, PageError> {
-        if idx >= self.key_count() as usize { return Err(PageError::Bounds); }
+        if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
         let base = self.slot_off_for(idx);
-        Ok(LeafSlot { val_off: read_u16_le(self.buf, base), val_len: read_u16_le(self.buf, base + 2) })
+        Ok(LeafSlot { val_off: read_u16_le(&self.buf, base), val_len: read_u16_le(&self.buf, base + 2) })
     }
 
     fn write_slot(&mut self, idx: usize, slot: LeafSlot) -> Result<(), PageError> {
-        if idx > self.key_count() as usize { return Err(PageError::Bounds); }
+        if idx > self.key_count() as usize { return Err(PageError::IndexOutOfBounds {}); }
         let base = self.slot_off_for(idx);
-        write_u16_le(self.buf, base, slot.val_off);
-        write_u16_le(self.buf, base + 2, slot.val_len);
+        write_u16_le(&mut self.buf, base, slot.val_off);
+        write_u16_le(&mut self.buf, base + 2, slot.val_len);
         Ok(())
     }
 
     fn slot_dir_insert(&mut self, idx: usize, slot: LeafSlot) -> Result<(), PageError> {
         let kc = self.key_count() as usize;
-        if idx > kc { return Err(PageError::Bounds); }
+        if idx > kc { return Err(PageError::IndexOutOfBounds {}); }
         // shift right by one entry
         let base = self.slots_base();
         let from = base + idx * SLOT_SIZE;
         let to   = base + (kc + 1) * SLOT_SIZE;
         self.buf.copy_within(from..from + kc * SLOT_SIZE - idx * SLOT_SIZE, from + SLOT_SIZE);
         // write new
-        write_u16_le(self.buf, from, slot.val_off);
-        write_u16_le(self.buf, from + 2, slot.val_len);
+        write_u16_le(&mut self.buf, from, slot.val_off);
+        write_u16_le(&mut self.buf, from + 2, slot.val_len);
         Ok(())
     }
 
     fn slot_dir_remove(&mut self, idx: usize) -> Result<(), PageError> {
         let kc = self.key_count() as usize;
-        if idx >= kc { return Err(PageError::Bounds); }
+        if idx >= kc { return Err(PageError::IndexOutOfBounds {}); }
         let base = self.slots_base();
         let from = base + (idx + 1) * SLOT_SIZE;
         let to   = base + kc * SLOT_SIZE;
@@ -347,8 +353,8 @@ impl<'a> LeafPage<'a> {
     /// Allocate value at tail **below current slots** (uses header.values_hi and slot count).
     fn alloc_value_tail(&mut self, val: &[u8]) -> Result<(u16, u16), PageError> {
         let val_len = val.len();
-        let new_hi = self.values_hi_usize().checked_sub(val_len).ok_or(PageError::NoSpace)?;
-        if new_hi < self.slots_end() { return Err(PageError::NoSpace); }
+        let new_hi = self.values_hi().checked_sub(val_len).ok_or(PageError::PageFull {})?;
+        if new_hi < self.slots_end() { return Err(PageError::PageFull {}); }
         self.buf[new_hi..new_hi + val_len].copy_from_slice(val);
         self.set_values_hi(new_hi as u16);
         Ok((new_hi as u16, val_len as u16))

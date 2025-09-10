@@ -1,8 +1,6 @@
 //! [ u16_le klen | k bytes ] repeated
 
 use super::{KeyBlockFormat, KeyFmtError};
-use crate::keyfmt::varint; // optional if you later switch to varints
-use crate::page::LEN_SIZE;
 
 #[derive(Copy, Clone)]
 pub struct RawFormat;
@@ -26,7 +24,7 @@ impl KeyBlockFormat for RawFormat {
         (lo, false)
     }
 
-    fn decode_at<'s>(&self, blk: &[u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
+    fn decode_at<'s>(&self, blk: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
         decode_at_idx(blk, i, scratch)
     }
 
@@ -37,6 +35,17 @@ impl KeyBlockFormat for RawFormat {
             out.extend_from_slice(&len.to_le_bytes());
             out.extend_from_slice(k);
         }
+    }
+
+    fn rebuild_window(
+            &self,
+            _block: &[u8],
+            _start: usize,
+            _end: usize,
+            _new_keys: &[&[u8]],
+            _out: &mut Vec<u8>,
+        ) {
+        
     }
 }
 
@@ -54,7 +63,7 @@ fn count_entries(mut p: &[u8]) -> usize {
 }
 
 // Decode the i-th entry into scratch and return a view
-fn decode_at_idx<'s>(blk: &[u8], mut i: usize, _scratch: &'s mut Vec<u8>) -> &'s [u8] {
+fn decode_at_idx<'s>(blk: &'s [u8], mut i: usize, _scratch: &'s mut Vec<u8>) -> &'s [u8] {
     let mut off = 0usize;
     while i > 0 {
         let len = u16::from_le_bytes([blk[off], blk[off+1]]) as usize;

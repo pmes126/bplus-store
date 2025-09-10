@@ -1,13 +1,16 @@
 use crate::layout::MAX_ENTRIES;
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
-use crate::page::PageCodecError;
+use crate::page::PageError;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct InternalPageHeader {
-    pub node_type: u64,   // Node type (LEAF_NODE_TAG)
+    pub node_type: u8,   // Node type (LEAF_NODE_TAG)
+    pad_1: u8,
+    pad_2: u16,
+    pad_3: u32,
     pub entry_count: u64, // number of keys
     pub free_start: u64,
     pub leftmost_child: u64, // leftmost child pointer, k keys for k+1 children
@@ -37,6 +40,9 @@ impl InternalPage {
         InternalPage {
             header: InternalPageHeader {
                 node_type: INTERNAL_NODE_TAG,
+                pad_1: 0,
+                pad_2: 0,
+                pad_3: 0,
                 entry_count: 0,
                 offsets: [0; MAX_ENTRIES],
                 free_start: 0,
@@ -49,24 +55,22 @@ impl InternalPage {
     }
 
     #[inline]
-    pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageCodecError> {
-        InternalPage::ref_from(buf).ok_or(PageCodecError::FromBytesError {
+    pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, PageError> {
+        InternalPage::ref_from(buf).ok_or(PageError::FromBytesError {
             msg: "Failed to convert bytes to LeafPage".to_string(),
         })
     }
 
     // Store according to the layout => [klen][key][ptr]
-    pub fn insert_entry(&mut self, key: &[u8], child: u64) -> Result<(), PageCodecError> {
+    pub fn insert_entry(&mut self, key: &[u8], child: u64) -> Result<(), PageError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            return Err(PageError::PageFull {
             });
         }
 
         let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE;
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            return Err(PageError::PageFull {
             });
         }
 
@@ -110,16 +114,14 @@ impl InternalPage {
         idx: usize,
         key: &[u8],
         child: u64,
-    ) -> Result<(), PageCodecError> {
+    ) -> Result<(), PageError> {
         if idx > self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Provided insertion index is beyond entries size".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            return Err(PageError::PageFull {
             });
         }
 
@@ -130,8 +132,7 @@ impl InternalPage {
         let required_space = key.len() + LEN_SIZE + CHILD_ID_SIZE;
 
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
+            return Err(PageError::PageFull {
             });
         }
 
@@ -195,10 +196,9 @@ impl InternalPage {
     }
 
     // Replace the child pointer at idx with the provided child pointer
-    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageCodecError> {
+    pub fn replace_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> {
         if idx > self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Provided index is beyond entries size".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 
@@ -211,7 +211,7 @@ impl InternalPage {
         let mut end = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to read bytes as slice".to_string(),
             })?;
         let key_length = u16::from_le_bytes(arr);
@@ -226,13 +226,13 @@ impl InternalPage {
     }
 
     // Read from the key_offset->[key_len][key][child_ptr]
-    pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageCodecError> {
+    pub fn get_entry(&self, idx: usize) -> Result<(&[u8], u64), PageError> {
         // Read and decode the length of the key
         let key_len_offset = self.header.offsets[idx] as usize;
         let mut end = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..end]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to read bytes as slice".to_string(),
             })?;
         let key_length = u16::from_le_bytes(arr);
@@ -247,7 +247,7 @@ impl InternalPage {
         end = child_offset + CHILD_ID_SIZE;
         let arr: [u8; CHILD_ID_SIZE] =
             self.data.blob[child_offset..end].try_into().map_err(|_| {
-                PageCodecError::FromBytesError {
+                PageError::FromBytesError {
                     msg: "Failed to read bytes as slice".to_string(),
                 }
             })?;
@@ -256,10 +256,9 @@ impl InternalPage {
     }
 
     // Removes the entry at idx and shifts all subsequent entries left
-    pub fn remove_entry_at(&mut self, idx: usize) -> Result<(), PageCodecError> {
+    pub fn remove_entry_at(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Provided removal index is out of bounds".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 
@@ -290,7 +289,7 @@ impl InternalPage {
     }
 
     #[inline]
-    pub fn get_child_at(&self, idx: usize) -> Result<u64, PageCodecError> {
+    pub fn get_child_at(&self, idx: usize) -> Result<u64, PageError> {
         if idx == 0 {
             return Ok(self.header.leftmost_child);
         }
@@ -318,14 +317,14 @@ impl InternalPage {
     }
 
     #[inline]
-    pub fn child_at(&self, i: usize) -> Result<u64, PageCodecError> {
+    pub fn child_at(&self, i: usize) -> Result<u64, PageError> {
         // Read and decode the length of the key
         let offset = self.header.offsets[i] as usize;
         let end = offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] =
             self.data.blob[offset..end]
                 .try_into()
-                .map_err(|_| PageCodecError::FromBytesError {
+                .map_err(|_| PageError::FromBytesError {
                     msg: "Failed to read bytes as slice".to_string(),
                 })?;
         let key_length = u16::from_le_bytes(arr);
@@ -334,7 +333,7 @@ impl InternalPage {
         let arr: [u8; CHILD_ID_SIZE] =
             self.data.blob[c0..c0 + CHILD_ID_SIZE]
                 .try_into()
-                .map_err(|_| PageCodecError::FromBytesError {
+                .map_err(|_| PageError::FromBytesError {
                     msg: "Failed to read bytes as slice".to_string(),
                 })?;
         Ok(u64::from_le_bytes(arr))
@@ -348,10 +347,9 @@ impl InternalPage {
     }
 
     // Splits the page at idx, moving entries from idx to the end to a new page
-    pub fn split_off(&mut self, idx: usize) -> Result<InternalPage, PageCodecError> {
+    pub fn split_off(&mut self, idx: usize) -> Result<InternalPage, PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Split index is out of bounds".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 

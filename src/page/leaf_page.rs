@@ -11,7 +11,10 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct LeafPageHeader {
-    pub node_type: u64,   // Node type (LEAF_NODE_TAG)
+    pub node_type: u8,   // Node type (LEAF_NODE_TAG)
+    pad_1: u8,
+    pad_2: u16,
+    pad_3: u32,
     pub entry_count: u64, // Number of key-value pairs
     pub free_start: u64,  // Offset for the next free space in the data area
     pub offsets: [u16; MAX_ENTRIES], // Fixed-size array for entry header
@@ -39,6 +42,9 @@ impl LeafPage {
         LeafPage {
             header: LeafPageHeader {
                 node_type: LEAF_NODE_TAG,
+                pad_1: 0,
+                pad_2: 0,
+                pad_3: 0,
                 entry_count: 0,
                 free_start: 0,
                 offsets: [0u16; MAX_ENTRIES],
@@ -60,19 +66,15 @@ impl LeafPage {
     }
 
     // Insert values according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
-    pub fn insert_entry(&mut self, key: &[u8], value: &[u8]) -> Result<(), PageCodecError> {
+    pub fn insert_entry(&mut self, key: &[u8], value: &[u8]) -> Result<(), PageError> {
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
-            });
+            return Err(PageError::PageFull {});
         }
 
         let required_space = key.len() + value.len() + LEN_SIZE * 2;
         // value_len
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
-            });
+            return Err(PageError::PageFull {});
         }
         let data = &mut self.data.blob[..];
 
@@ -124,25 +126,19 @@ impl LeafPage {
         idx: usize,
         key: &[u8],
         value: &[u8],
-    ) -> Result<(), PageCodecError> {
+    ) -> Result<(), PageError> {
         if idx > self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Provided insertion index is beyond entries size".to_string(),
-            });
+            return Err(PageError::IndexOutOfBounds {});
         }
 
         if self.header.entry_count as usize >= MAX_ENTRIES {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
-            });
+            return Err(PageError::PageFull {});
         }
 
         let required_space = key.len() + value.len() + LEN_SIZE * 2;
 
         if self.header.free_start + required_space as u64 > DATA_SIZE as u64 {
-            return Err(PageCodecError::PageFull {
-                msg: "LeafPage is full, cannot insert more entries".to_string(),
-            });
+            return Err(PageError::PageFull {});
         }
 
         if self.header.entry_count == idx as u64 {
@@ -210,17 +206,16 @@ impl LeafPage {
     }
 
     // Delete entry at idx and shift all entries after idx to the left by the size of the deleted entry
-    pub fn delete_entry_at(&mut self, idx: usize) -> Result<(), PageCodecError> {
+    pub fn delete_entry_at(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Index out of bounds".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 
         let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to convert bytes to LeafPage".to_string(),
             })?;
 
@@ -229,7 +224,7 @@ impl LeafPage {
         let value_len_offset = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to read bytes as slice".to_string(),
             })?;
         let value_length = u16::from_le_bytes(arr) as usize;
@@ -259,17 +254,16 @@ impl LeafPage {
     }
 
     // Get entry at idx according to the Layout of [RECORD AREA: N × [klen][vlen][key][value]]
-    pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageCodecError> {
+    pub fn get_entry(&self, idx: usize) -> Result<(&[u8], &[u8]), PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Index out of bounds".to_string(),
+            return Err(PageError::IndexOutOfBounds {
             });
         }
 
         let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to convert bytes to LeafPage".to_string(),
             })?;
 
@@ -278,7 +272,7 @@ impl LeafPage {
         let value_len_offset = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to read bytes as slice".to_string(),
             })?;
         let value_length = u16::from_le_bytes(arr);
@@ -297,17 +291,15 @@ impl LeafPage {
         &mut self,
         idx: usize,
         new_value: &[u8],
-    ) -> Result<(), PageCodecError> {
+    ) -> Result<(), PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Index out of bounds".to_string(),
-            });
+            return Err(PageError::IndexOutOfBounds {});
         }
         // Key length offset
         let key_len_offset = self.header.offsets[idx] as usize;
         let arr: [u8; LEN_SIZE] = self.data.blob[key_len_offset..(key_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to convert bytes to LeafPage".to_string(),
             })?;
 
@@ -318,7 +310,7 @@ impl LeafPage {
         let value_len_offset = key_len_offset + LEN_SIZE;
         let arr: [u8; LEN_SIZE] = self.data.blob[value_len_offset..(value_len_offset + LEN_SIZE)]
             .try_into()
-            .map_err(|_| PageCodecError::FromBytesError {
+            .map_err(|_| PageError::FromBytesError {
                 msg: "Failed to read bytes as slice".to_string(),
             })?;
         // Value length
@@ -332,9 +324,7 @@ impl LeafPage {
         if additional_space_needed > 0
             && (self.header.free_start as isize + additional_space_needed) > DATA_SIZE as isize
         {
-            return Err(PageCodecError::PageFull {
-                msg: "Not enough space to replace value".to_string(),
-            });
+            return Err(PageError::PageFull {});
         }
         // Shift data if new value is larger or smaller
         if additional_space_needed != 0 {
@@ -435,11 +425,9 @@ impl LeafPage {
         Ok(array)
     }
 
-    pub fn drain(&mut self, idx: usize) -> Result<(), PageCodecError> {
+    pub fn drain(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Index out of bounds".to_string(),
-            });
+            return Err(PageError::IndexOutOfBounds {});
         }
 
         // Simply adjust the entry count to "remove" entries from idx onwards
@@ -448,11 +436,9 @@ impl LeafPage {
         Ok(())
     }
 
-    pub fn split_off(&mut self, idx: usize) -> Result<LeafPage, PageCodecError> {
+    pub fn split_off(&mut self, idx: usize) -> Result<LeafPage, PageError> {
         if idx >= self.header.entry_count as usize {
-            return Err(PageCodecError::IndexOutOfBounds {
-                msg: "Index out of bounds".to_string(),
-            });
+            return Err(PageError::IndexOutOfBounds {});
         }
 
         let mut new_page = LeafPage::new();
