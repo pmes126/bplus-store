@@ -1,5 +1,6 @@
 use self::storage::file_store::FileStore;
 use crate::bplustree::{transaction, tree::BPlusTree, tree::SharedBPlusTree};
+use crate::codec::bincode::{BeU64, Utf8};
 use ::bplustree::*;
 use reqwest::Error;
 use storage::page_store::PageStore;
@@ -14,7 +15,7 @@ async fn main() {
     let file_path = dir.path().join("tree.data");
 
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path).unwrap();
-    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::new(store, order).unwrap();
+    let tree = BPlusTree::<u64, String, BeU64, Utf8, FileStore<PageStore>>::new(store, order).unwrap();
     let st = SharedBPlusTree::new(tree);
     let mut tx = transaction::WriteTransaction::new(st.clone());
 
@@ -31,7 +32,7 @@ async fn main() {
             Err(err) => eprintln!("Error on request #{}: {}", i, err),
         }
     }
-    let _ = tx.commit();
+    let _ = tx.commit(&st);
 
     let res = st.traverse().unwrap();
     for (k, v) in &res {

@@ -223,6 +223,10 @@ where
     pub fn begin_write(&self) -> Result<TypedWriteTxn<K, V>> {
         Ok(TypedWriteTxn::new(self.inner.clone()))
     }
+
+    pub fn get_inner(&self) -> &SharedBPlusTree<K, V, KC, VC, S> {
+        &self.inner
+    }
 }
 
 // Streaming iterator (typed)
