@@ -30,13 +30,12 @@ impl NodeView {
         }
     }
 
-    pub fn search_value(&self, probe: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub fn value_bytes_at(&self, i: usize) -> Result<Option<&[u8]>> {
         match self {
             NodeView::Internal { .. } => Ok(None), // Internal nodes do not store values
             NodeView::Leaf { page } => {
-                let mut scratch = Vec::new();
-                let val_bytes = page.find_value(probe, &mut scratch)?;
-                val_bytes.map_or(Ok(None), |v| Ok(Some(v.to_vec())))
+                let value = page.read_value_at(i)?;
+                Ok(Some(value))
             }
         }
     }
@@ -101,17 +100,17 @@ impl NodeView {
     }
 
     /// Find the insertion index for a given key
-    pub fn find_insertion_index(&self, probe: &[u8]) -> Result<(usize, usize)> {
+    pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
-            NodeView::Internal { _page } => {
+            NodeView::Internal { .. } => {
                 //let mut scratch = Vec::new();
                 //let (idx, found) = page.seek(probe, &mut scratch);
                 //Ok((idx, found))
-                Ok((0, 0)) // Placeholder: Implement binary search for internal nodes
+                Ok(0) // Placeholder: Implement binary search for internal nodes
             }
             NodeView::Leaf { page } => {
                 let mut scratch = Vec::new();
-                page.find_insertion_idx(probe, &mut scratch)?
+                page.lower_bound(probe, &mut scratch)
             }
         }
     }

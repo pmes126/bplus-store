@@ -573,7 +573,7 @@ where
             match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
-                        let i = match node.find_insertion_index(encode_buf.as_ref()) {
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => i,
                             Err(i) => i,
                         };
@@ -582,7 +582,7 @@ where
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
-                        let i = match node.find_insertion_index(encode_buf.as_ref()) {
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };
@@ -1091,22 +1091,32 @@ where
             {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
-                         let val = match node.search_value(encode_buf.as_ref())? {
-                            Some(val) => {
-                                return Ok(Some(VC::decode_value(val.as_ref())?));
+                        match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) => {
+                                let Some(vb) = node.value_bytes_at(i)? else {
+                                    return Ok(None);
+                                };
+                                let value = VC::decode_value(vb)?;
+                                Ok(Some(value))
                             }
-                            None => return Ok(None), // Key not found
+                            Err(_i) => return Ok(None), // Key not found
                         };
                     }
                     NodeView::Internal { .. } => {
-                         let child = match node.search_child(encode_buf.as_ref())? {
-                            Some(child) => {
-                                current_id = child; // Move to the child node
-                            }
-                            None => return Err(TreeError::BackendAny(
-                                "Child pointer not found in search".to_string(),
-                                )),
+                        // Find the insertion point in the internal node
+                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
                         };
+                        let child = node.child_ptr_at(i)?; // Move to the child node
+                        if let Some(child_id) = child {
+                            current_id = child_id; // Continue iteration
+                        } else {
+                            TreeError::BackendAny(format!(
+                                "Internal node cannot retrieve child at index {}",
+                                i
+                            ));
+                        }
                     }
                 },
                 None => {

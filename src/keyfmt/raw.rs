@@ -1,6 +1,6 @@
 //! [ u16_le klen | k bytes ] repeated
 
-use super::{KeyBlockFormat, KeyFmtError};
+use super::KeyBlockFormat;
 
 #[derive(Copy, Clone)]
 pub struct RawFormat;
@@ -8,7 +8,7 @@ pub struct RawFormat;
 impl KeyBlockFormat for RawFormat {
     fn format_id(&self) -> u8 { 0 }
 
-    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<(usize, usize), KeyFmtError> {
+    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         // classic binary search over entries
         let mut lo = 0usize;
         let mut hi = count_entries(block);
@@ -18,10 +18,10 @@ impl KeyBlockFormat for RawFormat {
             match k.cmp(needle) {
                 core::cmp::Ordering::Less    => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
-                core::cmp::Ordering::Equal   => return Ok((mid)),
+                core::cmp::Ordering::Equal   => return Ok(mid),
             }
         }
-        Err((lo))
+        Err(lo)
     }
 
     fn decode_at<'s>(&self, blk: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {

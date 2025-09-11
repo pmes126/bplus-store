@@ -135,10 +135,16 @@ impl LeafPage {
     fn key_run<'s>(&'s self) -> PageKeyRun<'s> {
         PageKeyRun { body: self.key_block(), fmt: self.fmt() }
     }
+
     // ---- search ----
-    /// Seek on encoded key bytes; returns (insertion index, found).
-    pub fn find_insertion_idx(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result(usize, usize, PageError) {
+    /// Lower bound on encoded key bytes; returns insertion index.
+    pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.fmt().seek(self.key_block(), key_enc, scratch)
+    }
+    
+    /// Find slot for encoded key bytes; returns (insertion idx, found).
+    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
+        self.key_run().seek(key_enc, scratch)
     }
 
     // -------- value access --------
@@ -166,14 +172,15 @@ impl LeafPage {
     pub fn insert_encoded(&mut self, key_enc: &[u8], val_bytes: &[u8]) -> Result<(), PageError> {
         // 1) find position
         let mut scratch = Vec::new();
-        let (idx, found) = self.find_slot(key_enc, &mut scratch);
 
-        if found {
-            // Upsert policy: allocate new tail and repoint the slot (no key changes).
-            let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
-            self.overwrite_value_at(idx, val_off, val_len)?;
-            return Ok(());
-        }
+        let idx = match self.find_slot(key_enc, &mut scratch) {
+            Ok(idx) => { 
+               let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
+               self.overwrite_value_at(idx, val_off, val_len)?;
+               return Ok(());
+            },
+            Err(_idx) => _idx, // not found, use insertion point
+        };
 
         // 2) build new key block bytes (correctness-first: rebuild whole block)
         let old_kb = self.key_block();
@@ -403,11 +410,13 @@ impl LeafPage {
         // For brevity, call the existing insert and let it re-seek:
         // (replace with inlined rebuild if you want to avoid the second seek)
         let mut scratch = Vec::new();
-        let (i, found) = self.find_slot(key_enc, &mut scratch);
-        if found && i == idx {
-            let (off, len) = self.alloc_value_tail(val_bytes)?;
-            return self.overwrite_value_at(idx, off, len);
-        }
+        if let Ok(i) = self.find_slot(key_enc, &mut scratch) {
+            if i == idx {
+                let (off, len) = self.alloc_value_tail(val_bytes)?;
+                return self.overwrite_value_at(idx, off, len);
+            }
+        }   
+
         // If idx disagrees with seek result, trust `idx`:
         // Rebuild using `idx` like in `insert_encoded` (copy that code path and swap `all_owned.insert(idx, key_enc.to_vec())`)
         // …
@@ -415,8 +424,7 @@ impl LeafPage {
     }
 
     pub fn find_value(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<Option<&[u8]>, PageError> {
-        let (idx, found) = self.find_slot(key_enc, scratch);
-        if found {
+        if let Ok(idx) = self.find_slot(key_enc, scratch) {
             let v = self.read_value_at(idx)?;
             Ok(Some(v))
         } else {
@@ -532,9 +540,11 @@ struct PageKeyRun<'a> {
 }
 
 impl<'a> PageKeyRun<'a> {
-    fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> (usize, bool) {
+    
+    fn seek(&self, needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.fmt.seek(self.body, needle, scratch)
     }
+
     fn rebuild_window(&self, start: usize, end: usize, new_keys: &[&[u8]], out: &mut Vec<u8>) {
         self.fmt.rebuild_window(self.body, start, end, new_keys, out)
     }
