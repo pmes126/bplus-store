@@ -573,7 +573,7 @@ where
             match self.storage.read_node_view(current_id)? {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
-                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                        let i = match node.find_insertion_index(encode_buf.as_ref()) {
                             Ok(i) => i,
                             Err(i) => i,
                         };
@@ -582,7 +582,7 @@ where
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
-                        let i = match node.lower_bound(encode_buf.as_ref()) {
+                        let i = match node.find_insertion_index(encode_buf.as_ref()) {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };

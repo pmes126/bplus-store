@@ -23,17 +23,6 @@ impl NodeView {
     }
 
     #[inline]
-    pub fn key_bytes_at(&self, idx: usize) -> Result<&[u8]> {
-        match self {
-            NodeView::Internal { page } => Ok(page.key_bytes_at(idx)?),
-            NodeView::Leaf { page } => {
-                let mut scratch = Vec::new();
-                Ok(page.get_key_at(idx, &mut scratch)?)
-            }
-        }
-    }
-
-    #[inline]
     pub fn keys_len(&self) -> usize {
         match self {
             NodeView::Internal { page } => page.header.entry_count as usize,
@@ -52,7 +41,7 @@ impl NodeView {
         }
     }
 
-    pub fn search_child(&self, _probe: &[u8]) -> Result<Option<NodeId>> {
+    pub fn get_child_for_key(&self, _probe: &[u8]) -> Result<Option<(NodeId, usize)>> {
         match self {
             NodeView::Leaf { .. } => Ok(None), // Leaf nodes do not have children
             // Internal nodes: find the child pointer for the given key
@@ -111,6 +100,22 @@ impl NodeView {
         self.key_at(0)
     }
 
+    /// Find the insertion index for a given key
+    pub fn find_insertion_index(&self, probe: &[u8]) -> Result<(usize, usize)> {
+        match self {
+            NodeView::Internal { _page } => {
+                //let mut scratch = Vec::new();
+                //let (idx, found) = page.seek(probe, &mut scratch);
+                //Ok((idx, found))
+                Ok((0, 0)) // Placeholder: Implement binary search for internal nodes
+            }
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                page.find_insertion_idx(probe, &mut scratch)?
+            }
+        }
+    }
+
     /// Insert a key-value pair or key-child pointer into the node
     pub fn insert(
         &mut self,
@@ -140,20 +145,6 @@ impl NodeView {
         }
     }
 
-    /// Replace the value at a given index in a leaf node
-    #[inline]
-    pub fn replace_value_at(&mut self, idx: usize, value: &[u8]) -> Result<(), anyhow::Error> {
-        match self {
-            NodeView::Internal { .. } => Err(anyhow::anyhow!(
-                "Internal nodes do not store values, cannot replace"
-            )),
-            NodeView::Leaf { page } => {
-                page.replace_value_at(idx, value)
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
-        }
-    }
-
     /// Remove the entry at a given index from the node
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), anyhow::Error> {
@@ -162,7 +153,7 @@ impl NodeView {
                 "Internal nodes do not store values, cannot replace"
             )),
             NodeView::Leaf { page } => {
-                page.delete_entry_at(idx).map_err(|e| anyhow::anyhow!(e))
+                page.delete_at(idx).map_err(|e| anyhow::anyhow!(e))
             }
         }
     }
@@ -184,7 +175,7 @@ impl NodeView {
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let new_page = page.split_off(idx).map_err(|e| anyhow::anyhow!(e))?;
+                let new_page = page.split_off_at(idx).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
             }
         }

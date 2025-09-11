@@ -137,7 +137,7 @@ impl LeafPage {
     }
     // ---- search ----
     /// Seek on encoded key bytes; returns (insertion index, found).
-    pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> (usize, bool) {
+    pub fn find_insertion_idx(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result(usize, usize, PageError) {
         self.fmt().seek(self.key_block(), key_enc, scratch)
     }
 
@@ -426,7 +426,7 @@ impl LeafPage {
 
     /// Split at `idx` (0 < idx < n). Moves [idx..n) into a new right page.
     /// Returns (right_page, pivot_key_bytes).
-    pub fn split_off_at(&mut self, idx: usize) -> Result<(LeafPage, Vec<u8>), PageError> {
+    pub fn split_off_at(&mut self, idx: usize) -> Result<LeafPage, PageError> {
         let n = self.key_count() as usize;
         if idx == 0 || idx >= n {
             return Err(PageError::IndexOutOfBounds {});
@@ -521,9 +521,7 @@ impl LeafPage {
             self.set_key_count(left_keys.len() as u16);
         }
 
-        // 6) Pivot = first key on right.
-        let pivot = right_keys.first().expect("right non-empty").clone();
-        Ok((right, pivot))
+        Ok(right)
     }
 }
 

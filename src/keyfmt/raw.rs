@@ -8,20 +8,20 @@ pub struct RawFormat;
 impl KeyBlockFormat for RawFormat {
     fn format_id(&self) -> u8 { 0 }
 
-    fn seek(&self, blk: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> (usize, bool) {
+    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<(usize, usize), KeyFmtError> {
         // classic binary search over entries
         let mut lo = 0usize;
-        let mut hi = count_entries(blk);
+        let mut hi = count_entries(block);
         while lo < hi {
             let mid = (lo + hi) / 2;
-            let k = decode_at_idx(blk, mid, scratch);
+            let k = decode_at_idx(block, mid, scratch);
             match k.cmp(needle) {
                 core::cmp::Ordering::Less    => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
-                core::cmp::Ordering::Equal   => return (mid, true),
+                core::cmp::Ordering::Equal   => return Ok((mid)),
             }
         }
-        (lo, false)
+        Err((lo))
     }
 
     fn decode_at<'s>(&self, blk: &'s [u8], i: usize, scratch: &'s mut Vec<u8>) -> &'s [u8] {
@@ -74,6 +74,54 @@ fn decode_at_idx<'s>(blk: &'s [u8], mut i: usize, _scratch: &'s mut Vec<u8>) -> 
     let start = off + 2;
     &blk[start..start+len]
 }
+
+
+//impl KeyBlockFormat for RawFormat {
+//    fn lower_bound<'a>(
+//        &self,
+//        blk: &'a [u8],
+//        needle: &[u8],
+//        _scratch: &'a mut Vec<u8>,
+//    ) -> Result<usize, usize> {
+//        // Parse tail: [ ... entries ... ][ u32 restart_offs[m] ][ u32 m ]
+//        let Some((entries_end, restarts_off, rcount)) = tail(blk) else { return Err(0) };
+//        if rcount == 0 { return Err(0); }
+//        let R = self.restart_interval as usize;
+//
+//        // --- find the LAST block whose first key < needle ---
+//        let mut lo = 0usize;
+//        let mut hi = rcount; // [lo, hi)
+//        while lo < hi {
+//            let mid = (lo + hi) / 2;
+//            let off = restart_off(blk, restarts_off, mid);
+//            let k0  = entry_key(blk, off);
+//            if k0 < needle { lo = mid + 1; } else { hi = mid; }
+//        }
+//        // lo = first block with first_key >= needle
+//        let block = lo.saturating_sub(1); // last block with first_key < needle (or 0 if none)
+//        let block_start = restart_off(blk, restarts_off, block);
+//        let block_end   = if block + 1 < rcount {
+//            restart_off(blk, restarts_off, block + 1)
+//        } else {
+//            entries_end
+//        };
+//
+//        // --- scan within that single block to find first >= needle ---
+//        let mut off = block_start;
+//        let mut idx = block * R;
+//        while off < block_end {
+//            let len = u16::from_le_bytes([blk[off], blk[off + 1]]) as usize;
+//            let key = &blk[off + 2 .. off + 2 + len];
+//            match key.cmp(needle) {
+//                core::cmp::Ordering::Less    => { off += 2 + len; idx += 1; }
+//                core::cmp::Ordering::Equal   => return Ok(idx),   // found exact
+//                core::cmp::Ordering::Greater => return Err(idx),  // first >=
+//            }
+//        }
+//        // Not found in this block — lower_bound is the first index of the *next* block (or n).
+//        Err(idx)
+//    }
+//}
 
 
 // src/keyfmt/raw.rs
