@@ -103,10 +103,19 @@ impl NodeView {
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
             NodeView::Internal { .. } => {
-                //let mut scratch = Vec::new();
-                //let (idx, found) = page.seek(probe, &mut scratch);
-                //Ok((idx, found))
-                Ok(0) // Placeholder: Implement binary search for internal nodes
+                let mut lo = 0usize;
+                        let mut hi = self.keys_len();
+                        while lo < hi {
+                            let mid = (lo + hi) / 2;
+                            let k =self.key_at(mid)
+                                    .map_err(|_e| 0usize)?;
+                            match k.cmp(&probe.to_vec()) {
+                                Ordering::Less => lo = mid + 1,    // move to the right
+                                Ordering::Equal => return Ok(mid), // found exact match
+                                Ordering::Greater => hi = mid,
+                    }
+                }
+                Err(lo) // Placeholder: Implement binary search for internal nodes
             }
             NodeView::Leaf { page } => {
                 let mut scratch = Vec::new();

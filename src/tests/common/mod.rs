@@ -32,8 +32,8 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<K, V, KC, VC, S>(storage: S, order: usize) -> TestHarness<K, V, KC, VC, S>
 where
-    K: Clone + Ord,
-    V: Clone,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     KC: KeyCodec<K>,
     VC: ValueCodec<V>,
     S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + Clone + 'static,
@@ -54,8 +54,8 @@ pub fn test_tree_with_epoch<K, V, KC, VC, S>(
     order: usize,
 ) -> TestHarness<K, V, KC, VC, S>
 where
-    K: Clone + Ord,
-    V: Clone,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     KC: KeyCodec<K>,
     VC: ValueCodec<V>,
     S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + Clone + 'static,

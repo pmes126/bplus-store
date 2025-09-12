@@ -18,6 +18,8 @@ use crate::storage::{MetadataStorage, NodeStorage};
 
 pub use crate::bplustree::transaction::WriteTransaction as WriteTxn;
 
+use std::fmt::Debug;
+
 // ============================
 // KV Error type
 // ============================
@@ -167,8 +169,8 @@ where
 
 impl<K, V, KC, VC, S> TypedDb<K, V, KC, VC, S>
 where
-    K: Ord + Clone,
-    V: Clone,
+    K: Ord + Clone + Debug,
+    V: Clone + Debug,
     KC: KeyCodec<K>,
     VC: ValueCodec<V>,
     S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
@@ -309,8 +311,8 @@ impl<S> DbBuilder<S> {
     /// Build the **typed** API using your KeyCodec/ValueCodec.
     pub fn build_typed<K, V, KC, VC>(self) -> Result<TypedDb<K, V, KC, VC, S>>
     where
-        K: Ord + Clone,
-        V: Clone,
+        K: Ord + Clone + Debug,
+        V: Clone + Debug,
         KC: KeyCodec<K>,
         VC: ValueCodec<V>,
         S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,

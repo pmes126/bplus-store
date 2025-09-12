@@ -1,6 +1,8 @@
 use crate::bplustree::node_view::NodeView;
 use crate::codec::{NodeCodec, bincode::DefaultNodeCodec};
 
+use std::fmt::Debug;
+
 pub type NodeId = u64;
 
 /// In-memory representation of a node

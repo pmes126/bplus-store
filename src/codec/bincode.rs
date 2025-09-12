@@ -5,7 +5,6 @@ use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
-use crate::page::leaf;
 
 pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
@@ -194,6 +193,9 @@ where
                         let (key_bytes, value_bytes) = page
                             .get_kv_at(i, scratch.as_mut())
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
+                        //let k = KC::decode_key(key_bytes);
+                        //let v = VC::decode_value(value_bytes);
+                        //println!("k: {:?} v:{:?}", key_bytes, value_bytes);
                         keys.push(KC::decode_key(key_bytes)?);
                         values.push(VC::decode_value(value_bytes)?);
                     }
@@ -255,6 +257,7 @@ where
                 let entries = keys.iter().zip(children.iter().skip(1));
                 let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
                 for (key_ref, child_ref) in entries {
+                    encode_buf.resize(KC::encoded_len(key_ref), 0);
                     KC::encode_key(key_ref, encode_buf.as_mut())
                         .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                     page.insert_entry(&encode_buf, *child_ref)

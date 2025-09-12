@@ -2,6 +2,8 @@ use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::storage::{MetadataStorage, NodeStorage};
 use anyhow::Result;
 
+use std::fmt::Debug;
+
 enum WriteOp<K, V> {
     Insert(K, V),
     Delete(K),
@@ -44,7 +46,7 @@ where
 //    initial_root_id: u64,      // Current root ID of the tree
 //}
 
-impl<K, V> WriteTransaction<K, V>
+impl<K: Debug, V: Debug> WriteTransaction<K, V>
 where
     K: Clone + Ord,
     V: Clone,

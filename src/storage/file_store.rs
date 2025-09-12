@@ -14,6 +14,8 @@ use anyhow::Result;
 use std::path::Path;
 use zerocopy::AsBytes;
 
+use std::fmt::Debug;
+
 pub use crate::storage::file_store;
 
 pub struct FileStore<S: PageStorage> {
@@ -107,7 +109,7 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     }
 }
 
-impl<S: PageStorage, K, V, KC, VC> NodeStorage<K, V, KC, VC> for FileStore<S>
+impl<S: PageStorage, K: Debug, V: Debug, KC, VC> NodeStorage<K, V, KC, VC> for FileStore<S>
 where
     S: Send + Sync + 'static,
     K: Clone + Ord,

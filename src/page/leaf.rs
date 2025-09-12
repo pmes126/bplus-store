@@ -147,6 +147,7 @@ impl LeafPage {
         let len = slot.val_len as usize;
         let lo = self.values_hi_usize();
         if off < lo  {
+            println!("ERROR COMMING FROM READ_VALUE_AT HERE");
             return Err(PageError::CorruptedData{ msg:"slot outside arena".to_string() });
         }
         Ok(&self.buf[off..off + len])
@@ -384,14 +385,8 @@ impl LeafPage {
     /// Return (encoded_key, value_bytes) at index `idx`.
     pub fn get_kv_at<'s>(&'s self, idx: usize, scratch: &'s mut Vec<u8>) -> Result<(&'s [u8], &'s [u8]), PageError> {
         let k = self.get_key_at(idx, scratch)?;
-        let slot = self.read_slot(idx)?;
-        let off = slot.val_off as usize;
-        let len = slot.val_len as usize;
-        let lo = self.values_hi_usize();
-        let hi = self.slots_end();
-        println!("ERROR FROM GET KV AT off={} len={} lo={} hi={}", off, len, lo, hi);
-        if off < lo || off + len > hi { return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()}); }
-        Ok((k, &self.buf[off..off+len]))
+        let v = self.read_value_at(idx)?;
+        Ok((k, v))
     }
     
     /// Insert at an explicit `idx` (caller has already sought the position).
@@ -453,6 +448,7 @@ impl LeafPage {
             let lo  = self.values_hi_usize();
             let hi  = self.slots_end();
             if off < lo || off.checked_add(len).unwrap_or(usize::MAX) > hi {
+            println!("ERROR COMMING FROM SPLIT_OFF HERE");
                 return Err(PageError::CorruptedData{ msg: "slot outside arena".to_string()});
             }
             let v = self.buf[off..off + len].to_vec();
@@ -555,18 +551,63 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let mut page = make_page();
-        let keys = ["apple", "banana", "cherry"];
-        let values = ["red", "yellow", "dark red"];
+        let keys = ["apple", "banana", "cherry", "blueberry"];
+        let values = ["red", "yellow", "dark red", "blue"];
+
+        let kv_len = keys.len();
 
         for (k, v) in keys.iter().zip(values.iter()) {
             page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
         let mut scratch = Vec::new();
-        for (i, k) in keys.iter().enumerate() {
-            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
-            assert_eq!(*ke, *k.as_bytes());
-            assert_eq!(*ve, *values[i].as_bytes());
+
+        for i in 0..kv_len {
+            let idx = page.lower_bound(keys[i].as_bytes(), &mut scratch).expect("inserted value not found");
+            let val = page.read_value_at(idx).expect("Could not read value");
+            assert_eq!(*values[i].as_bytes(), *val);
+        }
+    }
+
+    #[test]
+    fn test_get_key_at_idx() {
+        let mut page = make_page();
+
+        let keys = ["apple", "banana", "cherry", "blueberry"];
+        let values = ["red", "yellow", "dark red", "blue"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+        let mut scratch = Vec::new();
+
+        for i in 0..keys.len() {
+            let idx = page.lower_bound(keys[i].as_bytes(), &mut scratch).expect("inserted value not found");
+            let key = page.get_key_at(idx, &mut scratch).expect("Could retrieve key");
+            assert_eq!(*keys[i].as_bytes(), *key);
+        }
+    }
+
+    #[test]
+    fn test_get_kv_at_idx() {
+        let mut page = make_page();
+        let keys = ["apple", "cherry", "banana", "blueberry"];
+        let values = ["red", "dark red", "yellow", "blue"];
+        let keys_sorted = ["apple", "banana", "blueberry", "cherry"];
+        let values_sorted = ["red", "yellow", "blue", "dark red"];
+
+        let kv_len = keys.len();
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        let mut scratch = Vec::new();
+
+        for i in 0..kv_len {
+            let (k, v) = page.get_kv_at(i, &mut scratch).expect("Cannot retrieve KV entry at idx");
+            assert_eq!(*keys_sorted[i].as_bytes(), *k);
+            assert_eq!(*values_sorted[i].as_bytes(), *v);
         }
     }
 }

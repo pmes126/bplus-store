@@ -21,7 +21,6 @@ fn commit_happy_path() {
 
     trx.commit(&tree).expect("commit");
 
-    let _root_id = tree.get_root_id();
     for i in 0..100 {
         assert_eq!(tree.search(&i).expect("get"), Some(format!("value_{}", i)));
     }
@@ -77,7 +76,7 @@ fn commit_with_random_inserts() {
 
     for &key in &keys {
         assert_eq!(
-            tree.search(&key).expect("get"),
+            tree.search(&key).expect("Get Value failed"),
             Some(format!("value_{}", key))
         );
     }
@@ -148,15 +147,15 @@ fn commit_failure_should_reclaim_nodes() {
         trx.insert(i, format!("value_{}", i)).expect("insert");
     }
 
-    // Simulate a failure during commit
-    // fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
-    //match trx.commit() {
-    //    Ok(_) => panic!("Commit should have failed"),
-    //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
-    //}
+  // Simulate a failure during commit
+  // fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
+  //match trx.commit() {
+  //    Ok(_) => panic!("Commit should have failed"),
+  //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
+  //}
 
-    //let deffered = tree.get_epoch_mgr().get_deferred_pages();
-    //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
+  //let deffered = tree.get_epoch_mgr().get_deferred_pages();
+  //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
 
     match trx.commit(&tree) {
         Ok(_) => println!("Commit succeeded unexpectedly"),

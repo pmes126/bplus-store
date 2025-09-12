@@ -9,7 +9,6 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
 use crate::codec::{CodecError, KeyCodec, ValueCodec};
-use crate::codec::bincode::{BeU64, RawBuf, Utf8};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
@@ -176,6 +175,7 @@ impl TxnTracker for TransactionTracker {
     }
 }
 
+#[derive(Debug)]
 pub struct WriteResult {
     pub new_root_id: NodeId,
     pub reclaimed_nodes: Vec<NodeId>,
@@ -208,7 +208,7 @@ where
     }
 }
 
-impl<K, V, KC, VC, S> SharedBPlusTree<K, V, KC, VC, S>
+impl<K: Debug, V: Debug, KC, VC, S> SharedBPlusTree<K, V, KC, VC, S>
 where
     K: Clone + Ord,
     V: Clone,
@@ -234,7 +234,8 @@ where
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
-            .insert_inner_view(key, value, root_id, &mut collector)?;
+            .insert_inner(key, value, root_id, &mut collector)?;
+            //.insert_inner_view(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -361,7 +362,7 @@ where
 }
 
 // BPlusTree implementation
-impl<K, V, KC, VC, S> BPlusTree<K, V, KC, VC, S>
+impl<K: Debug, V: Debug, KC, VC, S> BPlusTree<K, V, KC, VC, S>
 where
     K: Clone + Ord,
     V: Clone,
@@ -662,7 +663,9 @@ where
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         let _guard = self.epoch_mgr.pin();
+        //println!("Inserting k: {:?}, v: {:?}", key, value);
         let (path, mut leaf_node) = self.get_insertion_path_undecoded(&key, root_id)?;
+        //println!("path {:?}, leaf_node {:?}", path, leaf_node);
 
         let Node::Leaf { keys, values, .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
@@ -750,8 +753,10 @@ where
             right_node,
             split_key,
         } = self.split_leaf_node(leaf_node)?;
-        let right_id = self.write_node(&right_node, track)?;
         let left_id = self.write_node(&left_node, track)?;
+        let right_id = self.write_node(&right_node, track)?;
+        //println!("right node {:?}, \n Node id: {}", right_node, right_id);
+        //println!("left node {:?}, \n Node id: {}", left_node, left_id);
 
         self.propagate_split(path, left_id, right_id, split_key, track)
     }
@@ -1099,7 +1104,9 @@ where
                                 let value = VC::decode_value(vb)?;
                                 return Ok(Some(value));
                             }
-                            Err(_i) => return Ok(None), // Key not found
+                            Err(_i) => { 
+                                return Ok(None); // Key not found
+                            }
                         };
                     }
                     NodeView::Internal { .. } => {
@@ -1948,6 +1955,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::bincode::{BeU64, RawBuf};
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
     // test commit happy path
