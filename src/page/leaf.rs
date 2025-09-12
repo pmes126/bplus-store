@@ -20,8 +20,6 @@ use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
 use crate::page::PageError;
 
-pub const HEADER_SIZE: usize = 8;
-
 #[inline]
 fn read_u16_le(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
@@ -52,7 +50,7 @@ pub struct Header {
     values_hi: u16,
 }
 
-const HEADER_SIZE_USIZE: usize = std::mem::size_of::<Header>();
+const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 const BUFFER_SIZE: usize = PAGE_SIZE - HEADER_SIZE;
 
 // Borrowed/mutable view over a leaf page buffer.
@@ -75,7 +73,7 @@ impl LeafPage {
                 key_block_len: 0u16,
                 values_hi: BUFFER_SIZE as u16, // the hi address within buf where values start
             },
-            buf: [0u8; PAGE_SIZE - std::mem::size_of::<Header>()],
+            buf: [0u8; PAGE_SIZE - HEADER_SIZE],
         }
     }
 
@@ -111,12 +109,6 @@ impl LeafPage {
 
     #[inline] fn key_block(&self) -> &[u8] { &self.buf[self.keys_start()..self.keys_end()] }
 
-    #[inline] fn key_block_mut<'a>(&'a mut self) -> &'a mut [u8] {
-        let end = self.keys_end();
-        let start = self.keys_start();
-        &mut self.buf[start..end]
-    }
-
     // Resolve runtime key format
     fn fmt(&self) -> &dyn KeyBlockFormat {
         resolve_key_format(self.keyfmt_id())
@@ -134,7 +126,7 @@ impl LeafPage {
         self.fmt().seek(self.key_block(), key_enc, scratch)
     }
     
-    /// Find slot for encoded key bytes; returns (insertion idx, found).
+    /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).
     pub fn find_slot(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.key_run().seek(key_enc, scratch)
     }
