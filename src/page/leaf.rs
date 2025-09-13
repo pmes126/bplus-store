@@ -342,7 +342,7 @@ impl LeafPage {
         self.buf.copy_within(from..to, from + SLOT_SIZE);
         // write new
         write_u16_le(&mut self.buf, from, slot.val_off);
-        write_u16_le(&mut self.buf, from + 2, slot.val_len);
+        write_u16_le(&mut self.buf, from + LEN_SIZE, slot.val_len);
         Ok(())
     }
 
@@ -630,34 +630,35 @@ mod tests {
         assert_eq!(ke0, b"apple");
         assert_eq!(ve0, b"red");
     }
+
+    #[test]
+    fn test_split_off() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry", "date"];
+        let values = ["red", "yellow", "dark red", "brown"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+        let new_page = page.split_off_at(2).unwrap();
+        let mut scratch = Vec::new();
+        assert_eq!(page.key_count(), 2);
+        assert_eq!(new_page.key_count(), 2);
+        let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke0, b"apple");
+        assert_eq!(ve0, b"red");
+        let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
+        assert_eq!(ke1, b"banana");
+        assert_eq!(ve1, b"yellow");
+        let (ke2, ve2) = new_page.get_kv_at(0, &mut scratch).unwrap();
+        assert_eq!(ke2, b"cherry");
+        assert_eq!(ve2, b"dark red");
+        let (ke3, ve3) = new_page.get_kv_at(1, &mut scratch).unwrap();
+        assert_eq!(ke3, b"date");
+        assert_eq!(ve3, b"brown");
+    }
 }
-//
-//    #[test]
-//    fn test_split_off() {
-//        let mut page = make_page();
-//        let keys = vec![b"apple", b"banana", b"cherry", b"date"];
-//        let values = vec![b"red", b"yellow", b"dark red", b"brown"];
-//
-//        for (k, v) in keys.iter().zip(values.iter()) {
-//            page.insert_encoded(k, v).unwrap();
-//        }
-//        let new_page = page.split_off(2).unwrap();
-//        let mut scratch = Vec::new();
-//        assert_eq!(page.key_count(), 2);
-//        assert_eq!(new_page.key_count(), 2);
-//        let (ke0, ve0) = page.get_kv_at(0, &mut scratch).unwrap();
-//        assert_eq!(ke0, b"apple");
-//        assert_eq!(ve0, b"red");
-//        let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
-//        assert_eq!(ke1, b"banana");
-//        assert_eq!(ve1, b"yellow");
-//        let (ke2, ve2) = new_page.get_kv_at(0, &mut scratch).unwrap();
-//        assert_eq!(ke2, b"cherry");
-//        assert_eq!(ve2, b"dark red");
-//        let (ke3, ve3) = new_page.get_kv_at(1, &mut scratch).unwrap();
-//        assert_eq!(ke3, b"date");
-//        assert_eq!(ve3, b"brown");
-//    }
+
 //    #[test]
 //    fn test_compact_values() {
 //        let mut page = make_page();
