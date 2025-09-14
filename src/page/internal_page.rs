@@ -146,7 +146,7 @@ impl InternalPage {
 
         // 5) insert child pointer at idx+1 (shift right by one)
         self.children_shift_right_from(idx + 1);
-        self.write_child_at(idx + 1, right_child);
+        self.write_child_at(idx + 1, right_child)?;
 
         // 6) bump key_count
         self.set_key_count(self.key_count() + 1);
@@ -224,6 +224,11 @@ impl InternalPage {
         }
         write_u64_le(&mut self.buf, offset, child);
         Ok(())
+    }
+
+    #[inline]
+    pub fn write_leftmost_child(&mut self, child: u64) -> Result<(), PageError> {
+        self.write_child_at(0, child)
     }
 
     fn children_shift_right_from(&mut self, from: usize) {
