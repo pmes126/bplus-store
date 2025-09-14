@@ -412,24 +412,26 @@ impl LeafPage {
         }
     }
 
+    // ---- splitting ----
+
     /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
     /// Does *not* decode all keys; the format handles right-block fixups internally.
     pub fn split_off_into(&mut self, split_idx: usize, right: &mut LeafPage) -> Result<Vec<u8>, PageError> {
         let key_count = self.key_count() as usize;
         let kb = self.key_block(); // entries region only
 
-        // 2) ask the format to produce left/right key-block bytes
+        // 1) ask the format to produce left/right key-block bytes
         let mut left_kb = Vec::new();
         let mut right_kb = Vec::new();
         self.fmt().split_into(kb, split_idx, &mut left_kb, &mut right_kb);
     
-        // 3) BEFORE we change key_count, snapshot the slots for the right side
+        // 2) BEFORE we change key_count, snapshot the slots for the right side
         let mut moved_slots = Vec::with_capacity(key_count - split_idx);
         for i in split_idx..key_count {
             moved_slots.push(self.read_slot(i)?);
         }
     
-        // 4) Shrink left page's key-block in place (move slot-dir by Δk and overwrite)
+        // 3) Shrink left page's key-block in place (move slot-dir by Δk and overwrite)
         let old_len = kb.len();
         let delta_k = left_kb.len() as isize - old_len as isize; // negative
         self.move_slot_dir(delta_k)?;
@@ -439,7 +441,7 @@ impl LeafPage {
         // Reduce key_count to the left count; we don't need to physically shift slots—just drop count.
         self.set_key_count(split_idx as u16);
     
-        // 5) Init the right page with the right key-block
+        // 4) Init the right page with the right key-block
         {
             let ks_r = right.keys_start();
             right.buf[ks_r .. ks_r + right_kb.len()].copy_from_slice(&right_kb);
@@ -447,7 +449,7 @@ impl LeafPage {
             right.set_key_count((key_count - split_idx) as u16);
         }
     
-        // 6) Copy values referenced by moved slots into the right page's value arena,
+        // 5) Copy values referenced by moved slots into the right page's value arena,
         //    and write its slot dir in-order. Left page keeps old bytes as garbage.
         for (i, slot) in moved_slots.iter().enumerate() {
             let off = slot.val_off as usize;
@@ -457,7 +459,7 @@ impl LeafPage {
             right.write_slot(i, LeafSlot { val_off: new_off, val_len: new_len })?;
         }
     
-        // 7) Separator = first key of right page (encoded key bytes)
+        // 8) Separator = first key of right page (encoded key bytes)
         let mut scratch = Vec::new();
         let sep = self.fmt().decode_at(right.key_block(), 0, &mut scratch).to_vec();
     
