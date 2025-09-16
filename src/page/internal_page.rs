@@ -103,7 +103,7 @@ impl InternalPage {
     // ---- search ----
     /// Lower bound on encoded key bytes; returns insertion index.
     pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
-        self.fmt().seek(self.key_block(), key_enc, scratch)
+        self.key_run().seek(key_enc, scratch)
     }
     
     /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).

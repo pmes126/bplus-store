@@ -224,6 +224,7 @@ where
                     for i in 0..page.key_count() as usize  + 1 {
                         let child_ptr = page.read_child_at(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
+                        println!("child_ptr[{}]: {}", i, child_ptr);
                         children.push(child_ptr);
                     }
                 }

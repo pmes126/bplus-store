@@ -417,6 +417,7 @@ impl LeafPage {
 
     /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
     /// Does *not* decode all keys; the format handles right-block fixups internally.
+    /// The original page keeps all keys/values below `split_idx`, the `right` page gets the rest.
     pub fn split_off_into(&mut self, split_idx: usize, right: &mut LeafPage) -> Result<Vec<u8>, PageError> {
         let key_count = self.key_count() as usize;
         let kb = self.key_block(); // entries region only
@@ -447,6 +448,7 @@ impl LeafPage {
             let ks_r = right.keys_start();
             right.buf[ks_r .. ks_r + right_kb.len()].copy_from_slice(&right_kb);
             right.set_key_block_len(right_kb.len() as u16);
+            println!("right key_count in split_off_into = {}", (key_count - split_idx));
             right.set_key_count((key_count - split_idx) as u16);
         }
     
@@ -463,6 +465,9 @@ impl LeafPage {
         // 8) Separator = first key of right page (encoded key bytes)
         let mut scratch = Vec::new();
         let sep = self.fmt().decode_at(right.key_block(), 0, &mut scratch).to_vec();
+        let ii = self.fmt().seek(right.key_block(), &sep, &mut scratch)
+            .map_err(|_i| PageError::CorruptedData{ msg: "separator key not found in right page".to_string() })?;
+        println!("split_off_into sep={:?} found at idx {}", String::from_utf8(sep.clone()), ii);
     
         Ok(sep)
     }
@@ -617,6 +622,7 @@ mod tests {
         assert_eq!(ke1, b"avocado");
         assert_eq!(ve1, b"green");
 
+        // new page, values  in it are (split_ix=2, inclusive): banana, cherry, date
         let (ke2, ve2) = new_page.get_kv_at(0, &mut scratch).unwrap();
         assert_eq!(ke2, b"banana");
         assert_eq!(ve2, b"yellow");
