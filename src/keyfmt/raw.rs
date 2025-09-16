@@ -48,7 +48,6 @@ impl KeyBlockFormat for RawFormat {
         }
         let len = u16::from_le_bytes([block[off], block[off+1]]) as usize;
         let start = off;
-        println!("entry_range idx={} start={} len={}", idx, start, len);
         let end = off + LEN_SIZE + len;
         start..end
     }
@@ -140,10 +139,8 @@ impl KeyBlockFormat for RawFormat {
 // helpers
 fn count_entries(mut p: &[u8]) -> usize {
     let mut n = 0;
-    //println!("count_entries: p.len={}", p.len());
     while p.len() >= LEN_SIZE {
         let len = u16::from_le_bytes([p[0], p[1]]) as usize;
-        //println!("count_entries: entry {} len={} val={:?}", n, len, String::from_utf8(p[0..len].to_vec()));
         let need = LEN_SIZE + len;
         if p.len() < need { break; }
         n += 1;

@@ -1,6 +1,5 @@
 use crate::page::{InternalPage, LeafPage};
 use anyhow::Result;
-use std::cmp::Ordering;
 
 pub type NodeId = u64;
 

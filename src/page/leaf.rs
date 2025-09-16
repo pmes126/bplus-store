@@ -288,7 +288,7 @@ impl LeafPage {
         // Shift tail part
         let tail_src_start = ks + range.end;
         //let tail_src_end   = self.keys_end();
-        let tail_src_end   = self.slots_end(); // shift everthing in the key block + slot dir
+        let tail_src_end  = self.slots_end(); // shift everthing in the key block + slot dir
         let tail_dst = ks + range.start;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
@@ -612,8 +612,6 @@ mod tests {
         assert_eq!(ve0, b"red");
 
         let (ke1, ve1) = page.get_kv_at(1, &mut scratch).unwrap();
-        println!("{:?}", String::from_utf8(ke1.to_vec()));
-        println!("{:?}", String::from_utf8(ve1.to_vec()));
         assert_eq!(ke1, b"avocado");
         assert_eq!(ve1, b"green");
 

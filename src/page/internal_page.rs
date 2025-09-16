@@ -121,13 +121,13 @@ impl InternalPage {
        // let delta_k = repl.len() as isize - (range.end - range.start) as isize;
         let delta_k = repl.len() as isize;
         
-        //println!("INSERT sep at idx {}: key {:?} (len {}) + child {}, delta_k = {}", idx, String::from_utf8(key.to_vec()), key.len(), right_child, delta_k);
-        //println!("range to replace in key-block: {:?}, repl.len = {}", range, repl.len());
-
         // CAPACITY
         let keys_end_old = self.keys_end();
         let keys_end_new = (keys_end_old as isize + delta_k) as usize;
         let children_end_new = keys_end_new + (self.key_count() as usize + 2) * CHILD_ID_SIZE;
+        if children_end_new > PAGE_SIZE {
+            return Err(PageError::PageFull {});
+        }
 
         // 2) CAPACITY
         let new_keys_end     = (self.keys_end() as isize + delta_k) as usize;
@@ -144,12 +144,9 @@ impl InternalPage {
         let new_len = (old_len as isize + delta_k) as usize;
         self.set_key_block_len(new_len as u16);
 
-        //println!("old_len = {}, new_len = {}", old_len, new_len);
         let tail_src_start = ks + range.end;
         let tail_src_end   = ks + old_len;
         let tail_dst = (tail_src_start as isize + delta_k) as usize;
-
-        //println!("Moving tail of key-block: src = {}..{}, dst = {}", tail_src_start, tail_src_end, tail_dst);
 
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
 
@@ -179,21 +176,21 @@ impl InternalPage {
         let (range, repl) = self.fmt().delete_plan(self.key_block(), idx, &mut scratch); // same idea as insert_plan
         let delta_k = repl.len() as isize - (range.end - range.start) as isize;   // usually negative
 
-        println!("DELETE sep at idx {}: range {:?}, repl.len = {}, delta_k = {}", idx, range, repl.len(), delta_k);
         // capacity is fine when shrinking
         // splice key block
         let ks = self.keys_start();
         let old_len = self.key_block_len() as usize;
         let new_len = (old_len as isize + delta_k) as usize;
     
+        // write replacement (often empty)
+        //let hole_start = ks + range.start;
+        //self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
+    
         let tail_src_start = ks + range.end;
-        let tail_src_end   = ks + old_len;
+        let tail_src_end   = ks + old_len + self.children_len(); // include children to move them
+        // too
         let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst_start);
-    
-        // write replacement (often empty)
-        let hole_start = ks + range.start;
-        self.buf[hole_start .. hole_start + repl.len()].copy_from_slice(&repl);
         self.set_key_block_len(new_len as u16);
     
         // remove child at idx+1
@@ -224,7 +221,6 @@ impl InternalPage {
     #[inline]
     pub fn read_child_at(&self, idx: usize) -> Result<u64, PageError> {
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
-        //println!("READ child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
@@ -234,7 +230,6 @@ impl InternalPage {
     #[inline]
     pub fn write_child_at(&mut self, idx: usize, child: u64) -> Result<(), PageError> { 
         let offset = self.children_base() + idx * CHILD_ID_SIZE;
-        //println!("WRITE child at idx {} offset={}", idx, offset);
         if offset + CHILD_ID_SIZE > PAGE_SIZE {
             return Err(PageError::IndexOutOfBounds {}); 
         }
@@ -301,7 +296,6 @@ impl InternalPage {
     /// Split this leaf into `right`, returning the encoded separator (first key of `right`).
     /// Does *not* decode all keys; the format handles right-block fixups internally.
     pub fn split_off_into(&mut self, split_idx: usize, right: &mut InternalPage) -> Result<Vec<u8>, PageError> {
-        //println!("SPLITTING INTERNAL page at idx {}", split_idx);
         let key_count = self.key_count() as usize;
         let kb = self.key_block(); // entries region only
     
@@ -479,13 +473,13 @@ mod tests {
         while page.key_count() > 0 {
             let bound = page.key_count() as usize - 1;
             let mut idx = rng.gen_range(0..=bound) as usize;
-            println!("Removing idx {} of {}", idx, page.key_count());
             assert!(page.delete_separator(idx).is_ok());
-            if page.key_count() <2 { break; }
-            idx = if idx >= page.key_count() as usize { page.key_count() as usize - 1 } else { idx };
-            println!("After removal, checking idx {} of {}", idx, page.key_count());
+            if page.key_count() == 0 { break; }
+            if idx >= page.key_count() as usize { 
+                   assert_eq!(page.get_key_at(idx, scratch).is_err(), true);
+                   continue;
+            }
             let retrieved_key = page.get_key_at(idx, scratch).unwrap();
-            println!("Not  paniced");
             assert_ne!(retrieved_key, keys[idx].as_bytes());
             //let retrieved_child = page.read_child_at(idx + 1).unwrap();
             //assert_eq!(retrieved_child, children[idx]);
