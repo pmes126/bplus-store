@@ -62,14 +62,14 @@ where
                     .map_err(|e| crate::codec::CodecError::EncodeFailure {
                          msg: e.to_string(),
                     })?;
-                <DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::decode(page_raw)
+                <DefaultNodeCodec<KC, VC> as NodeCodec<K, V>>::decode(page_raw)
             }
             NodeView::Leaf { page } => {
                 let page_raw = page.to_bytes()
                     .map_err(|e| crate::codec::CodecError::EncodeFailure {
                          msg: e.to_string(),
                     })?;
-                <DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::decode(page_raw)
+                <DefaultNodeCodec<KC, VC> as NodeCodec<K, V>>::decode(page_raw)
             }
         }
     }

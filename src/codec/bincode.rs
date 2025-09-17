@@ -6,7 +6,6 @@ use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
 
-pub struct DefaultNodeCodec;
 pub struct NoopNodeViewCodec;
 
 const MAX_KEY_SIZE: usize = 256; // Maximum key size for internal nodes
@@ -84,6 +83,26 @@ impl KeyCodec<i64> for BeU64 {
         std::mem::size_of::<i64>()
     }
 }
+
+impl ValueCodec<i64> for BeU64 {
+    fn encode_value(v: &i64, out: &mut [u8]) -> Result<usize, CodecError> {
+        let size = std::mem::size_of::<i64>();
+        let t = (*v as u64) ^ 0x8000_0000_0000_0000u64;
+        out[..size].copy_from_slice(&t.to_be_bytes());
+        Ok(size)
+    }
+
+    fn decode_value(buf: &[u8]) -> Result<i64, CodecError> {
+        let u = u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?);
+        Ok((u ^ 0x8000_0000_0000_0000u64) as i64)
+    }
+
+    #[inline]
+    fn encoded_len(_value: &i64) -> usize {
+        std::mem::size_of::<i64>()
+    }
+}
+
 
 impl KeyCodec<String> for Utf8 {
     #[inline]
@@ -166,7 +185,51 @@ impl ValueCodec<Vec<u8>> for RawBuf {
     }
 }
 
-impl<K, V, KC, VC> NodeCodec<K, V, KC, VC> for DefaultNodeCodec
+// ---- Default Codec mappings ----
+// maps a K to its default KeyCodec<K>
+pub trait KeyCodecMap : Sized {
+    type Codec: KeyCodec<Self>;
+}
+
+// maps a V to its default ValueCodec<V>
+pub trait ValueCodecMap : Sized {
+    type Codec: ValueCodec<Self>;
+}
+
+// defaults:
+impl KeyCodecMap for u64 {
+    type Codec = BeU64;     // <- your default for u64
+}
+impl ValueCodecMap for u64 {
+    type Codec = BeU64;     // <- your default for u64
+}
+impl KeyCodecMap for i64 {
+    type Codec = BeU64;     // <- your default for i64
+}
+impl ValueCodecMap for i64 {
+    type Codec = BeU64;     // <- your default for i64
+}
+impl KeyCodecMap for String {
+    type Codec = Utf8; // example
+}
+impl ValueCodecMap for String {
+    type Codec = Utf8; // example
+}
+impl KeyCodecMap for Vec<u8> {
+    type Codec = RawBuf; // example
+}
+impl ValueCodecMap for Vec<u8> {
+    type Codec = RawBuf; // example
+}
+
+//=======NodeCodec implementation using default codecs for K and V =======
+// This codec uses the default KeyCodec and ValueCodec for K and V respectively
+pub struct DefaultNodeCodec<KC, VC> {
+    keyc: KC,
+    valc: VC,
+}
+
+impl<K, V, KC, VC> NodeCodec<K, V> for DefaultNodeCodec<KC, VC>
 where
     K: Ord + Clone,
     V: Clone,
@@ -190,7 +253,7 @@ where
                     values: Vec::new(),
                 };
 
-                if let Node::Leaf { keys, values } = &mut leaf {
+                if let Node::Leaf::<K, V> { keys, values } = &mut leaf {
                     for i in 0..page.key_count() as usize {
                         let (key_bytes, value_bytes) = page
                             .get_kv_at(i, scratch.as_mut())

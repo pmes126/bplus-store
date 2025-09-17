@@ -2,7 +2,7 @@
 use crate::api::TreeError;
 use crate::bplustree::node::{Node, NodeId};
 use crate::bplustree::{EpochManager, epoch::ReaderGuard};
-use crate::codec::{KeyCodec, ValueCodec};
+use crate::codec::bincode::{KeyCodecMap, ValueCodecMap};
 use crate::storage::NodeStorage;
 use std::sync::Arc;
 
@@ -11,13 +11,11 @@ struct TraversalFrame {
     index: usize,
 }
 
-pub struct BPlusTreeIter<'a, K, V, KC, VC, S>
+pub struct BPlusTreeIter<'a, K, V, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC>,
+    K: Clone + Ord + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V>,
 {
     storage: &'a S,
     current_leaf: Option<Node<K, V>>,
@@ -26,7 +24,6 @@ where
     end: K,
     stack: Vec<TraversalFrame>,
     reader_guard: ReaderGuard,
-    _phantom: std::marker::PhantomData<(KC, VC)>,
 }
 
 struct LeafCursor<'a, K, V> {
@@ -36,13 +33,11 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K, V, KC, VC, S> BPlusTreeIter<'a, K, V, KC, VC, S>
+impl<'a, K, V, S> BPlusTreeIter<'a, K, V, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC>,
+    K: Clone + Ord + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V>,
 {
     pub fn new(
         storage: &'a S,
@@ -59,7 +54,6 @@ where
             end: end.clone(),
             index: 0,
             reader_guard: epoch_mgr.pin(),
-            _phantom: std::marker::PhantomData,
         };
         let _ = iter.descend_to_leaf(root_id, Some(start));
         iter
@@ -105,13 +99,11 @@ where
     }
 }
 
-impl<'a, K, V, KC, VC, S> Iterator for BPlusTreeIter <'a, K, V, KC, VC, S>
+impl<'a, K, V, S> Iterator for BPlusTreeIter <'a, K, V, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC>,
+    K: Clone + Ord + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V>,
 {
     type Item = Result<(K, V), TreeError>;
 

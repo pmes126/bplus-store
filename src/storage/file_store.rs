@@ -2,7 +2,7 @@ use crate::bplustree::Node;
 use crate::bplustree::NodeView;
 use crate::codec::bincode::DefaultNodeCodec;
 use crate::codec::bincode::NoopNodeViewCodec;
-use crate::codec::{KeyCodec, NodeCodec, ValueCodec};
+use crate::codec::{KeyCodec, NodeCodec, ValueCodec, bincode::KeyCodecMap, bincode::ValueCodecMap};
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{
     METADATA_PAGE_1, METADATA_PAGE_2, MetadataPage, calculate_checksum, new_metadata_page,
@@ -109,25 +109,23 @@ impl<S: PageStorage> MetadataStorage for FileStore<S> {
     }
 }
 
-impl<S: PageStorage, K: Debug, V: Debug, KC, VC> NodeStorage<K, V, KC, VC> for FileStore<S>
+impl<S: PageStorage, K: Debug  + KeyCodecMap, V: Debug + ValueCodecMap> NodeStorage<K, V> for FileStore<S>
 where
     S: Send + Sync + 'static,
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
+    K: Clone + Ord + KeyCodec<K>,
+    V: Clone + ValueCodec<V>,
 {
     fn read_node(&self, page_id: u64) -> Result<Option<Node<K, V>>, StorageError>
     {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
 
-        Ok(Some(<DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::decode(&buf)?))
+        Ok(Some(<DefaultNodeCodec<K, V> as NodeCodec<K, V>>::decode(&buf)?))
     }
 
     fn write_node(&self, node: &Node<K, V>) -> Result<u64, StorageError>
     {
-        let buf = <DefaultNodeCodec as NodeCodec<K, V, KC, VC>>::encode(node)?;
+        let buf = <DefaultNodeCodec<K::Codec, V::Codec> as NodeCodec<K, V>>::encode(node)?;
         let res = self.store.write_page(&buf)?;
         Ok(res)
     }

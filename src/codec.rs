@@ -5,12 +5,12 @@ use crate::layout::PAGE_SIZE;
 use thiserror::Error;
 
 // Trait for node storage trasnformation
-pub trait KeyCodec<K: ?Sized + ToOwned> {
+pub trait KeyCodec<K> {
     /// Append an order-preserving encoding of `key` to `out`.
     fn encode_key(key: &K, out: &mut [u8]) -> Result<usize, CodecError>;
 
     /// Decode from the exact encoded key bytes.
-    fn decode_key(bytes: &[u8]) -> Result<<K as ToOwned>::Owned, CodecError>;
+    fn decode_key(bytes: &[u8]) -> Result<K, CodecError>;
 
     /// Compare two *encoded* keys. Default: bytewise lexicographic.
     fn compare_encoded(a: &[u8], b: &[u8]) -> core::cmp::Ordering { a.cmp(b) }
@@ -19,24 +19,30 @@ pub trait KeyCodec<K: ?Sized + ToOwned> {
     fn encoded_len(key: &K) -> usize;
 }
 
-pub trait ValueCodec<V: ?Sized + ToOwned> {
+pub trait ValueCodec<V> {
     fn encode_value( value: &V, out: &mut [u8]) -> Result<usize, CodecError>;
-    fn decode_value( bytes: &[u8]) -> Result<<V as ToOwned>::Owned, CodecError>;
+    fn decode_value( bytes: &[u8]) -> Result<V, CodecError>;
     fn encoded_len(value: &V) -> usize;
 }
 
+// 2) Codec knows how to turn bytes <-> Node<K,V>
+pub trait NodeCodec<K, V>
+{
+    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
+    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
+}
 
 /// Trait for encoding/decoding nodes to/from fixed-size pages
-pub trait NodeCodec<K, V, KC, VC>: Send + Sync + 'static
-where
-    K:  ToOwned,
-    V:  ToOwned,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-{
-    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
-    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
-}
+//pub trait NodeCodec<K, V, KC, VC>: Send + Sync + 'static
+//where
+//    K:  ToOwned,
+//    V:  ToOwned,
+//    KC: KeyCodec<K>,
+//    VC: ValueCodec<V>,
+//{
+//    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
+//    fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
+//}
 
 #[derive(Debug, Error)]
 pub enum CodecError {

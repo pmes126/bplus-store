@@ -8,12 +8,14 @@ use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{CodecError, KeyCodec, ValueCodec};
+use crate::codec::{CodecError, KeyCodec, ValueCodec, bincode::{KeyCodecMap, ValueCodecMap}};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
+use crate::storage::file_store::FileStore;
+use crate::storage::PageStorage;
 use std::result::Result;
 use thiserror::Error;
 
@@ -119,15 +121,22 @@ pub struct BaseVersion {
     pub committed_ptr: *const Metadata,
 }
 
+pub struct TreeConfig {
+    pub page_size: usize,              // 4096 default (runtime, don't const-generic this yet)
+    pub key_format_id: u8,             // 0=Raw, 1=Raw+Restarts, 2=Prefix+Restarts (or whatever mapping)
+    pub restart_interval: u16,         // used by Prefix; ignored by others (or constrain via keyfmt)
+    pub target_fill_bytes: usize,      // split/merge by bytes, not count
+}
+
+type KC<K> = <K as KeyCodecMap>::Codec;
+type VC<V> = <V as ValueCodecMap>::Codec;
 
 /// B+ tree structure with generic key and value types, and a storage backend
-pub struct BPlusTree<K, V, KC, VC, S>
+pub struct BPlusTree<K, V, S>
 where
-    K: Ord + ToOwned,
-    V: ToOwned,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone + KeyCodecMap,
+    V: ToOwned + ValueCodecMap,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     max_keys: usize,
     min_internal_keys: usize,
@@ -138,7 +147,7 @@ where
     txn_id: AtomicU64,            // Slot of metadata storage
     committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
     // Phantom data to hold the types of keys and values
-    phantom: std::marker::PhantomData<(K, V, KC, VC)>,
+    phantom: std::marker::PhantomData<(K, V)>,
 }
 
 #[derive(Default)]
@@ -184,22 +193,20 @@ pub struct WriteResult {
     pub new_size: usize,
 }
 
-pub struct SharedBPlusTree<K, V, KC, VC, S>
+pub struct SharedBPlusTree<K, V, S>
 where
-    K: Ord + Clone,
-    V: Clone,
-    KC: KeyCodec<K>, VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
-    inner: Arc<BPlusTree<K, V, KC, VC, S>>,
+    inner: Arc<BPlusTree<K, V, S>>,
 }
 
-impl<K, V, KC, VC, S> Clone for SharedBPlusTree<K, V, KC, VC, S>
+impl<K, V, S> Clone for SharedBPlusTree<K, V, S>
 where
-    K: Ord + Clone,
-    V: Clone,
-    KC: KeyCodec<K>, VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+    K: Ord + Clone + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -208,20 +215,19 @@ where
     }
 }
 
-impl<K: Debug, V: Debug, KC, VC, S> SharedBPlusTree<K, V, KC, VC, S>
+impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>, VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord  + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(tree: BPlusTree<K, V, KC, VC, S>) -> Self {
+    pub fn new(tree: BPlusTree<K, V, S>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
     }
 
-    pub fn from_arc(tree: Arc<BPlusTree<K, V, KC, VC, S>>) -> Self {
+    pub fn from_arc(tree: Arc<BPlusTree<K, V, S>>) -> Self {
         Self { inner: tree }
     }
 
@@ -318,7 +324,7 @@ where
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
 
-    pub fn arc(&self) -> Arc<BPlusTree<K, V, KC, VC, S>> {
+    pub fn arc(&self) -> Arc<BPlusTree<K, V, S>> {
         Arc::clone(&self.inner)
     }
 
@@ -338,7 +344,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         self.inner.search_range(root_id, start, end)
     }
 
@@ -346,7 +352,7 @@ where
         &'a self,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         let root_id = self.inner.get_root_id();
         self.inner.search_range(root_id, start, end)
     }
@@ -361,14 +367,14 @@ where
 }
 
 // BPlusTree implementation
-impl<K: Debug, V: Debug, KC, VC, S> BPlusTree<K, V, KC, VC, S>
+impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
 where
-    K: Clone + Ord,
-    V: Clone,
-    KC: KeyCodec<K>, VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+    K: Clone + Ord + KeyCodecMap,
+    V: Clone + ValueCodecMap,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
-    pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, KC, VC, S>, TreeError> {
+
+    pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
             keys: Vec::with_capacity(order),
             values: Vec::with_capacity(order),
@@ -417,7 +423,7 @@ where
         })
     }
 
-    pub fn load(storage: S) -> Result<BPlusTree<K, V, KC, VC, S>, TreeError> {
+    pub fn load(storage: S) -> Result<BPlusTree<K, V, S>, TreeError> {
         println!("Loading B+ tree with root ID from storage");
         let md = storage.get_metadata()?;
         let md_ptr = Box::new(md);
@@ -508,9 +514,14 @@ where
     ) -> Result<(Vec<PathNode>, bool), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
+        <KC<K> as KeyCodec<K>>::encode_key(key, &mut []).map_err(|e| {
+            TreeError::Codec(CodecError::EncodeFailure {
+                msg: e.to_string(),
+            })
+        })?;
 
-        let mut encode_buf = vec![0u8; KC::encoded_len(key)];
-        KC::encode_key(key, encode_buf.as_mut())
+        let mut encode_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(key)];
+        <KC<K> as KeyCodec<K>>::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
@@ -576,11 +587,11 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        let mut key_buf = vec![0u8; KC::encoded_len(&key)];
-        let mut val_buf = vec![0u8; VC::encoded_len(&value)];
-        KC::encode_key(&key, key_buf.as_mut())
+        let mut key_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(&key)];
+        let mut val_buf = vec![0u8; <VC<V> as ValueCodec<V>>::encoded_len(&value)];
+        <KC<K> as KeyCodec<K>>::encode_key(&key, key_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-        VC::encode_value(&value, val_buf.as_mut())
+        <VC<V> as ValueCodec<V>>::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
 
         let _guard = self.epoch_mgr.pin();
@@ -650,7 +661,7 @@ where
             let split_idx = mid; // Index to split the keys and values
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
-            let k = KC::decode_key(split_key.as_ref())?;
+            let k = <KC<K> as KeyCodec<K>>::decode_key(split_key.as_ref())?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: leaf_node,
@@ -880,8 +891,8 @@ where
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; KC::encoded_len(key)];
-        KC::encode_key(key, encode_buf.as_mut())?;
+        let mut encode_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(key)];
+        <KC<K> as KeyCodec<K>>::encode_key(key, encode_buf.as_mut())?;
         // Find insertion point
         loop {
             match self
@@ -896,7 +907,7 @@ where
                                 let Some(vb) = node.value_bytes_at(i)? else {
                                     return Ok(None);
                                 };
-                                let value = VC::decode_value(vb)?;
+                                let value = <VC<V> as ValueCodec<V>>::decode_value(vb)?;
                                 return Ok(Some(value));
                             }
                             Err(_i) => { 
@@ -938,7 +949,7 @@ where
         root_id: NodeId,
         start: &K,
         end: &K,
-    ) -> Result<Option<BPlusTreeIter<'a, K, V, KC, VC, S>>, TreeError> {
+    ) -> Result<Option<BPlusTreeIter<'a, K, V, S>>, TreeError> {
         if start > end {
             return Ok(None); // Invalid range
         }
@@ -1014,7 +1025,7 @@ where
         }
 
         // materialize the leaf node for easy underflow handling
-        let node = Node::from_node_view::<KC, VC>(leaf_node)?;
+        let node = Node::from_node_view::<KC<K>, VC<V>>(leaf_node)?;
         let new_root_id = self.handle_underflow(path, node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
     }

@@ -1,5 +1,5 @@
 use crate::bplustree::{Node, NodeId, NodeView};
-use crate::codec::CodecError;
+use crate::codec::{CodecError, bincode::KeyCodecMap, bincode::ValueCodecMap};
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
 use anyhow::Result;
@@ -64,10 +64,15 @@ pub trait PageStorage {
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
 }
 
-pub trait NodeStorage<K, V, KC, VC>: Send + Sync + 'static
+pub trait NodeStorage<
+    K,
+    V,
+    KC = <K as KeyCodecMap>::Codec,   // default KC comes from K
+    VC = <V as ValueCodecMap>::Codec, // default VC comes from V
+>: Send + Sync + 'static
 where
-    K: ToOwned,
-    V: ToOwned,
+    K: Ord + Clone + KeyCodecMap,
+    V: ValueCodecMap,
     KC: crate::codec::KeyCodec<K>,
     VC: crate::codec::ValueCodec<V>,
 {

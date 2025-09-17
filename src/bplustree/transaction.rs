@@ -1,5 +1,6 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::storage::{MetadataStorage, NodeStorage};
+use crate::codec::bincode::{KeyCodecMap, ValueCodecMap};
 use anyhow::Result;
 
 use std::fmt::Debug;
@@ -30,14 +31,12 @@ where
 
 impl<K: Debug, V: Debug> WriteTransaction<K, V>
 where
-    K: Clone + Ord,
-    V: Clone,
+    K: Clone + Ord + KeyCodecMap,
+    V: Clone + ValueCodecMap,
 {
-    pub fn new<KC, VC, S>(tree: SharedBPlusTree<K, V, KC, VC, S>) -> Self
+    pub fn new<S>(tree: SharedBPlusTree<K, V, S>) -> Self
     where
-        KC: crate::codec::KeyCodec<K>,
-        VC: crate::codec::ValueCodec<V>,
-        S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
     {
         Self {
             staged_update: {
@@ -75,11 +74,9 @@ where
     }
 
     // Replay staged ops from base/root; tree handles encoding inside.
-    pub fn commit<KC, VC, S>(&mut self, tree: &SharedBPlusTree<K, V, KC, VC, S>) -> Result<TxnStatus>
+    pub fn commit<S>(&mut self, tree: &SharedBPlusTree<K, V, S>) -> Result<TxnStatus>
     where
-        KC: crate::codec::KeyCodec<K>,
-        VC: crate::codec::ValueCodec<V>,
-        S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
     {
         for _ in 0..MAX_COMMIT_RETRIES {
             // Rebuild speculative state by replaying changes from the saved base root.
