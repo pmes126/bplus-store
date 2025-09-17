@@ -1,3 +1,16 @@
+//! page::internal — slotted internal page with pluggable key-block format.
+//!
+//! Layout (in a PAGE_SIZE buffer):
+//! [ header ][ KEY BLOCK ][ CHILDREN ARRAY ][ free ... ]
+//             ^ keys_end      ^ children_end
+//!             keys_end = HEADER + key_block_len
+//!             children_end = keys_end + (key_count + 1) * CHILD_ID_SIZE
+//!
+//! Invariants:
+//! - keys_end <= children_start
+//! - children_end <= PAGE_SIZE
+//! - key_count == number of slots
+
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::PageError;
@@ -17,8 +30,6 @@ fn write_u64_le(buf: &mut [u8], off: usize, v: u64) {
     buf[off..off + std::mem::size_of::<u64>()].copy_from_slice(&b); // <-- write only the 8 bytes at `off`
 }
 
-//[ header ][ KEY BLOCK ][ CHILDREN ARRAY ][ free ... ]
-//             ^ keys_end      ^ children_end
 #[repr(C)]
 #[derive(Clone, Copy, AsBytes, FromZeroes, FromBytes, Debug)]
 pub struct Header {
@@ -40,7 +51,6 @@ pub struct InternalPage{
     header: Header,
     buf: [u8; BUFFER_SIZE],
 }
-
 
 impl InternalPage {
     pub fn new(keyfmt_id: u8) -> Self {
@@ -168,7 +178,7 @@ impl InternalPage {
         Ok(())
      }
 
-    // Delete the separator at index `idx` (and child at `idx+1`)
+    /// Delete the separator at index `idx` (and child at `idx+1`)
     pub fn delete_separator(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize { return Err(PageError::IndexOutOfBounds {} ); }
         let mut scratch = Vec::new();

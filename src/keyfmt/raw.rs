@@ -52,6 +52,8 @@ impl KeyBlockFormat for RawFormat {
         start..end
     }
 
+    /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
+    /// found with the insertion index.
     fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         // classic binary search over entries
         let mut lo = 0usize;
@@ -68,6 +70,7 @@ impl KeyBlockFormat for RawFormat {
         Err(lo)
     }
 
+    #[inline]
     fn get_insert_delta(&self, blk: &[u8], idx: usize, new_key: &[u8], _sc: &mut Vec<u8>) -> isize {
         let new_len = LEN_SIZE + new_key.len();
         let old_len = if idx < self.count(blk) {
@@ -77,6 +80,7 @@ impl KeyBlockFormat for RawFormat {
         new_len as isize - old_len as isize
     }
 
+    #[inline]
     fn get_delete_delta(&self, blk: &[u8], idx: usize, _sc: &mut Vec<u8>) -> isize {
         let r = self.entry_range(blk, idx);
         -(r.end as isize - r.start as isize)
@@ -98,6 +102,7 @@ impl KeyBlockFormat for RawFormat {
         (start..start, bytes) // Δk = bytes.len()
     }
 
+    #[inline]
     fn delete_plan(&self, block: &[u8], idx: usize, _scratch: &mut Vec<u8>) -> (std::ops::Range<usize>, Vec<u8>) {
         // Just remove this entry’s bytes; no replacement.
         (self.entry_range(block, idx), Vec::new())
@@ -107,12 +112,14 @@ impl KeyBlockFormat for RawFormat {
         // Raw has no metadata to adjust.
     }
 
+    #[inline]
     fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &'s mut Vec<u8>) -> &'s [u8] {
         let r = self.entry_range(blk, i);
         // SAFETY: caller holds block; we return a subslice into it
         unsafe { &*(&blk[r.start+LEN_SIZE..r.end] as *const [u8]) }
     }
 
+    #[inline]
     fn encode_all(&self, keys: &[&[u8]], out: &mut Vec<u8>) {
         out.clear();
         for k in keys {

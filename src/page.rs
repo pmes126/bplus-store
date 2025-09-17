@@ -1,7 +1,7 @@
-pub mod internal_page;
+pub mod internal;
 pub mod leaf;
 
-pub use internal_page::InternalPage;
+pub use internal::InternalPage;
 pub use leaf::LeafPage;
 
 pub const LEAF_NODE_TAG: u8 = 1;
