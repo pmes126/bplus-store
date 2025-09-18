@@ -148,7 +148,7 @@ impl MetadataStorage for TestStorage {
 
 impl<K, V> NodeStorage<K, V> for TestStorage
 where
-    K: Ord+ Clone,
+    K: Ord + Clone,
     V: Clone,
     (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {

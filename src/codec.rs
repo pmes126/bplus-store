@@ -11,14 +11,16 @@ pub trait KeyCodec<K> {
     /// Decode from the exact encoded key bytes.
     fn decode_key(bytes: &[u8]) -> Result<K, CodecError>;
     /// Compare two *encoded* keys. Default: bytewise lexicographic.
-    fn compare_encoded(a: &[u8], b: &[u8]) -> core::cmp::Ordering { a.cmp(b) }
+    fn compare_encoded(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
+        a.cmp(b)
+    }
     /// Return the length of the encoded key.
     fn encoded_len(key: &K) -> usize;
 }
 
 pub trait ValueCodec<V> {
-    fn encode_value( value: &V, out: &mut [u8]) -> Result<usize, CodecError>;
-    fn decode_value( bytes: &[u8]) -> Result<V, CodecError>;
+    fn encode_value(value: &V, out: &mut [u8]) -> Result<usize, CodecError>;
+    fn decode_value(bytes: &[u8]) -> Result<V, CodecError>;
     fn encoded_len(value: &V) -> usize;
 }
 
@@ -26,8 +28,7 @@ pub type DefaultKC<K> = <() as KeyCodecDefault<K>>::Codec;
 pub type DefaultVC<V> = <() as ValueCodecDefault<V>>::Codec;
 
 // 2) Codec knows how to turn bytes <-> Node<K,V>
-pub trait NodeCodec<K, V>
-{
+pub trait NodeCodec<K, V> {
     fn decode(buf: &[u8; PAGE_SIZE]) -> Result<Node<K, V>, CodecError>;
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>;
 }
@@ -67,7 +68,7 @@ pub enum CodecError {
     },
 
     #[error("Truncated slice")]
-    Truncated{},
+    Truncated {},
 
     #[error("IO error: {source}")]
     Io {

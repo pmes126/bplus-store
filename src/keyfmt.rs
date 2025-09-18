@@ -3,14 +3,16 @@ pub mod raw;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyFmtError {
-    #[error("truncated")] Truncated,
-    #[error("corrupt: {0}")] Corrupt(&'static str),
+    #[error("truncated")]
+    Truncated,
+    #[error("corrupt: {0}")]
+    Corrupt(&'static str),
 }
 
 pub trait KeyBlockFormat: Send + Sync + 'static {
     /// Stable on-disk id; store this in the page header.
     fn format_id(&self) -> u8;
- 
+
     // -----------layout / capacity--------
     // -----------lookups / scans (read-only)--------
     /// Binary search in the key block; returns (insertion idx, found).
@@ -24,7 +26,13 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
     // ---------- plan phase (no mutation) ----------
     /// Byte delta if we insert `new_key` at logical index `idx`.
     /// Positive = grows, negative = shrinks.
-    fn get_insert_delta(&self, block: &[u8], idx: usize, new_key: &[u8], scratch: &mut Vec<u8>) -> isize;
+    fn get_insert_delta(
+        &self,
+        block: &[u8],
+        idx: usize,
+        new_key: &[u8],
+        scratch: &mut Vec<u8>,
+    ) -> isize;
     /// Byte delta if we delete the key at `idx`.
     fn get_delete_delta(&self, block: &[u8], idx: usize, scratch: &mut Vec<u8>) -> isize;
     /// Re-encode the entire block from a sorted list of encoded keys.
@@ -66,13 +74,7 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
     /// - Prefix+Restarts: left = prefix of entries (no change); right = make entry `idx` a restart
     ///   (re-encode *only* that first right entry), keep subsequent entry bytes as-is, and rebuild
     ///   the right restart table relative to the new block. No need to decode all keys.
-    fn split_into(
-        &self,
-        block: &[u8],
-        idx: usize,
-        left_out: &mut Vec<u8>,
-        right_out: &mut Vec<u8>,
-    );
+    fn split_into(&self, block: &[u8], idx: usize, left_out: &mut Vec<u8>, right_out: &mut Vec<u8>);
 }
 
 /// Runtime-configurable enum (handy for TreeConfig);
@@ -86,10 +88,12 @@ impl KeyFormat {
     pub fn as_dyn(&self) -> &dyn KeyBlockFormat {
         match self {
             KeyFormat::Raw(f) => f,
-          // KeyFormat::Prefix(f) => f,
+            // KeyFormat::Prefix(f) => f,
         }
     }
-    pub fn id(&self) -> u8 { self.as_dyn().format_id() }
+    pub fn id(&self) -> u8 {
+        self.as_dyn().format_id()
+    }
 }
 
 /// Static singletons → used by pages to resolve `key_format_id`

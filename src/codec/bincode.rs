@@ -1,5 +1,7 @@
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{CodecError, KeyCodec, NodeCodec, ValueCodec, KeyCodecDefault, ValueCodecDefault};
+use crate::codec::{
+    CodecError, KeyCodec, KeyCodecDefault, NodeCodec, ValueCodec, ValueCodecDefault,
+};
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
@@ -8,14 +10,14 @@ use crate::page::LeafPage;
 
 pub struct NoopNodeViewCodec;
 
-const MAX_KEY_SIZE: usize = 256; // Maximum key size for internal nodes
-const MAX_VAL_SIZE: usize = 256; // Maximum key size for internal nodes
+// initial capacity for encoding buffers
+const INIT_ENC_CAP: usize = 256;
 
 pub struct BeU64;
 pub struct Utf8;
 pub struct RawBuf;
 
-const KEY_FORMAT : u8 = 0u8;
+const KEY_FORMAT: u8 = 0u8;
 
 impl KeyCodec<u64> for BeU64 {
     fn encode_key(key: &u64, out: &mut [u8]) -> Result<usize, CodecError> {
@@ -25,7 +27,10 @@ impl KeyCodec<u64> for BeU64 {
     }
 
     fn decode_key(buf: &[u8]) -> Result<u64, CodecError> {
-        Ok(u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?))
+        Ok(u64::from_be_bytes(
+            buf.try_into()
+                .map_err(|e| CodecError::FromSliceError { source: e })?,
+        ))
     }
 
     #[inline]
@@ -49,7 +54,10 @@ impl ValueCodec<u64> for BeU64 {
     }
 
     fn decode_value(buf: &[u8]) -> Result<u64, CodecError> {
-        Ok(u64::from_le_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?))
+        Ok(u64::from_le_bytes(
+            buf.try_into()
+                .map_err(|e| CodecError::FromSliceError { source: e })?,
+        ))
     }
 
     #[inline]
@@ -67,7 +75,10 @@ impl KeyCodec<i64> for BeU64 {
     }
 
     fn decode_key(buf: &[u8]) -> Result<i64, CodecError> {
-        let u = u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?);
+        let u = u64::from_be_bytes(
+            buf.try_into()
+                .map_err(|e| CodecError::FromSliceError { source: e })?,
+        );
         Ok((u ^ 0x8000_0000_0000_0000u64) as i64)
     }
 
@@ -93,7 +104,10 @@ impl ValueCodec<i64> for BeU64 {
     }
 
     fn decode_value(buf: &[u8]) -> Result<i64, CodecError> {
-        let u = u64::from_be_bytes(buf.try_into().map_err(|e| CodecError::FromSliceError { source: e })?);
+        let u = u64::from_be_bytes(
+            buf.try_into()
+                .map_err(|e| CodecError::FromSliceError { source: e })?,
+        );
         Ok((u ^ 0x8000_0000_0000_0000u64) as i64)
     }
 
@@ -102,7 +116,6 @@ impl ValueCodec<i64> for BeU64 {
         std::mem::size_of::<i64>()
     }
 }
-
 
 impl KeyCodec<String> for Utf8 {
     #[inline]
@@ -115,7 +128,8 @@ impl KeyCodec<String> for Utf8 {
     // We need to copy the bytes to a Vec to ensure they are owned
     #[inline]
     fn decode_key(buf: &[u8]) -> Result<String, CodecError> {
-        String::from_utf8(buf.to_vec()).map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
+        String::from_utf8(buf.to_vec())
+            .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
     }
 
     #[inline]
@@ -137,7 +151,8 @@ impl ValueCodec<String> for Utf8 {
     }
 
     fn decode_value(buf: &[u8]) -> Result<String, CodecError> {
-        String::from_utf8(buf.to_vec()).map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
+        String::from_utf8(buf.to_vec())
+            .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })
     }
 
     #[inline]
@@ -187,24 +202,42 @@ impl ValueCodec<Vec<u8>> for RawBuf {
 
 // ---- Default Codec mappings ----
 
-impl KeyCodecDefault<u64> for () { type Codec = BeU64; }
-impl ValueCodecDefault<u64> for () { type Codec = BeU64; }
-impl KeyCodecDefault<i64> for () { type Codec = BeU64; }
-impl ValueCodecDefault<i64> for () { type Codec = BeU64; }
-impl KeyCodecDefault<String> for () { type Codec = Utf8; }
-impl ValueCodecDefault<String> for () { type Codec = Utf8; }
-impl KeyCodecDefault<Vec<u8>> for () { type Codec = RawBuf; }
-impl ValueCodecDefault<Vec<u8>> for () { type Codec = RawBuf; }
+impl KeyCodecDefault<u64> for () {
+    type Codec = BeU64;
+}
+impl ValueCodecDefault<u64> for () {
+    type Codec = BeU64;
+}
+
+impl KeyCodecDefault<i64> for () {
+    type Codec = BeU64;
+}
+impl ValueCodecDefault<i64> for () {
+    type Codec = BeU64;
+}
+
+impl KeyCodecDefault<String> for () {
+    type Codec = Utf8;
+}
+impl ValueCodecDefault<String> for () {
+    type Codec = Utf8;
+}
+
+impl KeyCodecDefault<Vec<u8>> for () {
+    type Codec = RawBuf;
+}
+impl ValueCodecDefault<Vec<u8>> for () {
+    type Codec = RawBuf;
+}
 
 type DefaultKC<K> = <() as KeyCodecDefault<K>>::Codec;
 type DefaultVC<V> = <() as ValueCodecDefault<V>>::Codec;
 
-
 //=======NodeCodec implementation using default codecs for K and V =======
 // This codec uses the default KeyCodec and ValueCodec for K and V respectively
 pub struct DefaultNodeCodec<KC, VC> {
-    keyc: KC,
-    valc: VC,
+    _marker_k: std::marker::PhantomData<KC>,
+    _marker_v: std::marker::PhantomData<VC>,
 }
 
 impl<K, V, KC, VC> NodeCodec<K, V> for DefaultNodeCodec<KC, VC>
@@ -220,7 +253,7 @@ where
                 .try_into()
                 .map_err(|e| CodecError::FromSliceError { source: e })?,
         );
-        let scratch: &mut Vec<u8> = &mut Vec::with_capacity(MAX_KEY_SIZE);
+        let scratch: &mut Vec<u8> = &mut Vec::with_capacity(INIT_ENC_CAP);
         match node_type {
             LEAF_NODE_TAG => {
                 // Leaf node
@@ -250,37 +283,36 @@ where
                     keys: Vec::with_capacity(page.key_count() as usize),
                     children: Vec::with_capacity(page.key_count() as usize + 1), // +1 for rightmost child
                 };
-                let scratch: &mut Vec<u8> = &mut Vec::with_capacity(MAX_KEY_SIZE);
+                let scratch: &mut Vec<u8> = &mut Vec::with_capacity(INIT_ENC_CAP);
                 if let Node::Internal { keys, children } = &mut internal {
                     for i in 0..page.key_count() as usize {
-                        let key_bytes = page.get_key_at(i, scratch.as_mut())
+                        let key_bytes = page
+                            .get_key_at(i, scratch.as_mut())
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         keys.push(KC::decode_key(key_bytes)?);
                     }
-                    for i in 0..page.key_count() as usize  + 1 {
-                        let child_ptr = page.read_child_at(i)
+                    for i in 0..page.key_count() as usize + 1 {
+                        let child_ptr = page
+                            .read_child_at(i)
                             .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                         children.push(child_ptr);
                     }
                 }
                 Ok(internal)
             }
-            _ => {
-                Err(CodecError::DecodeFailure {
+            _ => Err(CodecError::DecodeFailure {
                 msg: "Invalid node type tag in page".to_string(),
-            })
-            }
+            }),
         }
     }
 
-    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError>
-    {
+    fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
             Node::Leaf { keys, values } => {
                 let mut page = LeafPage::new(KEY_FORMAT);
                 {
-                    let mut encode_buf_key: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
-                    let mut encode_buf_val: Vec<u8> = Vec::with_capacity(MAX_VAL_SIZE);
+                    let mut encode_buf_key: Vec<u8> = Vec::with_capacity(INIT_ENC_CAP);
+                    let mut encode_buf_val: Vec<u8> = Vec::with_capacity(INIT_ENC_CAP);
                     for (key_ref, value_ref) in keys.iter().zip(values.iter()) {
                         encode_buf_key.resize(KC::encoded_len(key_ref), 0);
                         encode_buf_val.resize(VC::encoded_len(value_ref), 0);
@@ -298,12 +330,14 @@ where
             }
             Node::Internal { keys, children } => {
                 let mut page = InternalPage::new(KEY_FORMAT);
-                let leftmost_child = children.first().ok_or(CodecError::EncodeFailure { msg: "Internal node must have at least one child".to_string() })?;
+                let leftmost_child = children.first().ok_or(CodecError::EncodeFailure {
+                    msg: "Internal node must have at least one child".to_string(),
+                })?;
                 page.write_child_at(0, *leftmost_child)
                     .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
                 let child_iter = children.iter().skip(1);
 
-                let mut encode_buf: Vec<u8> = Vec::with_capacity(MAX_KEY_SIZE);
+                let mut encode_buf: Vec<u8> = Vec::with_capacity(INIT_ENC_CAP);
                 for (idx, (key_ref, child)) in keys.iter().zip(child_iter).enumerate() {
                     encode_buf.resize(KC::encoded_len(key_ref), 0);
                     KC::encode_key(key_ref, encode_buf.as_mut())
@@ -337,11 +371,9 @@ impl NoopNodeViewCodec {
                     .map_err(|e| CodecError::DecodeFailure { msg: e.to_string() })?;
                 Ok(NodeView::Internal { page: *page })
             }
-            _ => 
-            {
-                Err(CodecError::DecodeFailure {
-                msg: "Invalid node type tag in page".to_string() })
-            }
+            _ => Err(CodecError::DecodeFailure {
+                msg: "Invalid node type tag in page".to_string(),
+            }),
         }
     }
 
@@ -401,8 +433,10 @@ mod tests {
             keys: vec![1u64, 2, 3],
             values: vec![10u64, 20, 30],
         };
-        let encoded_page = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
-        let decoded_node = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
+        let encoded_page =
+            <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
+        let decoded_node =
+            <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
         assert_eq!(node.get_keys(), decoded_node.get_keys());
     }
 
@@ -412,11 +446,17 @@ mod tests {
             keys: vec![1u64, 2, 3, 4],
             children: vec![100u64, 200, 300, 400, 500],
         };
-        let encoded_page = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
-        let decoded_node = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
+        let encoded_page =
+            <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
+        let decoded_node =
+            <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
         assert_eq!(node.get_keys(), decoded_node.get_keys());
         if let Node::Internal { children, .. } = &node {
-            if let Node::Internal { children: decoded_children, .. } = &decoded_node {
+            if let Node::Internal {
+                children: decoded_children,
+                ..
+            } = &decoded_node
+            {
                 assert_eq!(children, decoded_children);
             } else {
                 panic!("Decoded node is not internal");

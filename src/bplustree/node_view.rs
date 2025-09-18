@@ -53,9 +53,10 @@ impl NodeView {
     #[inline]
     pub fn child_ptr_at(&self, idx: usize) -> Result<Option<u64>> {
         match self {
-            NodeView::Internal { page } => {
-                page.read_child_at(idx).map(Some).map_err(|e| anyhow::anyhow!(e))
-            }
+            NodeView::Internal { page } => page
+                .read_child_at(idx)
+                .map(Some)
+                .map_err(|e| anyhow::anyhow!(e)),
             NodeView::Leaf { .. } => Ok(None), // Leaf pages don't have children, but we return 0
         }
     }
@@ -143,10 +144,9 @@ impl NodeView {
             NodeView::Internal { .. } => Err(anyhow::anyhow!(
                 "Internal nodes do not store values, cannot insert"
             )),
-            NodeView::Leaf { page } => {
-                page.insert_at(idx, key, value)
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
+            NodeView::Leaf { page } => page
+                .insert_at(idx, key, value)
+                .map_err(|e| anyhow::anyhow!(e)),
         }
     }
 
@@ -157,10 +157,9 @@ impl NodeView {
             NodeView::Internal { .. } => Err(anyhow::anyhow!(
                 "Internal nodes do not store values, cannot replace"
             )),
-            NodeView::Leaf { page } => {
-                page.overwrite_value_at(idx, value)
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
+            NodeView::Leaf { page } => page
+                .overwrite_value_at(idx, value)
+                .map_err(|e| anyhow::anyhow!(e)),
         }
     }
 
@@ -171,9 +170,7 @@ impl NodeView {
             NodeView::Internal { .. } => Err(anyhow::anyhow!(
                 "Internal nodes do not store values, cannot replace"
             )),
-            NodeView::Leaf { page } => {
-                page.delete_at(idx).map_err(|e| anyhow::anyhow!(e))
-            }
+            NodeView::Leaf { page } => page.delete_at(idx).map_err(|e| anyhow::anyhow!(e)),
         }
     }
 
@@ -197,7 +194,8 @@ impl NodeView {
             }
             NodeView::Leaf { page } => {
                 let mut new_page = LeafPage::new(page.fmt().format_id());
-                page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
+                page.split_off_into(idx, &mut new_page)
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
             }
         }
@@ -207,9 +205,9 @@ impl NodeView {
     pub fn replace_child_at(&mut self, idx: usize, child_ptr: u64) -> Result<(), anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                 let child_idx = idx;
-                 page.replace_child_at(child_idx, child_ptr)
-                     .map_err(|e| anyhow::anyhow!(e))
+                let child_idx = idx;
+                page.replace_child_at(child_idx, child_ptr)
+                    .map_err(|e| anyhow::anyhow!(e))
             }
             NodeView::Leaf { .. } => Err(anyhow::anyhow!(
                 "Leaf nodes do not have children to replace"

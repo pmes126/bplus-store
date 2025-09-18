@@ -98,7 +98,7 @@ where
     }
 }
 
-impl<'a, K, V, S> Iterator for BPlusTreeIter <'a, K, V, S>
+impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
 where
     K: Clone + Ord,
     V: Clone,

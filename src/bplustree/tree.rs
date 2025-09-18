@@ -13,8 +13,8 @@ use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
-use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use crate::storage::PageStorage;
+use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::result::Result;
 use thiserror::Error;
 
@@ -121,10 +121,10 @@ pub struct BaseVersion {
 }
 
 pub struct TreeConfig {
-    pub page_size: usize,              // 4096 default (runtime, don't const-generic this yet)
-    pub key_format_id: u8,             // 0=Raw, 1=Raw+Restarts, 2=Prefix+Restarts (or whatever mapping)
-    pub restart_interval: u16,         // used by Prefix; ignored by others (or constrain via keyfmt)
-    pub target_fill_bytes: usize,      // split/merge by bytes, not count
+    pub page_size: usize,  // 4096 default (runtime, don't const-generic this yet)
+    pub key_format_id: u8, // 0=Raw, 1=Raw+Restarts, 2=Prefix+Restarts (or whatever mapping)
+    pub restart_interval: u16, // used by Prefix; ignored by others (or constrain via keyfmt)
+    pub target_fill_bytes: usize, // split/merge by bytes, not count
 }
 
 /// B+ tree structure with generic key and value types, and a storage backend
@@ -369,7 +369,6 @@ where
     V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
-
     pub fn new(storage: S, order: usize) -> Result<BPlusTree<K, V, S>, TreeError> {
         let root_node = Node::Leaf {
             keys: Vec::with_capacity(order),
@@ -500,7 +499,6 @@ where
         Ok(new_id)
     }
 
-
     // Returns the path of where a key should be inserted, without decoding the nodes for
     // efficiency.
     pub fn get_insertion_path(
@@ -510,13 +508,8 @@ where
     ) -> Result<(Vec<PathNode>, bool), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
-        S::KC::encode_key(key, &mut []).map_err(|e| {
-            TreeError::Codec(CodecError::EncodeFailure {
-                msg: e.to_string(),
-            })
-        })?;
-
         let mut encode_buf = vec![0u8; S::KC::encoded_len(key)];
+
         S::KC::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
@@ -574,7 +567,6 @@ where
         self.insert_inner(key, value, root_id, track)
     }
 
-
     // Inserts a key-value pair into the B+ tree.
     pub fn insert_inner(
         &self,
@@ -595,15 +587,9 @@ where
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
         })?;
-        let mut leaf_node = self
-            .storage
-            .read_node_view(leaf_node_id)?
-            .ok_or_else(|| {
-                TreeError::NodeNotFound(format!(
-                    "Leaf node with ID {} not found",
-                    leaf_node_id
-                ))
-            })?;
+        let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
+            TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
+        })?;
 
         let NodeView::Leaf { .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
@@ -724,7 +710,7 @@ where
             Ok(new_root)
         }
     }
-    
+
     // Writes a node view and propagates the update to the parent nodes.
     fn write_and_propagate_view(
         &self,
@@ -749,11 +735,9 @@ where
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
-            let mut parent_node = self
-                .read_node(parent_id)?
-                .ok_or_else(|| TreeError::NodeNotFound(format!(
-                    "Parent node {} not found", parent_id)
-                    .to_string()))?;
+            let mut parent_node = self.read_node(parent_id)?.ok_or_else(|| {
+                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
+            })?;
             let Node::Internal {
                 ref mut children, ..
             } = parent_node
@@ -785,17 +769,11 @@ where
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
-            let mut parent_node = self
-                .storage
-                .read_node_view(parent_id)?
-                .ok_or_else(|| TreeError::NodeNotFound(format!(
-                    "Parent node {} not found", parent_id)
-                    .to_string()))?;
+            let mut parent_node = self.storage.read_node_view(parent_id)?.ok_or_else(|| {
+                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
+            })?;
 
-            let NodeView::Internal {
-                ..
-            } = parent_node
-            else {
+            let NodeView::Internal { .. } = parent_node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node while updating parents".to_string(),
                 ));
@@ -832,9 +810,9 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.read_node(parent_id)? else {
-                return Err(TreeError::NodeNotFound(format!(
-                    "Parent node {} not found", parent_id)
-                    .to_string()));
+                return Err(TreeError::NodeNotFound(
+                    format!("Parent node {} not found", parent_id).to_string(),
+                ));
             };
             let Node::Internal { keys, children } = &mut node else {
                 return Err(TreeError::BackendAny(
@@ -906,7 +884,7 @@ where
                                 let value = S::VC::decode_value(vb)?;
                                 return Ok(Some(value));
                             }
-                            Err(_i) => { 
+                            Err(_i) => {
                                 return Ok(None); // Key not found
                             }
                         };
@@ -993,15 +971,9 @@ where
             return Ok(DeleteResult::NotFound); // Key not found
         }
 
-        let mut leaf_node = self
-            .storage
-            .read_node_view(leaf_node_id)?
-            .ok_or_else(|| {
-                TreeError::NodeNotFound(format!(
-                    "Leaf node with ID {} not found",
-                    leaf_node_id
-                ))
-            })?;
+        let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
+            TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
+        })?;
 
         let NodeView::Leaf { .. } = &mut leaf_node else {
             return Err(TreeError::BackendAny(
@@ -1035,7 +1007,9 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.read_node(parent_id)? else {
-                return Err(TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string()));
+                return Err(TreeError::NodeNotFound(
+                    format!("Parent node {} not found", parent_id).to_string(),
+                ));
             };
             {
                 let Node::Internal {
@@ -1762,7 +1736,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::bincode::{BeU64, RawBuf};
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
     // test commit happy path

@@ -47,7 +47,9 @@ where
                     size: res.size,
                 })
             },
-            tree_base_version: BaseVersion { committed_ptr: tree.get_metadata_ptr() },
+            tree_base_version: BaseVersion {
+                committed_ptr: tree.get_metadata_ptr(),
+            },
             initial_root_id: tree.get_root_id(),
             changes: Vec::new(),
             reclaimed_nodes: Vec::new(),
@@ -139,12 +141,14 @@ where
                     tree.get_epoch_mgr().add_reclaim_candidate(0, id);
                 }
                 self.reclaimed_nodes.clear();
-                self.tree_base_version = BaseVersion { committed_ptr: tree.get_metadata_ptr() };
+                self.tree_base_version = BaseVersion {
+                    committed_ptr: tree.get_metadata_ptr(),
+                };
                 self.initial_root_id = tree.get_root_id();
-             }
-         }
-         Ok(TxnStatus::Aborted) // Too many retries, abort transaction
-     }
+            }
+        }
+        Ok(TxnStatus::Aborted) // Too many retries, abort transaction
+    }
 
     #[cfg(test)]
     pub fn get_reclaimed_nodes(&self) -> Vec<u64> {
@@ -156,8 +160,8 @@ where
 mod tests {
     use super::*;
     use crate::bplustree::tree::CommitError;
-    use crate::metadata::Metadata;
     use crate::codec::bincode::{BeU64, RawBuf};
+    use crate::metadata::Metadata;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
     #[test]

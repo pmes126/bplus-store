@@ -26,7 +26,7 @@ fn commit_happy_path() {
     }
 }
 
- /*
+/*
 #[cfg(feature = "testing")]
 #[test]
 fn commit_with_retries() {
@@ -147,15 +147,15 @@ fn commit_failure_should_reclaim_nodes() {
         trx.insert(i, format!("value_{}", i)).expect("insert");
     }
 
-  // Simulate a failure during commit
-  // fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
-  //match trx.commit() {
-  //    Ok(_) => panic!("Commit should have failed"),
-  //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
-  //}
+    // Simulate a failure during commit
+    // fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
+    //match trx.commit() {
+    //    Ok(_) => panic!("Commit should have failed"),
+    //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
+    //}
 
-  //let deffered = tree.get_epoch_mgr().get_deferred_pages();
-  //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
+    //let deffered = tree.get_epoch_mgr().get_deferred_pages();
+    //assert!(!deffered.is_empty(), "Deferred pages should not be empty after failed commit");
 
     match trx.commit(&tree) {
         Ok(_) => println!("Commit succeeded unexpectedly"),

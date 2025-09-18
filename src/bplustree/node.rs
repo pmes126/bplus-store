@@ -27,7 +27,8 @@ where
         match self {
             Node::Internal { keys, children } => keys.is_empty() && children.is_empty(),
             Node::Leaf { keys, values } => keys.is_empty() && values.is_empty(),
-        } }
+        }
+    }
 
     pub fn is_underflowed(&self, min_keys: usize) -> bool {
         match self {
@@ -51,24 +52,32 @@ where
         matches!(self, Node::Internal { .. })
     }
 
-    pub fn from_node_view<KC, VC>(node_view: NodeView) -> Result<Self, crate::codec::CodecError> 
+    pub fn from_node_view<KC, VC>(node_view: NodeView) -> Result<Self, crate::codec::CodecError>
     where
         KC: crate::codec::KeyCodec<K>,
         VC: crate::codec::ValueCodec<V>,
     {
+        println!(
+            "Node from Node_view types: K={}, V={}",
+            std::any::type_name::<K>(),
+            std::any::type_name::<V>()
+        );
+        println!(
+            "With codec types: KC={}, VC={}",
+            std::any::type_name::<KC>(),
+            std::any::type_name::<VC>()
+        );
         match node_view {
             NodeView::Internal { page } => {
-                let page_raw = page.to_bytes()
-                    .map_err(|e| crate::codec::CodecError::EncodeFailure {
-                         msg: e.to_string(),
-                    })?;
+                let page_raw = page
+                    .to_bytes()
+                    .map_err(|e| crate::codec::CodecError::EncodeFailure { msg: e.to_string() })?;
                 <DefaultNodeCodec<KC, VC> as NodeCodec<K, V>>::decode(page_raw)
             }
             NodeView::Leaf { page } => {
-                let page_raw = page.to_bytes()
-                    .map_err(|e| crate::codec::CodecError::EncodeFailure {
-                         msg: e.to_string(),
-                    })?;
+                let page_raw = page
+                    .to_bytes()
+                    .map_err(|e| crate::codec::CodecError::EncodeFailure { msg: e.to_string() })?;
                 <DefaultNodeCodec<KC, VC> as NodeCodec<K, V>>::decode(page_raw)
             }
         }

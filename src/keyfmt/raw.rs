@@ -21,7 +21,9 @@ impl RawFormat {
 
 impl KeyBlockFormat for RawFormat {
     #[inline]
-    fn format_id(&self) -> u8 { 0 }
+    fn format_id(&self) -> u8 {
+        0
+    }
 
     #[inline]
     fn count(&self, mut p: &[u8]) -> usize {
@@ -29,7 +31,9 @@ impl KeyBlockFormat for RawFormat {
         while p.len() >= LEN_SIZE {
             let len = u16::from_le_bytes([p[0], p[1]]) as usize;
             let need = LEN_SIZE + len;
-            if p.len() < need { break; }
+            if p.len() < need {
+                break;
+            }
             n += 1;
             p = &p[need..];
         }
@@ -37,16 +41,17 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn entry_range(&self, block: &[u8], idx: usize) -> std::ops::Range<usize> { // O(n)
+    fn entry_range(&self, block: &[u8], idx: usize) -> std::ops::Range<usize> {
+        // O(n)
         let mut off = 0usize;
         for _ in 0..idx {
-            let len = u16::from_le_bytes([block[off], block[off+1]]) as usize;
+            let len = u16::from_le_bytes([block[off], block[off + 1]]) as usize;
             off += LEN_SIZE + len;
         }
         if off >= block.len() {
             return block.len()..block.len();
         }
-        let len = u16::from_le_bytes([block[off], block[off+1]]) as usize;
+        let len = u16::from_le_bytes([block[off], block[off + 1]]) as usize;
         let start = off;
         let end = off + LEN_SIZE + len;
         start..end
@@ -62,9 +67,9 @@ impl KeyBlockFormat for RawFormat {
             let mid = (lo + hi) / LEN_SIZE;
             let k = self.decode_at(block, mid, scratch);
             match k.cmp(needle) {
-                core::cmp::Ordering::Less    => lo = mid + 1,
+                core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
-                core::cmp::Ordering::Equal   => return Ok(mid),
+                core::cmp::Ordering::Equal => return Ok(mid),
             }
         }
         Err(lo)
@@ -76,7 +81,9 @@ impl KeyBlockFormat for RawFormat {
         let old_len = if idx < self.count(blk) {
             let r = self.entry_range(blk, idx);
             r.end - r.start
-        } else { 0 };
+        } else {
+            0
+        };
         new_len as isize - old_len as isize
     }
 
@@ -103,12 +110,23 @@ impl KeyBlockFormat for RawFormat {
     }
 
     #[inline]
-    fn delete_plan(&self, block: &[u8], idx: usize, _scratch: &mut Vec<u8>) -> (std::ops::Range<usize>, Vec<u8>) {
+    fn delete_plan(
+        &self,
+        block: &[u8],
+        idx: usize,
+        _scratch: &mut Vec<u8>,
+    ) -> (std::ops::Range<usize>, Vec<u8>) {
         // Just remove this entry’s bytes; no replacement.
         (self.entry_range(block, idx), Vec::new())
     }
 
-    fn adjust_after_splice(&self, _block_final: &mut [u8], _splice_at: usize, _delta: isize, _idx: usize) {
+    fn adjust_after_splice(
+        &self,
+        _block_final: &mut [u8],
+        _splice_at: usize,
+        _delta: isize,
+        _idx: usize,
+    ) {
         // Raw has no metadata to adjust.
     }
 
@@ -116,7 +134,7 @@ impl KeyBlockFormat for RawFormat {
     fn decode_at<'s>(&self, blk: &'s [u8], i: usize, _scratch: &'s mut Vec<u8>) -> &'s [u8] {
         let r = self.entry_range(blk, i);
         // SAFETY: caller holds block; we return a subslice into it
-        unsafe { &*(&blk[r.start+LEN_SIZE..r.end] as *const [u8]) }
+        unsafe { &*(&blk[r.start + LEN_SIZE..r.end] as *const [u8]) }
     }
 
     #[inline]
@@ -129,7 +147,13 @@ impl KeyBlockFormat for RawFormat {
         }
     }
 
-    fn split_into(&self, block: &[u8], idx: usize, left_out: &mut Vec<u8>, right_out: &mut Vec<u8>) {
+    fn split_into(
+        &self,
+        block: &[u8],
+        idx: usize,
+        left_out: &mut Vec<u8>,
+        right_out: &mut Vec<u8>,
+    ) {
         let n = self.count(block);
         let split_at = if idx < n {
             self.entry_range(block, idx).start
@@ -149,7 +173,9 @@ fn count_entries(mut p: &[u8]) -> usize {
     while p.len() >= LEN_SIZE {
         let len = u16::from_le_bytes([p[0], p[1]]) as usize;
         let need = LEN_SIZE + len;
-        if p.len() < need { break; }
+        if p.len() < need {
+            break;
+        }
         n += 1;
         p = &p[need..];
     }

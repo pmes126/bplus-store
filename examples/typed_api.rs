@@ -1,7 +1,6 @@
 //! Example: bytes-level API usage
 use bplustree::api::DbBuilder;
 use bplustree::storage::{file_store::FileStore, page_store::PageStore};
-use bplustree::codec::bincode::{BeU64, Utf8};
 
 fn main() -> anyhow::Result<()> {
     // Real app should pass a persistent file path
@@ -12,7 +11,7 @@ fn main() -> anyhow::Result<()> {
 
     let db = DbBuilder::new(store)
         .order(64)
-        .build_typed::<u64, String, BeU64, Utf8>()?;
+        .build_typed::<u64, String>()?;
 
     let k1 = 1u64;
     let v1 = "Some String value".to_string();
