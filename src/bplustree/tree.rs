@@ -422,6 +422,7 @@ where
         let md = storage.get_metadata()?;
         let md_ptr = Box::new(md);
         let order = md.order;
+        debug_assert!(order >= 2);
 
         let max_keys = order - 1;
         let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 

@@ -168,6 +168,9 @@ impl InternalPage {
         key: &[u8],
         right_child: u64,
     ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
         let mut scratch = Vec::new();
 
         // 1) PLAN splice in key block

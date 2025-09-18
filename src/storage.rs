@@ -1,5 +1,5 @@
 use crate::bplustree::{Node, NodeId, NodeView};
-use crate::codec::{CodecError, DefaultKC, DefaultVC, KeyCodec, ValueCodec};
+use crate::codec::{CodecError, KeyCodec, ValueCodec};
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
 use anyhow::Result;

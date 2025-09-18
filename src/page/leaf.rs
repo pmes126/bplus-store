@@ -92,6 +92,7 @@ impl LeafPage {
         let array: &[u8; PAGE_SIZE] = self.as_bytes().try_into()?; // also scoped
         Ok(array)
     }
+
     // --- header accessors ---
 
     #[inline]
@@ -181,6 +182,9 @@ impl LeafPage {
 
     /// Reads a value at a specific index.
     pub fn read_value_at(&self, idx: usize) -> Result<&[u8], PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
         let slot = self.read_slot(idx)?;
         let off = slot.val_off as usize;
         let len = slot.val_len as usize;
@@ -200,6 +204,7 @@ impl LeafPage {
         val_off: u16,
         val_len: u16,
     ) -> Result<(), PageError> {
+        debug_assert!(idx < self.key_count() as usize);
         self.write_slot(idx, LeafSlot { val_off, val_len })
     }
 
@@ -280,6 +285,7 @@ impl LeafPage {
             }
             Err(_idx) => _idx, // not found, use insertion point
         };
+        debug_assert!(idx <= self.key_count() as usize);
         self.insert_at(idx, key_enc, val_bytes)
     }
 
@@ -307,6 +313,9 @@ impl LeafPage {
         idx: usize,
         scratch: &'s mut Vec<u8>,
     ) -> Result<(&'s [u8], &'s [u8]), PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
         let k = self.get_key_at(idx, scratch)?;
         let v = self.read_value_at(idx)?;
         Ok((k, v))
