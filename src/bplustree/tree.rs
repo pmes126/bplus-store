@@ -8,13 +8,12 @@ use crate::bplustree::BPlusTreeIter;
 use crate::bplustree::EpochManager;
 use crate::bplustree::epoch::COMMIT_COUNT;
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{CodecError, KeyCodec, ValueCodec, bincode::{KeyCodecMap, ValueCodecMap}};
+use crate::codec::{CodecError, KeyCodec, ValueCodec};
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
-use crate::storage::file_store::FileStore;
 use crate::storage::PageStorage;
 use std::result::Result;
 use thiserror::Error;
@@ -128,14 +127,11 @@ pub struct TreeConfig {
     pub target_fill_bytes: usize,      // split/merge by bytes, not count
 }
 
-type KC<K> = <K as KeyCodecMap>::Codec;
-type VC<V> = <V as ValueCodecMap>::Codec;
-
 /// B+ tree structure with generic key and value types, and a storage backend
 pub struct BPlusTree<K, V, S>
 where
-    K: Ord + Clone + KeyCodecMap,
-    V: ToOwned + ValueCodecMap,
+    K: Ord + Clone,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     max_keys: usize,
@@ -195,8 +191,8 @@ pub struct WriteResult {
 
 pub struct SharedBPlusTree<K, V, S>
 where
-    K: Ord + Clone + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Ord + Clone,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     inner: Arc<BPlusTree<K, V, S>>,
@@ -204,8 +200,8 @@ where
 
 impl<K, V, S> Clone for SharedBPlusTree<K, V, S>
 where
-    K: Ord + Clone + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Ord + Clone,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
@@ -217,8 +213,8 @@ where
 
 impl<K: Debug, V: Debug, S> SharedBPlusTree<K, V, S>
 where
-    K: Clone + Ord  + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     pub fn new(tree: BPlusTree<K, V, S>) -> Self {
@@ -369,8 +365,8 @@ where
 // BPlusTree implementation
 impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
 where
-    K: Clone + Ord + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
 
@@ -514,14 +510,14 @@ where
     ) -> Result<(Vec<PathNode>, bool), TreeError> {
         let mut path = vec![];
         let mut current_id = root_id;
-        <KC<K> as KeyCodec<K>>::encode_key(key, &mut []).map_err(|e| {
+        S::KC::encode_key(key, &mut []).map_err(|e| {
             TreeError::Codec(CodecError::EncodeFailure {
                 msg: e.to_string(),
             })
         })?;
 
-        let mut encode_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(key)];
-        <KC<K> as KeyCodec<K>>::encode_key(key, encode_buf.as_mut())
+        let mut encode_buf = vec![0u8; S::KC::encoded_len(key)];
+        S::KC::encode_key(key, encode_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
         // Find insertion point
         loop {
@@ -587,11 +583,11 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        let mut key_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(&key)];
-        let mut val_buf = vec![0u8; <VC<V> as ValueCodec<V>>::encoded_len(&value)];
-        <KC<K> as KeyCodec<K>>::encode_key(&key, key_buf.as_mut())
+        let mut key_buf = vec![0u8; S::KC::encoded_len(&key)];
+        let mut val_buf = vec![0u8; S::VC::encoded_len(&value)];
+        S::KC::encode_key(&key, key_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
-        <VC<V> as ValueCodec<V>>::encode_value(&value, val_buf.as_mut())
+        S::VC::encode_value(&value, val_buf.as_mut())
             .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })?;
 
         let _guard = self.epoch_mgr.pin();
@@ -661,7 +657,7 @@ where
             let split_idx = mid; // Index to split the keys and values
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
-            let k = <KC<K> as KeyCodec<K>>::decode_key(split_key.as_ref())?;
+            let k = S::KC::decode_key(split_key.as_ref())?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: leaf_node,
@@ -891,8 +887,8 @@ where
         let _guard = self.epoch_mgr.pin();
         let mut current_id = root_id;
 
-        let mut encode_buf = vec![0u8; <KC<K> as KeyCodec<K>>::encoded_len(key)];
-        <KC<K> as KeyCodec<K>>::encode_key(key, encode_buf.as_mut())?;
+        let mut encode_buf = vec![0u8; S::KC::encoded_len(key)];
+        S::KC::encode_key(key, encode_buf.as_mut())?;
         // Find insertion point
         loop {
             match self
@@ -907,7 +903,7 @@ where
                                 let Some(vb) = node.value_bytes_at(i)? else {
                                     return Ok(None);
                                 };
-                                let value = <VC<V> as ValueCodec<V>>::decode_value(vb)?;
+                                let value = S::VC::decode_value(vb)?;
                                 return Ok(Some(value));
                             }
                             Err(_i) => { 
@@ -1025,7 +1021,7 @@ where
         }
 
         // materialize the leaf node for easy underflow handling
-        let node = Node::from_node_view::<KC<K>, VC<V>>(leaf_node)?;
+        let node = Node::from_node_view::<S::KC, S::VC>(leaf_node)?;
         let new_root_id = self.handle_underflow(path, node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
     }
@@ -1773,7 +1769,7 @@ mod tests {
     #[test]
     fn commit_happy_path() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
 
         let base = BaseVersion {
@@ -1798,7 +1794,7 @@ mod tests {
     #[test]
     fn commit_happy_path_2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };
@@ -1831,7 +1827,7 @@ mod tests {
     fn commit_aborts_on_conflict() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -1852,7 +1848,7 @@ mod tests {
     #[test]
     fn txn_id_is_strictly_monotonic() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         let mut prev = h.tree.metadata().txn_id;
 
         for i in 0..5 {
@@ -1884,7 +1880,7 @@ mod tests {
     #[test]
     fn slot_follows_txn_mod2() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         for i in 0..6 {
             let base = BaseVersion {
                 committed_ptr: h.tree.metadata_ptr(),
@@ -1909,7 +1905,7 @@ mod tests {
     fn commit_metadata_write_failure_is_abort() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_commit_failure(true);
-        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
@@ -1936,7 +1932,7 @@ mod tests {
     fn flush_failure_after_cas_keeps_published_state() {
         let storage = TestStorage::new(); // Reset the test storage state
         storage.inject_flush_failure(true);
-        let test_harness = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let test_harness = test_tree::<u64, u64, TestStorage>(storage, 128);
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {

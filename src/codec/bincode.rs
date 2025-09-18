@@ -1,5 +1,5 @@
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{CodecError, KeyCodec, NodeCodec, ValueCodec};
+use crate::codec::{CodecError, KeyCodec, NodeCodec, ValueCodec, KeyCodecDefault, ValueCodecDefault};
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
@@ -186,41 +186,19 @@ impl ValueCodec<Vec<u8>> for RawBuf {
 }
 
 // ---- Default Codec mappings ----
-// maps a K to its default KeyCodec<K>
-pub trait KeyCodecMap : Sized {
-    type Codec: KeyCodec<Self>;
-}
 
-// maps a V to its default ValueCodec<V>
-pub trait ValueCodecMap : Sized {
-    type Codec: ValueCodec<Self>;
-}
+impl KeyCodecDefault<u64> for () { type Codec = BeU64; }
+impl ValueCodecDefault<u64> for () { type Codec = BeU64; }
+impl KeyCodecDefault<i64> for () { type Codec = BeU64; }
+impl ValueCodecDefault<i64> for () { type Codec = BeU64; }
+impl KeyCodecDefault<String> for () { type Codec = Utf8; }
+impl ValueCodecDefault<String> for () { type Codec = Utf8; }
+impl KeyCodecDefault<Vec<u8>> for () { type Codec = RawBuf; }
+impl ValueCodecDefault<Vec<u8>> for () { type Codec = RawBuf; }
 
-// defaults:
-impl KeyCodecMap for u64 {
-    type Codec = BeU64;     // <- your default for u64
-}
-impl ValueCodecMap for u64 {
-    type Codec = BeU64;     // <- your default for u64
-}
-impl KeyCodecMap for i64 {
-    type Codec = BeU64;     // <- your default for i64
-}
-impl ValueCodecMap for i64 {
-    type Codec = BeU64;     // <- your default for i64
-}
-impl KeyCodecMap for String {
-    type Codec = Utf8; // example
-}
-impl ValueCodecMap for String {
-    type Codec = Utf8; // example
-}
-impl KeyCodecMap for Vec<u8> {
-    type Codec = RawBuf; // example
-}
-impl ValueCodecMap for Vec<u8> {
-    type Codec = RawBuf; // example
-}
+type DefaultKC<K> = <() as KeyCodecDefault<K>>::Codec;
+type DefaultVC<V> = <() as ValueCodecDefault<V>>::Codec;
+
 
 //=======NodeCodec implementation using default codecs for K and V =======
 // This codec uses the default KeyCodec and ValueCodec for K and V respectively
@@ -423,8 +401,8 @@ mod tests {
             keys: vec![1u64, 2, 3],
             values: vec![10u64, 20, 30],
         };
-        let encoded_page = <DefaultNodeCodec as NodeCodec<u64, u64, BeU64, BeU64>>::encode(&node).unwrap();
-        let decoded_node = <DefaultNodeCodec as NodeCodec<u64, u64, BeU64, BeU64>>::decode(&encoded_page).unwrap();
+        let encoded_page = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
+        let decoded_node = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
         assert_eq!(node.get_keys(), decoded_node.get_keys());
     }
 
@@ -434,8 +412,8 @@ mod tests {
             keys: vec![1u64, 2, 3, 4],
             children: vec![100u64, 200, 300, 400, 500],
         };
-        let encoded_page = <DefaultNodeCodec as NodeCodec<u64, u64, BeU64, BeU64>>::encode(&node).unwrap();
-        let decoded_node = <DefaultNodeCodec as NodeCodec<u64, u64, BeU64, BeU64>>::decode(&encoded_page).unwrap();
+        let encoded_page = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::encode(&node).unwrap();
+        let decoded_node = <DefaultNodeCodec<BeU64, BeU64> as NodeCodec<u64, u64>>::decode(&encoded_page).unwrap();
         assert_eq!(node.get_keys(), decoded_node.get_keys());
         if let Node::Internal { children, .. } = &node {
             if let Node::Internal { children: decoded_children, .. } = &decoded_node {

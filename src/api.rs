@@ -13,8 +13,6 @@ use std::marker::PhantomData;
 use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::tree::{BPlusTree, BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::codec::bincode::RawBuf;
-use crate::codec::{KeyCodec, ValueCodec};
-use crate::codec::bincode::{KeyCodecMap, ValueCodecMap};
 use crate::storage::{MetadataStorage, NodeStorage};
 
 pub use crate::bplustree::transaction::WriteTransaction as WriteTxn;
@@ -143,7 +141,7 @@ where
 
 impl<'a, S> Iterator for BytesIter<'a, S>
 where
-    S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
 {
     type Item = Result<(Vec<u8>, Vec<u8>)>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -158,8 +156,8 @@ where
 #[derive(Clone)]
 pub struct TypedDb<K, V, S>
 where
-    K: Ord + Clone + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Ord + Clone,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     inner: SharedBPlusTree<K, V, S>,
@@ -168,8 +166,8 @@ where
 
 impl<K, V, S> TypedDb<K, V, S>
 where
-    K: Ord + Clone + KeyCodecMap + Debug,
-    V: Clone + ValueCodecMap + Debug,
+    K: Ord + Clone + Debug,
+    V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     /// Build typed DB from your existing typed tree.
@@ -231,8 +229,8 @@ where
 // Streaming iterator (typed)
 pub struct TypedIter<'a, K, V, S>
 where
-    K: Clone + Ord + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     inner: BPlusTreeIter<'a, K, V, S>,
@@ -240,8 +238,8 @@ where
 
 impl<'a, K, V, S> Iterator for TypedIter<'a, K, V, S>
 where
-    K: Clone + Ord + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     type Item = Result<(K, V)>;
@@ -295,7 +293,7 @@ impl<S> DbBuilder<S> {
     /// Build the **bytes-level** API (Vec<u8> keys/values).
     pub fn build_bytes(self) -> Result<DbBytes<S>>
     where
-        S: NodeStorage<Vec<u8>, Vec<u8>, RawBuf, RawBuf> + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage<Vec<u8>, Vec<u8>> + MetadataStorage + Send + Sync + 'static,
     {
         DbBytes::new(self.storage, self.opts.order)
     }
@@ -303,8 +301,8 @@ impl<S> DbBuilder<S> {
     /// Build the **typed** API using your KeyCodec/ValueCodec.
     pub fn build_typed<K, V>(self) -> Result<TypedDb<K, V, S>>
     where
-        K: Ord + Clone + KeyCodecMap + Debug,
-        V: Clone + ValueCodecMap + Debug,
+        K: Ord + Clone + Debug,
+        V: Clone + Debug,
         S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
     {
         let tree = BPlusTree::<K, V, S>::new(self.storage, self.opts.order)?;

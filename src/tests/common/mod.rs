@@ -4,8 +4,7 @@ use crate::bplustree::EpochManager;
 use crate::bplustree::transaction::WriteTransaction;
 use crate::bplustree::tree::BPlusTree;
 use crate::bplustree::tree::SharedBPlusTree;
-use crate::codec::{KeyCodec, ValueCodec};
-use crate::codec::bincode::{BeU64, Utf8, KeyCodecMap, ValueCodecMap};
+use crate::codec::{KeyCodecDefault, ValueCodecDefault};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
 use crate::storage::{MetadataStorage, NodeStorage};
@@ -19,8 +18,8 @@ pub mod test_storage;
 
 pub struct TestHarness<K, V, S: Send + Sync>
 where
-    K: Clone + Ord + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + 'static,
 {
     pub tree: Arc<BPlusTree<K, V, S>>,
@@ -30,8 +29,8 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<K, V, S>(storage: S, order: usize) -> TestHarness<K, V, S>
 where
-    K: Clone + Ord + KeyCodecMap + Debug,
-    V: Clone + ValueCodecMap + Debug,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
 {
     let tree =
@@ -50,8 +49,8 @@ pub fn test_tree_with_epoch<K, V, S>(
     order: usize,
 ) -> TestHarness<K, V, S>
 where
-    K: Clone + Ord + KeyCodecMap + Debug,
-    V: Clone + ValueCodecMap + Debug,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
     S: NodeStorage<K, V> + MetadataStorage + Send + Sync + Clone + 'static,
 {
     let tree = Arc::new(BPlusTree::new_with_deps(
@@ -76,13 +75,14 @@ pub fn make_tree(
 }
 
 #[cfg(any(test, feature = "testing"))]
-pub fn make_tree_generic<K: KeyCodec<K>, V : ValueCodec<V>>(
+pub fn make_tree_generic<K, V>(
     dir: &TempDir,
     order: usize,
 ) -> Result<SharedBPlusTree<K, V, FileStore<PageStore>>, anyhow::Error>
 where
-    K: Debug + Ord + Clone + KeyCodecMap,
-    V: Debug + Clone + ValueCodecMap,
+    K: Debug + Ord + Clone,
+    V: Debug + Clone,
+    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
     let file_path = dir.path().join("tree.data");
 
@@ -94,21 +94,19 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn load_tree(
     dir: &TempDir,
-) -> Result<SharedBPlusTree<u64, String, BeU64, Utf8, FileStore<PageStore>>, anyhow::Error> {
+) -> Result<SharedBPlusTree<u64, String, FileStore<PageStore>>, anyhow::Error> {
     let file_path = dir.path().join("tree.data");
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = BPlusTree::<u64, String, BeU64, Utf8, FileStore<PageStore>>::load(store)?;
+    let tree = BPlusTree::<u64, String, FileStore<PageStore>>::load(store)?;
     Ok(SharedBPlusTree::new(tree))
 }
 
 #[cfg(any(test, feature = "testing"))]
-pub fn test_trx<K, V, KC, VC, S>(tree: SharedBPlusTree<K, V, KC, VC, S>) -> WriteTransaction<K, V>
+pub fn test_trx<K, V, S>(tree: SharedBPlusTree<K, V, S>) -> WriteTransaction<K, V>
 where
-    K:  Clone + Ord + Debug,
-    V:  Clone + Debug,
-    KC: KeyCodec<K>,
-    VC: ValueCodec<V>,
-    S: NodeStorage<K, V, KC, VC> + MetadataStorage + Send + Sync,
+    K: Clone + Ord + Debug,
+    V: Clone + Debug,
+    S: NodeStorage<K, V> + MetadataStorage + Send + Sync,
 {
     WriteTransaction::new(tree.clone())
 }

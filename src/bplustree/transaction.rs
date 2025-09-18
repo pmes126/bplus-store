@@ -1,6 +1,5 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
 use crate::storage::{MetadataStorage, NodeStorage};
-use crate::codec::bincode::{KeyCodecMap, ValueCodecMap};
 use anyhow::Result;
 
 use std::fmt::Debug;
@@ -31,8 +30,8 @@ where
 
 impl<K: Debug, V: Debug> WriteTransaction<K, V>
 where
-    K: Clone + Ord + KeyCodecMap,
-    V: Clone + ValueCodecMap,
+    K: Clone + Ord,
+    V: Clone,
 {
     pub fn new<S>(tree: SharedBPlusTree<K, V, S>) -> Self
     where
@@ -164,7 +163,7 @@ mod tests {
     #[test]
     fn cas_mismatch_returns_rebase_required_with_no_side_effects() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, u64, BeU64, BeU64, TestStorage>(storage, 128);
+        let h = test_tree::<u64, u64, TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };
@@ -199,7 +198,7 @@ mod tests {
     #[test]
     fn metadata_write_failure_aborts_before_publish() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         h.storage.inject_commit_failure(true);
 
         let base = BaseVersion {
@@ -227,7 +226,7 @@ mod tests {
     #[test]
     fn flush_failure_after_publish_keeps_state() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         h.storage.inject_flush_failure(true);
 
         let base = BaseVersion {
@@ -255,7 +254,7 @@ mod tests {
     #[test]
     fn gc_runs_after_success() {
         let storage = TestStorage::new();
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         // Epoch will be advance after commit
         h.tree.get_epoch_mgr().set_oldest_active(1);
         h.tree.get_epoch_mgr().set_reclaim_list(1, vec![10, 11, 12]);
@@ -280,7 +279,7 @@ mod tests {
     #[test]
     fn published_metadata_is_visible_immediately() {
         let storage = TestStorage::new(); // Reset the test storage state
-        let h = test_tree::<u64, Vec<u8>, BeU64, RawBuf, TestStorage>(storage, 128);
+        let h = test_tree::<u64, Vec<u8>, TestStorage>(storage, 128);
         let base = BaseVersion {
             committed_ptr: h.tree.metadata_ptr(),
         };

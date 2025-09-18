@@ -1,5 +1,5 @@
 use crate::bplustree::{Node, NodeId, NodeView};
-use crate::codec::{CodecError, bincode::KeyCodecMap, bincode::ValueCodecMap};
+use crate::codec::{KeyCodec, ValueCodec, CodecError, DefaultKC, DefaultVC};
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
 use anyhow::Result;
@@ -65,17 +65,11 @@ pub trait PageStorage {
 }
 
 pub trait NodeStorage<
-    K,
-    V,
-    KC = <K as KeyCodecMap>::Codec,   // default KC comes from K
-    VC = <V as ValueCodecMap>::Codec, // default VC comes from V
->: Send + Sync + 'static
-where
-    K: Ord + Clone + KeyCodecMap,
-    V: ValueCodecMap,
-    KC: crate::codec::KeyCodec<K>,
-    VC: crate::codec::ValueCodec<V>,
-{
+    K: Ord + Clone,
+    V: Clone>: Send + Sync + 'static {
+    // Default key and value codecs used  by an implementation
+    type KC : KeyCodec<K>;
+    type VC : ValueCodec<V>;
     /// Reads a node from storage by its ID
     fn read_node(&self, id: u64) -> Result<Option<Node<K, V>>, StorageError>;
 
