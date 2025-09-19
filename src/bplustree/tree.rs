@@ -518,7 +518,9 @@ where
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
                         let mut found = false;
-                        let i = match node.lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded) {
+                        let i = match node
+                            .lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded)
+                        {
                             Ok(i) => {
                                 found = true;
                                 i
@@ -530,7 +532,9 @@ where
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
-                        let i = match node.lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded) {
+                        let i = match node
+                            .lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded)
+                        {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };
@@ -891,7 +895,9 @@ where
                     }
                     NodeView::Internal { .. } => {
                         // Find the insertion point in the internal node
-                        let i = match node.lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded) {
+                        let i = match node
+                            .lower_bound_cmp(encode_buf.as_ref(), S::KC::compare_encoded)
+                        {
                             Ok(i) => i + 1,
                             Err(i) => i,
                         };

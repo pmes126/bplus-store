@@ -154,8 +154,14 @@ impl InternalPage {
     }
 
     /// Lower bound on encoded key bytes; returns insertion index.
-    pub fn lower_bound_cmp(&self, key_enc: &[u8], scratch: &mut Vec<u8>,  cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering) -> Result<usize, usize> {
-        self.fmt().seek_with_cmp(self.key_block(), key_enc, scratch, cmp)
+    pub fn lower_bound_cmp(
+        &self,
+        key_enc: &[u8],
+        scratch: &mut Vec<u8>,
+        cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
+    ) -> Result<usize, usize> {
+        self.fmt()
+            .seek_with_cmp(self.key_block(), key_enc, scratch, cmp)
     }
 
     /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).

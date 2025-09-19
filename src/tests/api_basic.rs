@@ -27,11 +27,11 @@ fn api_crud_and_scan() {
 
     let mut rows = db.scan_range(b"a", b"d").unwrap().unwrap();
     let first = rows.next().unwrap();
-    
+
     assert!(first.is_ok());
     let first = first.unwrap();
     assert!(first.0 == b"a2".to_vec() && first.1 == b"v3".to_vec());
-    
+
     let second = rows.next().unwrap();
 
     assert!(second.is_ok());

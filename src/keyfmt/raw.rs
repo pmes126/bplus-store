@@ -77,8 +77,12 @@ impl KeyBlockFormat for RawFormat {
 
     /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
     /// found with the insertion index. Bytewise comparison by default.
-    fn seek_with_cmp(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>,
-                      cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering
+    fn seek_with_cmp(
+        &self,
+        block: &[u8],
+        needle: &[u8],
+        scratch: &mut Vec<u8>,
+        cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
         // classic binary search over entries
         let mut lo = 0usize;
