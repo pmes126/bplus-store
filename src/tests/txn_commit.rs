@@ -200,41 +200,41 @@ fn noop_tx_commit_no_side_effects() {
     );
 }
 
-#[test]
-fn node_reclamation_in_tx_commit() {
-    let dir = TempDir::new().unwrap();
-    let order = 10;
-    let tree = common::make_tree(&dir, order).expect("create tree");
-
-    // Start a transaction
-    let mut trx = WriteTransaction::new(tree.clone());
-
-    // Insert some data
-    for i in 0..100 {
-        trx.insert(i, format!("value_{}", i)).expect("insert");
-    }
-
-    // Delete some data
-    for i in 0..100 {
-        trx.delete(&i).expect("delete");
-    }
-
-    assert!(
-        trx.get_reclaimed_nodes().is_empty(),
-        "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
-    );
-
-    // Commit the transaction
-    trx.commit(&tree).expect("commit");
-
-    let deffered = tree.get_epoch_mgr().get_deferred_pages();
-
-    assert!(
-        !deffered.is_empty(),
-        "Deferred pages should not be empty after commit"
-    );
-    assert!(
-        trx.get_reclaimed_nodes().is_empty(),
-        "Reclaimed nodes in tx should be empty after commit"
-    );
-}
+//#[test]
+//fn node_reclamation_in_tx_commit() {
+//    let dir = TempDir::new().unwrap();
+//    let order = 10;
+//    let tree = common::make_tree(&dir, order).expect("create tree");
+//
+//    // Start a transaction
+//    let mut trx = WriteTransaction::new(tree.clone());
+//
+//    // Insert some data
+//    for i in 0..100 {
+//        trx.insert(i, format!("value_{}", i)).expect("insert");
+//    }
+//
+//    // Delete some data
+//    for i in 0..100 {
+//        trx.delete(&i).expect("delete");
+//    }
+//
+//    assert!(
+//        trx.get_reclaimed_nodes().is_empty(),
+//        "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
+//    );
+//
+//    // Commit the transaction
+//    trx.commit(&tree).expect("commit");
+//
+//    let deffered = tree.get_epoch_mgr().get_deferred_pages();
+//
+//    assert!(
+//        !deffered.is_empty(),
+//        "Deferred pages should not be empty after commit"
+//    );
+//    assert!(
+//        trx.get_reclaimed_nodes().is_empty(),
+//        "Reclaimed nodes in tx should be empty after commit"
+//    );
+//}

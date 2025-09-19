@@ -16,6 +16,7 @@ use crate::metadata::{
 use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::result::Result;
 use thiserror::Error;
+use zerocopy::AsBytes;
 
 pub type NodeId = u64; // Type for node IDs
 pub type PathNode = (NodeId, usize); // Type for path nodes (node ID and index in parent)
@@ -41,11 +42,11 @@ pub enum DeleteResult<N> {
     NotFound,
 }
 
-pub enum SplitResult<K, N> {
+pub enum SplitResult<N> {
     SplitNodes {
         left_node: N,  // Left half (including inserted key)
         right_node: N, // Right half
-        split_key: K,  // First key of right node, to push into parent
+        split_key: Vec<u8>,  // First key of right node, to push into parent
     },
 }
 
@@ -640,19 +641,18 @@ where
     fn split_leaf_node_view(
         &self,
         mut leaf_node: NodeView,
-    ) -> Result<SplitResult<K, NodeView>, TreeError> {
+    ) -> Result<SplitResult<NodeView>, TreeError> {
         // Equally split the keys and values between the two nodes.
         if let NodeView::Leaf { .. } = &mut leaf_node {
             let mid = leaf_node.keys_len() / 2;
             let split_idx = mid; // Index to split the keys and values
             let right_node = leaf_node.split_off(split_idx)?;
             let split_key = right_node.first_key()?;
-            let k = S::KC::decode_key(split_key.as_ref())?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: leaf_node,
                 right_node,
-                split_key: k,
+                split_key,
             })
         } else {
             Err(TreeError::BackendAny(
@@ -661,36 +661,22 @@ where
         }
     }
 
-    // Splits an internal node into two nodes and returns the new right node, the left node, and
-    // the first key of the right node to be pushed up to the parent.
-    fn split_internal_node(
+    fn split_internal_node_view(
         &self,
-        mut internal_node: Node<K, V>,
-    ) -> Result<SplitResult<K, Node<K, V>>, TreeError> {
-        if let Node::Internal { keys, children } = &mut internal_node {
-            // Index to split the keys and values, right node will have
-            // values past mid + 1, split key will be at mid and removed and left node will have
-            // the remaining values
-            let mid = keys.len() / 2;
-            let split_idx = mid + 1;
-            let right_keys = keys.split_off(split_idx);
-            let right_children = children.split_off(split_idx);
-            let right_internal = Node::Internal {
-                keys: right_keys,
-                children: right_children,
-            };
-            // split key is the key at the split index, which will be  removed and pushed up to the parent
-            let split_key = keys.pop().ok_or_else(|| {
+        mut internal_node: NodeView,
+    ) -> Result<SplitResult<NodeView>, TreeError> {
+        if let NodeView::Internal { .. } = &mut internal_node {
+            let mid = internal_node.keys_len() / 2;
+            let split_idx = mid + 1; // Index to split the keys and values
+            let right_node = internal_node.split_off(split_idx)?;
+            let split_key = internal_node.pop_key()?.ok_or_else(|| {
                 TreeError::BackendAny("Internal node has no mid keys for split".to_string())
             })?;
-            let left_internal = Node::Internal {
-                keys: std::mem::take(keys),
-                children: std::mem::take(children),
-            };
+
             Ok(SplitResult::SplitNodes {
-                right_node: right_internal,
-                left_node: left_internal,
-                split_key: split_key.clone(),
+                left_node: internal_node,
+                right_node,
+                split_key,
             })
         } else {
             Err(TreeError::BackendAny(
@@ -809,55 +795,61 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut left: NodeId,
         mut right: NodeId,
-        mut key: K,
+        //mut key: K,
+        mut key: Vec<u8>,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
-            let Some(mut node) = self.read_node(parent_id)? else {
+            let Some(mut node) = self.storage.read_node_view(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
                     format!("Parent node {} not found", parent_id).to_string(),
                 ));
             };
-            let Node::Internal { keys, children } = &mut node else {
+            let NodeView::Internal { .. } = &mut node else {
                 return Err(TreeError::BackendAny(
                     "Expected internal node in propagation path".to_string(),
                 ));
             };
-            // Insert the split key and adjust children
-            keys.insert(insert_pos, key);
-            // Reclaim the original child node
-            track.reclaim(children[insert_pos]);
-            children[insert_pos] = left;
-            // Replace and insert the new children
-            children.insert(insert_pos + 1, right);
+            // reclaim the  child at insert_pos
+            // insert encoded key + right child at insert_pos
+            // replace left child at insert_pos
+            let left_child_prev = node.child_ptr_at(insert_pos)?.ok_or_else(|| {
+                TreeError::BackendAny(format!(
+                    "Child pointer at index {} in node {} is None",
+                    insert_pos, parent_id
+                ))
+            })?;
+            //let mut encode_buf = vec![0u8; S::KC::encoded_len(&key)];
+            //S::KC::encode_key(&key, &mut encode_buf)?;
+            track.reclaim(left_child_prev);
+            node.insert_separator_at(insert_pos, &key, right)?;
+            node.replace_child_at(insert_pos, left)?;
+
             // if there is no further overflow we can just propagate the update and return
-            if keys.len() <= self.max_keys {
-                return self.write_and_propagate(path, &node, track);
+            if node.keys_len() <= self.max_keys {
+                return self.write_and_propagate_view(path, &node, track);
             }
             // Handle internal node split
             let SplitResult::SplitNodes {
                 left_node,
                 right_node,
                 split_key,
-            } = self.split_internal_node(node)?;
+            } = self.split_internal_node_view(node)?;
 
-            left = self.write_node(&left_node, track)?;
-            right = self.write_node(&right_node, track)?;
+            left = self.write_node_view(&left_node, track)?;
+            right = self.write_node_view(&right_node, track)?;
             key = split_key;
         }
 
-        // We reached the root: create a new root node
-        let new_root = Node::Internal {
-            keys: vec![key],
-            children: vec![left, right],
-        };
-
-        let new_root_id = self.write_node(&new_root, track)?;
+        let mut new_root = NodeView::new_internal(0u8);
+        new_root.write_leftmost_child(left)?;
+        new_root.insert_separator_at(0, &key, right)?;
+        
+        let new_root_id = self.write_node_view(&new_root, track)?;
         track.record_staged_height(self.get_height() + 1); // Update staged height
 
         Ok(new_root_id)
     }
-
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         let root_id = self.get_root_id();
@@ -998,10 +990,93 @@ where
             return Ok(DeleteResult::Deleted(new_root_id));
         }
 
-        // materialize the leaf node for easy underflow handling
-        let node = Node::from_node_view::<S::KC, S::VC>(leaf_node)?;
-        let new_root_id = self.handle_underflow(path, node, track)?;
+        let new_root_id = self.handle_underflow_view(path, leaf_node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
+    }
+
+
+    fn handle_underflow_view(
+        &self,
+        mut path: Vec<(NodeId, usize)>,
+        mut node: NodeView,
+        track: &mut impl TxnTracker,
+    ) -> Result<NodeId, TreeError> {
+        while let Some((parent_id, idx)) = path.pop() {
+            let Some(mut parent_node) = self.storage.read_node_view(parent_id)? else {
+                return Err(TreeError::NodeNotFound(
+                    format!("Parent node {} not found", parent_id).to_string(),
+                ));
+            };
+            {
+                let NodeView::Internal { .. } = &mut parent_node else {
+                    return Err(TreeError::BackendAny(
+                        "Expected internal node as parent".to_string(),
+                    ));
+                };
+                // If the root has only one child, replace the root with that child
+                if path.is_empty() && parent_node.children_len()? == 1 {
+                    parent_node.child_ptr_at(0)?.ok_or_else(|| {
+                        TreeError::BackendAny(format!(
+                            "Child pointer at index {} in node {} is None",
+                            0, parent_id
+                        ))
+                    })?;
+                }
+                // Try borrowing from left or right sibling, on success just propagate the update,
+                // no change in number of keys in the parent node
+                if idx > 0
+                    && self.try_borrow_from_left_view(&mut node, &mut parent_node, idx, track)?
+                {
+                    return self.write_and_propagate_view(path, &parent_node, track);
+                }
+                if (idx < parent_node.keys_len())
+                    && self.try_borrow_from_right_view(&mut node, &mut parent_node, idx, track)?
+                {
+                    return self.write_and_propagate_view(path, &parent_node, track);
+                }
+                // Try to merge with left or right sibling
+                let mut merged = None;
+                if let Some(id) =
+                    self.try_merge_with_left_view(&mut node, &mut parent_node, idx, track)?
+                {
+                    merged = Some(id);
+                } else if let Some(id) =
+                    self.try_merge_with_right_view(&mut node, &mut parent_node, idx, track)?
+                {
+                    merged = Some(id);
+                }
+                // We should have merged with a sibling or borrowed from it otherwise invalid state
+                if merged.is_some() {
+                    // the parent node underflowed after merge
+                    if parent_node.keys_len() < self.min_internal_keys {
+                        // handle root node underflow
+                        if path.is_empty() {
+                            if parent_node.children_len()? == 1 {
+                                track.reclaim(parent_id);
+                                track.record_staged_height(self.get_height().saturating_sub(1));
+                                return parent_node.child_ptr_at(0)?.ok_or_else(|| {
+                                    TreeError::BackendAny(format!(
+                                        "Child pointer at index {} in node {} is None",
+                                        0, parent_id
+                                    ))
+                                });
+                            } else {
+                                return self.write_and_propagate_view(path, &parent_node, track);
+                            }
+                        }
+                        // Continue handling underflow
+                       node = parent_node;
+                        continue;
+                    } else {
+                        // Parent node didn't underflow, just write the updated parent node
+                        return self.write_and_propagate_view(path, &parent_node, track);
+                    }
+                }
+            }
+        }
+        Err(TreeError::BackendAny(
+            "Node underflow couldn't be resolved".to_string(),
+        ))
     }
 
     // Handles underflow of a node after deletion, trying to borrow from siblings or merge with them.
@@ -1081,6 +1156,98 @@ where
         Err(TreeError::BackendAny(
             "Node underflow couldn't be resolved".to_string(),
         ))
+    }
+
+    fn try_borrow_from_left_view(
+        &self,
+        node: &mut NodeView,
+        parent_node: &mut NodeView,
+        idx: usize,
+        track: &mut impl TxnTracker,
+    ) -> Result<bool, TreeError> {
+        if idx == 0 {
+            return Ok(false);
+        }
+        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
+        let left_child_idx = idx - 1; // The index of the left sibling in the children array
+        let left_sibling_id = parent_node.child_ptr_at(left_child_idx)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Left sibling id at index {} not found",
+                left_child_idx
+            ))
+        })?;
+        let Some(mut left_sibling) = self.storage.read_node_view(left_sibling_id)? else {
+            return Err(TreeError::NodeNotFound(
+                format!("Left sibling id: {} not found", left_sibling_id).to_string(),
+            ));
+        };
+        match (&mut left_sibling, &mut *node) {
+            (
+                NodeView::Leaf {
+                    ..
+                },
+                NodeView::Leaf {
+                    ..
+                },
+            ) => {
+                if left_sibling.keys_len() > self.min_leaf_keys {
+                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?.to_vec();
+                    let borrowed_value = left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?.ok_or_else(|| {
+                        TreeError::BackendAny("Left sibling has no values to borrow".to_string())
+                    })?;
+                    node.insert_at(0, &borrowed_key, borrowed_value)?;
+                    left_sibling.delete_at(left_sibling.keys_len() - 1)?;
+
+                    // Update the separator key with the borrowed key - separator should alwasy be the first key of the right child
+                    parent_node.replace_key_at(parent_key_idx, &borrowed_key)?;
+                } else {
+                    return Ok(false);
+                }
+            }
+            (
+                NodeView::Internal {
+                    ..
+                },
+                NodeView::Internal {
+                    ..
+                },
+            ) => {
+                if left_sibling.keys_len() > self.min_internal_keys {
+                    let borrowed_key = left_sibling.key_at(left_sibling.keys_len() - 1)?.to_vec();
+                    let borrowed_child = left_sibling.child_ptr_at(left_sibling.children_len()? - 1)?.ok_or_else(|| {
+                        TreeError::BackendAny("Left sibling has no children to borrow".to_string())
+                    })?;
+                    let separator_key = parent_node.key_at(parent_key_idx)?;
+                    node.push_front(separator_key.as_bytes(), borrowed_child)?;
+                    
+                    left_sibling.delete_at(left_sibling.keys_len() - 1)?;
+                    // Update the parent key with the borrowed key
+                    parent_node.replace_key_at(parent_key_idx, &borrowed_key)?;
+                } else {
+                    return Ok(false);
+                }
+            }
+            _ => {
+                return Err(TreeError::BackendAny(
+                    "Expected matching node types for borrowing".to_string(),
+                ));
+            }
+        };
+        let new_node_id = self.write_node_view(node, track)?;
+        let new_left_node_id = self.write_node_view(&left_sibling, track)?;
+
+        track.reclaim(left_sibling_id);
+        parent_node.replace_child_at(left_child_idx, new_left_node_id)?;
+        let current_child_id = parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Child pointer at index {} in node {} is None",
+                idx, left_sibling_id
+            ))
+        })?;
+        track.reclaim(current_child_id);
+        parent_node.replace_child_at(idx, new_node_id)?;
+
+        Ok(true)
     }
 
     // Tries to borrow a key from the left sibling of the current node.
@@ -1173,6 +1340,103 @@ where
         Ok(true)
     }
 
+    fn try_borrow_from_right_view(
+        &self,
+        node: &mut NodeView,
+        parent_node: &mut NodeView,
+        idx: usize,
+        track: &mut impl TxnTracker,
+    ) -> Result<bool, TreeError> {
+        if idx >= parent_node.keys_len() {
+            return Ok(false); // No right sibling to borrow from
+        }
+        let parent_key_idx = idx; // The key in the parent node that separates the two children
+        let right_sibling_id = parent_node.child_ptr_at(idx + 1)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Right sibling id at index {} not found",
+                idx + 1
+            ))
+        })?;
+        let Some(mut right_sibling) = self.storage.read_node_view(right_sibling_id)? else {
+            return Err(TreeError::NodeNotFound(
+                format!("Right sibling id: {} not found", right_sibling_id).to_string(),
+            ));
+        };
+        match (&mut *node, &mut right_sibling) {
+            (
+                NodeView::Leaf {
+                    ..
+                },
+                NodeView::Leaf {
+                    ..
+                },
+            ) => {
+                if right_sibling.keys_len() > self.min_leaf_keys {
+                    // Borrow from the right sibling
+                    let borrowed_key = right_sibling.key_at(0)?;
+                    let borrowed_value = right_sibling.value_bytes_at(0)?.ok_or_else(|| {
+                        TreeError::BackendAny("Right sibling has no values to borrow".to_string())
+                    })?;
+                    node.insert_at(node.keys_len(), borrowed_key.as_bytes(), borrowed_value.as_bytes())?;
+                    right_sibling.delete_at(0)?;
+                    
+                    let separator_key = right_sibling.key_at(0)?;
+
+                    // Update the separator key with the first key  of the right sibling
+                    parent_node.replace_key_at(parent_key_idx, separator_key.as_bytes())?;
+                } else {
+                    return Ok(false); // Not enough keys to borrow
+                }
+            }
+            (
+                NodeView::Internal {
+                    ..
+                },
+                NodeView::Internal {
+                    ..
+                },
+            ) => {
+                if right_sibling.keys_len() > self.min_internal_keys {
+                    // Steps for Internal node are diffent we need to swap the first key of the
+                    // right sibling with the separator from parent
+                    // 1. Get the first key of the right sibling and the separator key from parent
+                    let separator_key = parent_node.key_at(parent_key_idx)?.to_vec();
+                    let right_first_key = right_sibling.delete_key_at(0)?;
+                    // 2. Update the parent key with the first key of the right sibling
+                    parent_node.replace_key_at(parent_key_idx, right_first_key.as_bytes())?;
+                    let borrowed_child = right_sibling.child_ptr_at(0)?.ok_or_else(|| {
+                        TreeError::BackendAny("Right sibling has no children to borrow".to_string())
+                    })?;
+                    // 3. Move separator key from parent to the left node
+                    node.insert_separator_at(node.keys_len(), &separator_key, borrowed_child)?;
+                    right_sibling.delete_child_at(0)?;
+                } else {
+                    return Ok(false); // Not enough keys to borrow
+                }
+            }
+            _ => {
+                return Err(TreeError::BackendAny(
+                    "Expected matching node types for borrowing".to_string(),
+                ));
+            }
+        }
+        let new_node_id = self.write_node_view(node, track)?;
+        let new_right_node_id = self.write_node_view(&right_sibling, track)?;
+
+        track.reclaim(right_sibling_id);
+        parent_node.replace_child_at(idx + 1, new_right_node_id)?;
+        let current_child_id = parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Child pointer at index {} in node {} is None",
+                idx, right_sibling_id
+            ))
+        })?;
+        track.reclaim(current_child_id);
+        parent_node.replace_child_at(idx, new_node_id)?;
+
+        Ok(true)
+    }
+
     // Tries to borrow a key from the right sibling of the current node.
     fn try_borrow_from_right(
         &self,
@@ -1261,6 +1525,104 @@ where
         Ok(true)
     }
 
+    fn try_merge_with_left_view(
+        &self,
+        node: &mut NodeView,
+        parent_node: &mut NodeView,
+        idx: usize,
+        track: &mut impl TxnTracker,
+    ) -> Result<Option<NodeId>, TreeError> {
+        if idx == 0 {
+            return Ok(None);
+        }
+        let left_child_idx = idx - 1; // The index of the left sibling in the children array
+        let left_sibling_id = parent_node.child_ptr_at(left_child_idx)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Left sibling id at index {} not found",
+                left_child_idx
+            ))
+        })?;
+        let parent_key_idx = idx - 1; // The key in the parent node that separates the two children
+        let Some(mut left_sibling) = self.storage.read_node_view(left_sibling_id)? else {
+            return Err(TreeError::NodeNotFound(
+                format!("Left sibling id: {} not found", left_sibling_id).to_string(),
+            ));
+        };
+        match (&mut left_sibling, &mut *node) {
+            (
+                NodeView::Leaf {
+                    ..
+                },
+                NodeView::Leaf {
+                    ..
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
+                if left_sibling.keys_len() + node.keys_len() > self.max_keys {
+                    return Ok(None); // Cannot merge, total keys exceed max keys
+                }
+                // Merge the current node with the left sibling
+                let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
+                let merged_node_id = self.write_node_view(merged_node, track)?;
+                
+                track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        idx, left_sibling_id
+                    ))
+                })?); // Reclaim the left sibling node
+                parent_node.delete_child_at(idx)?;
+                track.reclaim(left_sibling_id); // Reclaim the left sibling node
+                parent_node.replace_child_at(left_child_idx, merged_node_id)?; // Update the left sibling with the merged node ID
+                // Update the parent keys
+                if parent_node.keys_len() > 0 {
+                    parent_node.delete_key_at(parent_key_idx)?; // Update the parent key with the first key of the merged node
+                }
+                Ok(Some(merged_node_id))
+            }
+            (
+                NodeView::Internal {
+                    ..
+                },
+                NodeView::Internal {
+                    ..
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
+                if left_sibling.keys_len() + node.keys_len() > self.max_keys {
+                    return Ok(None); // Cannot merge, total keys exceed max keys
+                }
+                // The key that separates
+                // The two children has to be removed and added to the left sibling
+                let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
+                left_sibling.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), node.child_ptr_at(0)?.ok_or_else(|| {
+                    TreeError::BackendAny("Right sibling has no children to borrow".to_string())
+                })?)?;
+                
+                // Merge the left sibling with the current node
+                let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
+
+                let merged_node_id = self.write_node_view(merged_node, track)?;
+                // Update the parent node
+                track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        idx, left_sibling_id
+                    ))
+                })?); // Reclaim the left sibling node
+                parent_node.delete_child_at(idx)?;
+                track.reclaim(left_sibling_id); // Reclaim the left sibling node
+                parent_node.replace_child_at(left_child_idx, merged_node_id)?; // Update the left sibling with the merged node
+                Ok(Some(merged_node_id))
+            }
+            _ => Err(TreeError::BackendAny(
+                "Expected matching node types for merging".to_string(),
+            )),
+        }
+    }
+
+
+    // first key of the merged node 
     // Tries to merge the current node with its left sibling if possible.
     fn try_merge_with_left(
         &self,
@@ -1330,6 +1692,119 @@ where
                 children.remove(idx);
                 track.reclaim(children[idx - 1]); // Reclaim the left sibling node
                 children[idx - 1] = merged_node_id; // Update the left sibling with the merged node
+                Ok(Some(merged_node_id))
+            }
+            _ => Err(TreeError::BackendAny(
+                "Expected matching node types for merging".to_string(),
+            )),
+        }
+    }
+
+    fn try_merge_with_right_view(
+        &self,
+        node: &mut NodeView,
+        parent_node: &mut NodeView,
+        idx: usize,
+        track: &mut impl TxnTracker,
+    ) -> Result<Option<NodeId>, TreeError> {
+        // Check if there is a right sibling to merge with
+        let right_idx = idx + 1;
+        if right_idx >= parent_node.children_len()? {
+            return Ok(None);
+        }
+
+        let right_sibling_id = parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
+            TreeError::BackendAny(format!(
+                "Right sibling id at index {} not found",
+                right_idx
+            ))
+        })?;
+        let parent_key_idx = idx; // The key in the parent node that separates the two children
+        let Some(mut right_sibling) = self.storage.read_node_view(right_sibling_id)? else {
+            return Err(TreeError::NodeNotFound(
+                format!("Right sibling id: {} not found", right_sibling_id).to_string(),
+            ));
+        };
+        match (&mut *node, &mut right_sibling) {
+            (
+                NodeView::Leaf {
+                    ..
+                },
+                NodeView::Leaf {
+                    ..
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
+                if node.keys_len() + right_sibling.keys_len() > self.max_keys {
+                    return Ok(None); // Cannot merge, total keys exceed max keys
+                }
+                // Merge the current node with the left sibling
+                let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
+                let merged_node_id = self.write_node_view(merged_node, track)?;
+                // Update the parent node
+                // Reclaim the right sibling node and  remove
+                track.reclaim(parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        right_idx, right_sibling_id
+                    ))
+                })?);
+                parent_node.delete_child_at(right_idx)?;
+                // Reclaim the left sibling node
+                track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        idx, right_sibling_id
+                    ))
+                })?);
+                parent_node.replace_child_at(idx, merged_node_id)?;
+                // Update the parent keys
+                if parent_node.keys_len() > 0 {
+                    parent_node.delete_key_at(parent_key_idx)?; // Update the parent key with the first key of the merged node
+                }
+                Ok(Some(merged_node_id))
+            }
+            (
+                NodeView::Internal {
+                    ..
+                },
+                NodeView::Internal {
+                    ..
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
+                if node.keys_len() + right_sibling.keys_len() > self.max_keys {
+                    return Ok(None); // Cannot merge, total keys exceed max keys
+                }
+                
+                let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
+
+                // The key that separates
+                // the two children has to be removed and added to the left sibling together with
+                // the first child of the right sibling
+                node.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), right_sibling.child_ptr_at(0)?.ok_or_else(|| {
+                    TreeError::BackendAny("Right sibling has no children to borrow".to_string())
+                })?)?;
+
+                // Merge the current node with the right sibling
+                let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
+                let merged_node_id = self.write_node_view(merged_node, track)?;
+                
+                // Update the parent node
+                track.reclaim(parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        right_idx, right_sibling_id
+                    ))
+                })?); // Reclaim the right sibling node
+                parent_node.delete_child_at(right_idx)?;
+                track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
+                    TreeError::BackendAny(format!(
+                        "Child pointer at index {} in node {} is None",
+                        idx, right_sibling_id
+                    ))
+                })?); // Reclaim the left sibling node
+                parent_node.replace_child_at(idx, merged_node_id)?;
                 Ok(Some(merged_node_id))
             }
             _ => Err(TreeError::BackendAny(
@@ -1411,6 +1886,55 @@ where
                 track.reclaim(children[idx]); // Reclaim the left sibling node
                 children[idx] = merged_node_id; // Update the left sibling with the merged node
                 Ok(Some(merged_node_id))
+            }
+            _ => Err(TreeError::BackendAny(
+                "Expected matching node types for merging".to_string(),
+            )),
+        }
+    }
+
+    pub fn merge_nodes_view<'s>(
+        &'s self,
+        left_node: &'s mut NodeView,
+        right_node: &'s mut NodeView,
+    ) -> Result<&'s NodeView, TreeError> {
+        match (&mut *left_node, &mut *right_node) {
+            (
+                NodeView::Leaf {
+                    ..
+                },
+                NodeView::Leaf {
+                    ..
+                },
+            ) => {
+                // Check if the total number of keys exceeds the maximum allowed
+                if left_node.keys_len() + right_node.keys_len() > self.max_keys {
+                    return Err(TreeError::BackendAny(
+                        "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
+                    ));
+                }
+                //TODO : Merge into the emptier node
+                left_node.merge_into(right_node)?;
+                Ok(left_node)
+            }
+            (
+                NodeView::Internal {
+                    ..
+                },
+                NodeView::Internal {
+                    ..
+                },
+            ) => {
+                if left_node.keys_len() + right_node.keys_len() > self.max_keys {
+                    return Err(TreeError::BackendAny(
+                        "Cannot merge internal nodes, total keys exceed max keys".to_string(),
+                    ));
+                }
+
+                // Update the parent node with the new node ID
+                //TODO : Merge into the emptier node
+                left_node.merge_into(right_node)?;
+                Ok(left_node)
             }
             _ => Err(TreeError::BackendAny(
                 "Expected matching node types for merging".to_string(),

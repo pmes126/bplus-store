@@ -226,6 +226,9 @@ impl LeafPage {
         key_enc: &[u8],
         val_bytes: &[u8],
     ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
         let mut scratch = Vec::new();
 
         // scratch
@@ -298,10 +301,193 @@ impl LeafPage {
         self.insert_at(idx, key_enc, val_bytes)
     }
 
+    /// overwrite key at index `idx` with new key bytes
+    pub fn replace_key_at(&mut self, idx: usize, key_bytes: &[u8]) -> Result<(), PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, repl) = self.fmt().replace_plan(kb, idx, key_bytes, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + self.key_count() as usize * SLOT_SIZE;
+        let values_hi_new = self
+            .values_hi_usize()
+            .checked_sub(0) // no value change
+            .ok_or(PageError::PageFull {})?;
+        if slots_end_new > values_hi_new {
+            return Err(PageError::PageFull {});
+        }
+
+        // Move slot dir by Δk to stay flush
+        self.move_slot_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.end;
+        let tail_src_end = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice
+        Ok(())
+    }
+
+    pub fn insert_key_at(
+        &mut self,
+        idx: usize,
+        key_enc: &[u8],
+    ) -> Result<(), PageError> {
+        if idx > self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+
+        // scratch
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, insert_bytes) = self.fmt().insert_plan(kb, idx, key_enc, &mut scratch);
+        let delta_k = insert_bytes.len() as isize;
+
+        // CAPACITY
+        let keys_end_old = self.keys_end();
+        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        if slots_end_new > self.values_hi_usize() {
+            return Err(PageError::PageFull {});
+        }
+
+        // Move slot dir by Δk to stay flush
+        self.move_slot_dir(delta_k)?;
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = (old_len as isize + delta_k) as usize;
+        self.set_key_block_len(new_len as u16);
+
+        // shift tail
+        let tail_src_start = ks + range.start;
+        let tail_src_end = ks + old_len;
+        let tail_dst_start = (tail_src_start as isize + delta_k) as usize;
+        self.buf
+            .copy_within(tail_src_start..tail_src_end, tail_dst_start);
+
+        // write replacement bytes
+        let hole_start = ks + range.start;
+
+        self.buf[hole_start..hole_start + insert_bytes.len()].copy_from_slice(&insert_bytes);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        self.set_key_count(self.key_count() + 1);
+        Ok(())
+    }
+
+    /// delete key and return its encoded bytes at index `idx`
+    pub fn delete_key_at(&mut self, idx: usize, _scratch: &mut [u8]) -> Result<Vec<u8>, PageError> {
+        if idx >= self.key_count() as usize {
+            return Err(PageError::IndexOutOfBounds {});
+        }
+        let mut scratch = Vec::new();
+        let key = self.fmt().decode_at(self.key_block(), idx, &mut scratch).to_vec();
+
+        // Plan and get delta_k
+        let kb = self.key_block(); // &[u8]
+        let (range, repl) = self.fmt().delete_plan(kb, idx, &mut scratch); // same idea as insert_plan
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize; // usually negative
+
+        // SPLICE inside the key-block region (one copy_within + one write)
+        //
+        // key block before: |<-- range --><-- rest -->|
+        // key block after:  |<-- insert_bytes --><--range--><-- rest -->|
+        let ks = self.keys_start();
+        let new_len: u16 = (self.key_block_len() as isize + delta_k)
+            .try_into()
+            .map_err(|_e| PageError::CorruptedData {
+                msg: "block length out of range".to_string(),
+            })?;
+
+        // Shift tail part
+        let tail_src_start = ks + range.end;
+        //let tail_src_end   = self.keys_end();
+        let tail_src_end = self.slots_end(); // shift everthing in the key block + slot dir
+        let tail_dst = ks + range.start;
+        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
+
+        // adjust format metadata (restart offsets etc.)
+        //let kb_final = &mut self.buf[ks..ks + new_len];
+        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
+
+        // Adjust key block length
+        self.set_key_count(self.key_count().saturating_sub(1));
+        self.set_key_block_len(new_len);
+        Ok(key)
+    }
+
     /// overwrite value at index `idx` with new value bytes (doesn't move old bytes).
     pub fn overwrite_value_at(&mut self, idx: usize, val_bytes: &[u8]) -> Result<(), PageError> {
         let (val_off, val_len) = self.alloc_value_tail(val_bytes)?; // respects slot region
         self.overwrite_slot_at(idx, val_off, val_len)
+    }
+
+    /// Append a key, value  pair, can be used during bulk loading.
+    pub fn append(&mut self, key_enc: &[u8], val: &[u8]) -> Result<(), PageError> {
+        // plan as an append
+        let kb = self.key_block();
+        let (range, repl) = self.fmt().insert_plan(kb, self.key_count() as usize, key_enc, &mut Vec::new());
+        debug_assert_eq!(range.start, kb.len());
+        debug_assert_eq!(range.end,   kb.len());
+        let delta_k = repl.len() as isize;
+    
+        // capacity check: keys grow by delta_k; slots grow by 1; values by val.len()
+        let keys_end_new  = (self.keys_end() as isize + delta_k) as usize;
+        let slots_end_new = keys_end_new + (self.key_count() as usize + 1) * SLOT_SIZE;
+        let values_hi_new = self.values_hi_usize().checked_sub(val.len()).ok_or(PageError::PageFull {})?;
+        if slots_end_new > values_hi_new { return Err(PageError::PageFull {}); }
+    
+        // move slot dir by delta_k (kept flush)
+        self.move_slot_dir(delta_k)?;
+    
+        // append key bytes (no tail shift)
+        let ks = self.keys_start();
+        let old_len = self.key_block_len() as usize;
+        let new_len = old_len + repl.len();
+        self.buf[ks + old_len .. ks + new_len].copy_from_slice(&repl);
+        self.set_key_block_len(new_len as u16);
+    
+        // append value + write slot at the end
+        let (off, len) = self.alloc_value_tail(val)?;
+        self.write_slot(self.key_count() as usize, LeafSlot { val_off: off, val_len: len })?;
+        self.set_key_count(self.key_count() + 1);
+        Ok(())
     }
 
     /// Return the *encoded key bytes* at index `idx`.
@@ -396,34 +582,44 @@ impl LeafPage {
         // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
         self.set_key_block_len(new_len);
+        self.compact_values()?;
         Ok(())
     }
 
     // -------- compaction (optional) --------
 
-    /// Pack value bytes tightly at the end and fix slot offsets.
-    pub fn compact_values(&mut self) {
+    /// Pack value bytes tightly at the end and fix slot offsets. Should be called periodiacally
+    /// after deletes and before merges.
+    pub fn compact_values(&mut self) -> Result<(), PageError> {
         let n = self.key_count() as usize;
-        let mut write = PAGE_SIZE;
-        // Copy values in reverse order to avoid overlap
-        for i in (0..n).rev() {
-            let slot = self.read_slot(i).unwrap();
-            let off = slot.val_off as usize;
-            let len = slot.val_len as usize;
-            write -= len;
-            // memmove
-            self.buf.copy_within(off..off + len, write);
+        if n == 0 {
+            self.set_values_hi(BUFFER_SIZE as u16);
+            return Ok(());
+        }
+        let mut dst = BUFFER_SIZE;
+        // 1) Snapshot all (slot_index, off, len)
+        let mut items: Vec<(usize, usize, usize)> = Vec::with_capacity(n);
+        for i in 0..n {
+            let s = self.read_slot(i)?;
+            items.push((i, s.val_off as usize, s.val_len as usize));
+        }
+
+        // 2) Sort by old offset ASC (we'll iterate DESC to move toward higher addresses)
+        items.sort_unstable_by_key(|&(_, off, _)| off);
+        for &(idx, off, len) in items.iter().rev() { 
+            dst -= len;
+            self.buf.copy_within(off..off + len, dst);
             // update slot
             self.write_slot(
-                i,
+                idx,
                 LeafSlot {
-                    val_off: write as u16,
+                    val_off: dst as u16,
                     val_len: len as u16,
                 },
-            )
-            .unwrap();
+            )?;
         }
-        self.set_values_hi(write as u16);
+        self.set_values_hi(dst as u16);
+        Ok(())
     }
 
     // ====== internals ======
@@ -763,6 +959,45 @@ mod tests {
         let (ke4, ve4) = new_page.get_kv_at(2, &mut scratch).unwrap();
         assert_eq!(ke4, b"date");
         assert_eq!(ve4, b"brown");
+    }
+
+    #[test]
+    fn test_replace_key() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry"];
+        let values = ["red", "yellow", "dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        // Replace "banana" with "blueberry"
+        page.replace_key_at(1, "blueberry".as_bytes()).unwrap();
+
+        let mut scratch = Vec::new();
+        for (i, k) in ["apple", "blueberry", "cherry"].iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, k.as_bytes());
+            assert_eq!(ve, values[i].as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_append() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry", "blueberry"];
+        let values = ["red", "yellow", "dark red", "blue"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.append(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        let mut scratch = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, k.as_bytes());
+            assert_eq!(ve, values[i].as_bytes());
+        }
     }
 
     //#[test]
