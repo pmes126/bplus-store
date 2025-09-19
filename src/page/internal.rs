@@ -178,24 +178,22 @@ impl InternalPage {
         }
         let mut scratch = Vec::new();
 
-        // 1) PLAN splice in key block
+        // Plan splice in key block
         let (range, repl) = self
             .fmt()
             .insert_plan(self.key_block(), idx, key, &mut scratch);
-        // let delta_k = repl.len() as isize - (range.end - range.start) as isize;
-        let delta_k = repl.len() as isize;
+        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
 
-        // CAPACITY
+        // Capacity checks
         let keys_end_old = self.keys_end();
         let keys_end_new = (keys_end_old as isize + delta_k) as usize;
-        let children_end_new = keys_end_new + (self.key_count() as usize + 2) * CHILD_ID_SIZE;
+        let children_end_new = keys_end_new + (self.key_count() as usize) * CHILD_ID_SIZE;
         if children_end_new > PAGE_SIZE {
             return Err(PageError::PageFull {});
         }
 
-        // 2) CAPACITY
         let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
-        let new_children_len = (self.key_count() as usize + 2) * CHILD_ID_SIZE;
+        let new_children_len = (self.key_count() as usize) * CHILD_ID_SIZE;
         let new_used = new_keys_end + new_children_len;
         if new_used > PAGE_SIZE {
             return Err(PageError::PageFull {});
