@@ -142,7 +142,7 @@ where
 
     fn write_node_view(&self, node_view: &NodeView) -> Result<u64, StorageError> {
         let buf = NoopNodeViewCodec::encode(node_view)?;
-        let res = self.store.write_page(&buf)?;
+        let res = self.store.write_page(buf)?;
         Ok(res)
     }
 

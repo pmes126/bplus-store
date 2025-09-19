@@ -95,7 +95,7 @@ impl NodeView {
         self.key_at(0)
     }
 
-    /// Find the insertion index for a given key
+    /// Find the insertion index for a given key. This is using a comparator from the key format
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
             NodeView::Internal { page } => {
@@ -105,6 +105,21 @@ impl NodeView {
             NodeView::Leaf { page } => {
                 let mut scratch = Vec::new();
                 page.lower_bound(probe, &mut scratch)
+            }
+        }
+    }
+
+    /// Find the insertion index for a given key. Taking a comparator as a parameter
+    pub fn lower_bound_cmp(&self, probe: &[u8], cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering  ) -> Result<usize, usize>
+    {
+        match self {
+            NodeView::Internal { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound_cmp(probe, &mut scratch, cmp)
+            }
+            NodeView::Leaf { page } => {
+                let mut scratch = Vec::new();
+                page.lower_bound_cmp(probe, &mut scratch, cmp)
             }
         }
     }

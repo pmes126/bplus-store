@@ -64,8 +64,6 @@ pub struct LeafPage {
     buf: [u8; BUFFER_SIZE],
 }
 
-//assert_eq_size!(LeafPage, [u8; PAGE_SIZE]);
-
 impl LeafPage {
     pub fn new(keyfmt_id: u8) -> Self {
         LeafPage {
@@ -171,6 +169,11 @@ impl LeafPage {
     /// Lower bound on encoded key bytes; returns insertion index.
     pub fn lower_bound(&self, key_enc: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         self.fmt().seek(self.key_block(), key_enc, scratch)
+    }
+    
+    /// Lower bound on encoded key bytes; returns insertion index.
+    pub fn lower_bound_cmp(&self, key_enc: &[u8], scratch: &mut Vec<u8>,  cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering) -> Result<usize, usize> {
+        self.fmt().seek_with_cmp(self.key_block(), key_enc, scratch, cmp)
     }
 
     /// Find slot for encoded key bytes; returns Result(idx existing, idx insertion).

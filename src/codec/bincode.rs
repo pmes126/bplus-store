@@ -8,8 +8,6 @@ use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
 
-pub struct NoopNodeViewCodec;
-
 // initial capacity for encoding buffers
 const INIT_ENC_CAP: usize = 256;
 
@@ -237,6 +235,9 @@ pub struct DefaultNodeCodec<KC, VC> {
     _marker_v: std::marker::PhantomData<VC>,
 }
 
+// A Codec for transforming between a NodeView and a buffer
+pub struct NoopNodeViewCodec;
+
 impl<K, V, KC, VC> NodeCodec<K, V> for DefaultNodeCodec<KC, VC>
 where
     K: Ord + Clone,
@@ -374,16 +375,14 @@ impl NoopNodeViewCodec {
         }
     }
 
-    pub fn encode(node: &NodeView) -> Result<[u8; PAGE_SIZE], CodecError> {
+    pub fn encode(node: &NodeView) -> Result<&[u8; PAGE_SIZE], CodecError> {
         match node {
             NodeView::Leaf { page } => page
                 .to_bytes()
-                .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })
-                .copied(),
+                .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }),
             NodeView::Internal { page } => page
                 .to_bytes()
-                .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() })
-                .copied(),
+                .map_err(|e| CodecError::EncodeFailure { msg: e.to_string() }),
         }
     }
 }

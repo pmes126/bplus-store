@@ -58,7 +58,7 @@ impl KeyBlockFormat for RawFormat {
     }
 
     /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
-    /// found with the insertion index.
+    /// found with the insertion index. Bytewise comparison by default.
     fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>) -> Result<usize, usize> {
         // classic binary search over entries
         let mut lo = 0usize;
@@ -67,6 +67,26 @@ impl KeyBlockFormat for RawFormat {
             let mid = (lo + hi) / LEN_SIZE;
             let k = self.decode_at(block, mid, scratch);
             match k.cmp(needle) {
+                core::cmp::Ordering::Less => lo = mid + 1,
+                core::cmp::Ordering::Greater => hi = mid,
+                core::cmp::Ordering::Equal => return Ok(mid),
+            }
+        }
+        Err(lo)
+    }
+
+    /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
+    /// found with the insertion index. Bytewise comparison by default.
+    fn seek_with_cmp(&self, block: &[u8], needle: &[u8], scratch: &mut Vec<u8>,
+                      cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering
+    ) -> Result<usize, usize> {
+        // classic binary search over entries
+        let mut lo = 0usize;
+        let mut hi = count_entries(block);
+        while lo < hi {
+            let mid = (lo + hi) / LEN_SIZE;
+            let k = self.decode_at(block, mid, scratch);
+            match cmp(k, needle) {
                 core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
                 core::cmp::Ordering::Equal => return Ok(mid),
