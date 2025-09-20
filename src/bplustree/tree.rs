@@ -1011,7 +1011,7 @@ where
                 ));
             };
             {
-                let NodeView::Internal { page } = &mut parent_node else {
+                let NodeView::Internal { .. } = &mut parent_node else {
                     return Err(TreeError::BackendAny(
                         "Expected internal node as parent".to_string(),
                     ));
@@ -1200,7 +1200,7 @@ where
                     let borrowed_value = left_sibling.value_bytes_at(left_sibling.keys_len() - 1)?.ok_or_else(|| {
                         TreeError::BackendAny("Left sibling has no values to borrow".to_string())
                     })?;
-                    node.insert_at(0, &borrowed_key, &borrowed_value)?;
+                    node.insert_at(0, &borrowed_key, borrowed_value)?;
                     left_sibling.delete_at(left_sibling.keys_len() - 1)?;
 
                     // Update the separator key with the borrowed key - separator should alwasy be the first key of the right child
@@ -1598,11 +1598,13 @@ where
                 // The key that separates
                 // The two children has to be removed and added to the left sibling
                 let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
-                left_sibling.insert_key_at(left_sibling.keys_len(), seperator_key.as_bytes())?;
+                left_sibling.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), node.child_ptr_at(0)?.ok_or_else(|| {
+                    TreeError::BackendAny("Right sibling has no children to borrow".to_string())
+                })?)?;
                 
                 // Merge the left sibling with the current node
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
-                let merged_node_id = self.write_node_view(&merged_node, track)?;
+                let merged_node_id = self.write_node_view(merged_node, track)?;
                 // Update the parent node
                 track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
                     TreeError::BackendAny(format!(
@@ -1740,7 +1742,7 @@ where
                 }
                 // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
-                let merged_node_id = self.write_node_view(&merged_node, track)?;
+                let merged_node_id = self.write_node_view(merged_node, track)?;
                 // Update the parent node
                 track.reclaim(parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
                     TreeError::BackendAny(format!(
@@ -1778,7 +1780,7 @@ where
                 // The key that separates
                 // the two children has to be removed and added to the left sibling together with
                 // the first child of the right sibling
-                node.insert_separator_at(node.keys_len(), &seperator_key.as_bytes(), right_sibling.child_ptr_at(0)?.ok_or_else(|| {
+                node.insert_separator_at(node.keys_len(), seperator_key.as_bytes(), right_sibling.child_ptr_at(0)?.ok_or_else(|| {
                     TreeError::BackendAny("Right sibling has no children to borrow".to_string())
                 })?)?;
                 // Merge the current node with the right sibling

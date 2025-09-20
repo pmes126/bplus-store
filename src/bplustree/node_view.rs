@@ -384,3 +384,63 @@ impl NodeView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_view_merge() -> Result<()> {
+        // Create first leaf node and insert some key-value pairs
+        let mut leaf1 = NodeView::new_leaf(0u8);
+        leaf1.insert(b"key1", Some(b"value1"), None)?;
+        leaf1.insert(b"key2", Some(b"value2"), None)?;
+
+        // Create second leaf node and insert some key-value pairs
+        let mut leaf2 = NodeView::new_leaf(0u8);
+        leaf2.insert(b"key3", Some(b"value3"), None)?;
+        leaf2.insert(b"key4", Some(b"value4"), None)?;
+
+        // Merge leaf2 into leaf1
+        leaf1.merge_into(&mut leaf2)?;
+
+        // Verify that leaf1 now contains all key-value pairs
+        assert_eq!(leaf1.entry_count(), 4);
+        assert_eq!(leaf1.key_at(0)?, b"key1");
+        assert_eq!(leaf1.value_at(0)?, Some(b"value1".to_vec()));
+        assert_eq!(leaf1.key_at(1)?, b"key2");
+        assert_eq!(leaf1.value_at(1)?, Some(b"value2".to_vec()));
+        assert_eq!(leaf1.key_at(2)?, b"key3");
+        assert_eq!(leaf1.value_at(2)?, Some(b"value3".to_vec()));
+        assert_eq!(leaf1.key_at(3)?, b"key4");
+        assert_eq!(leaf1.value_at(3)?, Some(b"value4".to_vec()));
+
+        let mut internal1 = NodeView::new_internal(0u8);
+        internal1.write_leftmost_child(0)?; // Leftmost child
+        internal1.insert(b"key2", None, Some(1))?;
+        internal1.insert(b"key4", None, Some(2))?;
+        let mut internal2 = NodeView::new_internal(0u8);    
+        internal2.write_leftmost_child(3)?; // Leftmost child
+        internal2.insert(b"key6", None, Some(3))?;
+        internal2.insert(b"key8", None, Some(4))?;
+        internal1.merge_into(&mut internal2)?;
+        assert_eq!(internal1.entry_count(), 4);
+        assert_eq!(internal1.key_at(0)?, b"key2");
+        assert_eq!(internal1.child_ptr_at(0)?, Some(0)); // Leftmost child
+        assert_eq!(internal1.key_at(1)?, b"key4");
+        assert_eq!(internal1.child_ptr_at(1)?, Some(1));
+        assert_eq!(internal1.key_at(2)?, b"key6");
+        assert_eq!(internal1.child_ptr_at(2)?, Some(2));
+        assert_eq!(internal1.key_at(3)?, b"key8");
+        assert_eq!(internal1.child_ptr_at(3)?, Some(3));
+        assert_eq!(internal1.child_ptr_at(4)?, Some(4)); // Rightmost child
+        // Child pointers are one more than keys
+        // So for key at index 0, child pointer is at index 0
+        //  For key at index 1, child pointer is at index 1 
+        //  For key at index 2, child pointer is at index 2
+        //  For key at index 3, child pointer is at index 3
+
+
+        Ok(())
+    }
+}
