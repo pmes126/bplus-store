@@ -1,11 +1,9 @@
 use crate::bplustree::NodeId;
-use crate::layout::{PAGE_SIZE};
+use crate::layout::PAGE_SIZE;
 use std::io::{self};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-pub const METADATA_TAG: u8 = 0xFF; // Metadata page tag
-pub const ACTIVE_FLAG: u8 = 0x01; // Active flag for metadata page
 pub const METADATA_PAGE_1: u8 = 0x00; // First metadata page slot
 pub const METADATA_PAGE_2: u8 = 0x01; // Second metadata page slot
 pub const INITIAL_PAGE_ID: u8 = 0x02; // Second metadata page slot
@@ -19,21 +17,25 @@ pub struct Metadata {
     pub txn_id: u64,
     pub height: usize, // Height of the B+ tree
     pub order: usize,  // Order of the B+ tree
-    pub size: usize, // Size of the B+ tree
+    pub size: usize,   // Size of the B+ tree
     pub checksum: u64, // Checksum for integrity verification
 }
 
 #[repr(C)]
 #[derive(AsBytes, FromBytes, FromZeroes, Debug, Clone, Copy)]
 pub struct MetadataPage {
-    //METADATA_TAG: u8, // Tag to identify this as a metadata page
-    //METADATA_ID: u8, // ID for the metadata page
-    //ACTIVE_FLAG: u8, // Flag to indicate if this metadata page is active
-    pub data: Metadata, // Metadata structure
+    pub data: Metadata,           // Metadata structure
     _padding: [u8; PADDING_SIZE], // Padding to fill the rest of the page
 }
 
-pub fn new_metadata_page(root_id: u64, txn_id: u64, checksum: u64, height: usize, order: usize, size: usize) -> MetadataPage {
+pub fn new_metadata_page(
+    root_id: u64,
+    txn_id: u64,
+    checksum: u64,
+    height: usize,
+    order: usize,
+    size: usize,
+) -> MetadataPage {
     MetadataPage {
         data: Metadata {
             root_node_id: root_id, // Initial root node ID
@@ -56,7 +58,7 @@ pub fn new_metadata_page_with_object(meta: &Metadata) -> MetadataPage {
 
 impl MetadataPage {
     pub fn from_bytes(buf: &[u8; PAGE_SIZE]) -> Result<&Self, std::io::Error> {
-        MetadataPage::ref_from(buf).ok_or( io::Error::new(
+        MetadataPage::ref_from(buf).ok_or(io::Error::new(
             io::ErrorKind::InvalidData,
             "Failed to decode MetadataPage",
         ))

@@ -1,14 +1,14 @@
+use crate::bplustree::tree::StagedMetadata;
+use crate::bplustree::tree::{BPlusTree, BaseVersion, CommitError, SharedBPlusTree};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
-use crate::bplustree::tree::{SharedBPlusTree, BPlusTree, BaseVersion, CommitError};
-use crate::bplustree::tree::StagedMetadata;
-use crate::tests::common::{make_tree, load_tree, make_tree_generic};
+use crate::tests::common::{load_tree, make_tree, make_tree_generic};
 
 use anyhow::Result;
-use tempfile::TempDir;
+use rand::Rng;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
-use rand::Rng;
+use tempfile::TempDir;
 
 #[test]
 fn commit_persists_and_survives_reopen() {
@@ -18,7 +18,11 @@ fn commit_persists_and_survives_reopen() {
     // capture base
     let md = tree.get_metadata_ptr();
     let base = BaseVersion { committed_ptr: md };
-    let staged = StagedMetadata { root_id: 42, height: 3, size: 10 };
+    let staged = StagedMetadata {
+        root_id: 42,
+        height: 3,
+        size: 10,
+    };
 
     // commit (real file IO under the hood)
     tree.try_commit(&base, staged).expect("commit ok");
@@ -46,7 +50,9 @@ fn commit_and_load_tree() -> Result<()> {
     let multiplier = 10; // Number of times to insert
     let iterations = order * multiplier;
     let tree = make_tree(&dir, order).expect("create tree");
-    let base = BaseVersion { committed_ptr: tree.get_metadata() };
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
     let mut root_id = tree.get_root_id();
     let mut height = tree.get_height();
     let mut size = tree.get_size();
@@ -62,15 +68,23 @@ fn commit_and_load_tree() -> Result<()> {
     }
 
     // Commit the changes
-    assert!(tree.get_root_id() != root_id, "Root ID should be unchanged before commit {}", tree.get_root_id());
+    assert!(
+        tree.get_root_id() != root_id,
+        "Root ID should be unchanged before commit {}",
+        tree.get_root_id()
+    );
     let track = StagedMetadata {
         root_id,
         height,
-        size
+        size,
     };
 
     tree.try_commit(&base, track)?;
-    assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
+    assert!(
+        tree.get_root_id() == root_id,
+        "Root ID should be correct after commit {}",
+        tree.get_root_id()
+    );
     for i in 0..iterations {
         let key = i as u64;
         let res = tree.search(&key)?;
@@ -86,7 +100,12 @@ fn commit_and_load_tree() -> Result<()> {
         let value = format!("value_{}", i);
         let res = loaded_tree.search(&key)?;
         assert!(res.is_some(), "Loaded tree should have the key {}", key);
-        assert_eq!(loaded_tree.search(&key)?, Some(value), "Loaded tree should have the correct value for key {}", key);
+        assert_eq!(
+            loaded_tree.search(&key)?,
+            Some(value),
+            "Loaded tree should have the correct value for key {}",
+            key
+        );
     }
     Ok(())
 }
@@ -98,18 +117,21 @@ fn write_and_read_value() -> Result<(), anyhow::Error> {
     let key = 1u64;
     let value = "a".to_string();
     let res = tree.insert(key, value.clone());
-    assert!(res.is_ok(), "Node should be inserted successfully");
+    assert!(res.is_ok(), "Value should be inserted successfully");
     let root_id = res.unwrap().new_root_id;
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: tree.get_size(),
-    })?;
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
     let res = tree.search(&key)?;
-    assert!(res.is_some(), "Node should be read successfully");
+    assert!(res.is_some(), "Value should be read successfully");
     assert_eq!(res.unwrap(), value, "Value should match the inserted value");
     Ok(())
 }
@@ -119,7 +141,7 @@ fn write_and_read_values_multiple() -> Result<(), anyhow::Error> {
     let dir = TempDir::new().unwrap();
     let order = 20;
     let tree = make_tree(&dir, order).expect("create tree");
-    
+
     let mut root_id = tree.get_root_id();
     for i in 0..order - 1 {
         let key = i as u64;
@@ -181,11 +203,14 @@ fn write_and_read_string_as_key() -> Result<(), anyhow::Error> {
     let base = BaseVersion {
         committed_ptr: tree.get_metadata(),
     };
-    tree.try_commit(&base, StagedMetadata {
-        root_id,
-        height: tree.get_height(),
-        size: tree.get_size(),
-    })?;
+    tree.try_commit(
+        &base,
+        StagedMetadata {
+            root_id,
+            height: tree.get_height(),
+            size: tree.get_size(),
+        },
+    )?;
     let res = tree.search(&key)?;
     assert!(res.is_some(), "Node should be read successfully");
     assert_eq!(res.unwrap(), value, "Value should match the inserted value");
@@ -199,8 +224,8 @@ fn write_and_read_values_with_overflow() -> Result<(), anyhow::Error> {
     let tree = make_tree(&dir, order).expect("create tree");
     let multiplier = 1000; // Number of times to insert times the order - this will cause
     let mut root_id = tree.get_root_id();
-    // overflows 
-    for i in 0..order*multiplier {
+    // overflows
+    for i in 0..order * multiplier {
         let key = i as u64;
         let value = format!("value_{}", i);
         let res = tree.insert_with_root(key, value.clone(), root_id);
@@ -210,7 +235,7 @@ fn write_and_read_values_with_overflow() -> Result<(), anyhow::Error> {
         assert!(res.is_some(), "Value should be read successfully");
         assert_eq!(res.unwrap(), value, "Value should match the inserted value");
     }
-    for i in 0..order*multiplier {
+    for i in 0..order * multiplier {
         let key = i as u64;
         let value = format!("value_{}", i);
         let res = tree.search_with_root(&key, root_id)?;
@@ -227,7 +252,7 @@ fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
     let multiplier = 2; // Number of times to insert and delete
     let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
-    let bound = order as u64*multiplier;
+    let bound = order as u64 * multiplier;
     for i in 0..bound {
         let key = i;
         let value = format!("value_{}", i);
@@ -241,15 +266,25 @@ fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
         assert!(res.is_ok(), "Node should be inserted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each delete
         let res = tree.search_with_root(&key, root_id)?;
-        assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
+        assert!(
+            res.is_none(),
+            "Key {} should be deleted successfully res none {}",
+            key,
+            res.is_none()
+        );
 
         let mut rng = thread_rng();
         if bound == i + 1 {
             return Ok(()); // No more keys to search
         }
-        let key_rand = rng.gen_range(i+1..bound);
+        let key_rand = rng.gen_range(i + 1..bound);
         let res = tree.search_with_root(&(key_rand), root_id)?;
-        assert!(res.is_some(), "Key {} should be present res some {}", key_rand, res.is_some());
+        assert!(
+            res.is_some(),
+            "Key {} should be present res some {}",
+            key_rand,
+            res.is_some()
+        );
     }
     Ok(())
 }
@@ -262,7 +297,7 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
     // Inserting values
-    for i in 0..order as u64*multiplier {
+    for i in 0..order as u64 * multiplier {
         let key = i;
         let value = format!("value_{}", i);
         let res = tree.insert_with_root(key, value.clone(), root_id);
@@ -271,15 +306,20 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     }
     let mut size = tree.get_size();
     // Deleting all values
-    for i in 0..order as u64*multiplier {
+    for i in 0..order as u64 * multiplier {
         let key = i;
         let res = tree.delete_with_root(&key, root_id);
-        assert!(res.is_ok(), "Node should be deleted successfully");
+        assert!(res.is_ok(), "Key should be deleted successfully");
         let r = res.unwrap();
         root_id = r.new_root_id; // Update root_id after each delete
         size = r.new_size; // Update size after each delete
         let res = tree.search_with_root(&key, root_id)?;
-        assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
+        assert!(
+            res.is_none(),
+            "Key {} should be deleted successfully res none {}",
+            key,
+            res.is_none()
+        );
     }
 
     let base = BaseVersion {
@@ -297,10 +337,15 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
 
     assert!(res.is_empty(), "Tree should be empty after all deletions");
 
-    for i in 0..order as u64*multiplier {
+    for i in 0..order as u64 * multiplier {
         let key = i;
         let res = tree.search(&key)?;
-        assert!(res.is_none(), "Key {} should be deleted successfully res none {}", key, res.is_none());
+        assert!(
+            res.is_none(),
+            "Key {} should be deleted successfully res none {}",
+            key,
+            res.is_none()
+        );
     }
     Ok(())
 }
@@ -313,14 +358,14 @@ fn write_and_delete_values_random() -> Result<(), anyhow::Error> {
     let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
 
-    for i in 0..order as u64*multiplier {
+    for i in 0..order as u64 * multiplier {
         let key = i;
         let value = format!("value_{}", i);
         let res = tree.insert_with_root(key, value.clone(), root_id);
         assert!(res.is_ok(), "Node should be inserted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each insert
     }
-    let mut values_to_delete: Vec<u64> = (0..(order as u64)*multiplier).collect();
+    let mut values_to_delete: Vec<u64> = (0..(order as u64) * multiplier).collect();
     let mut rng = thread_rng();
     values_to_delete.shuffle(&mut rng);
 
@@ -341,7 +386,9 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
     let multiplier = 20_u64; // Number of times to insert and delete
     let tree = make_tree(&dir, order).expect("create tree");
     let mut root_id = tree.get_root_id();
+    #[allow(unused_assignments)]
     let mut height = tree.get_height();
+    #[allow(unused_assignments)]
     let mut size = tree.get_size();
 
     // No height increase on inserts up to order - 1
@@ -356,15 +403,23 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         let base = BaseVersion {
             committed_ptr: tree.get_metadata(),
         };
-        tree.try_commit(&base, StagedMetadata {
-            root_id,
-            height,
-            size
-        })?;
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height,
+                size,
+            },
+        )?;
     }
     root_id = tree.get_root_id();
-    assert_eq!(tree.get_height(), 1, "Height should be 1 after inserting {} nodes", order-1);
-    
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should be 1 after inserting {} nodes",
+        order - 1
+    );
+
     for i in 0..order - 1 {
         let base = BaseVersion {
             committed_ptr: tree.get_metadata(),
@@ -374,13 +429,20 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id; // Update root_id after each delete
         height = res.new_height;
         size = res.new_size;
-        tree.try_commit(&base, StagedMetadata {
-            root_id,
-            height,
-            size
-        })?;
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height,
+                size,
+            },
+        )?;
     }
-    assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should remain 1 after deleting all nodes"
+    );
 
     for i in 0..iterations {
         let base = BaseVersion {
@@ -392,11 +454,14 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id; // Update root_id after each insert
         height = res.new_height;
         size = res.new_size;
-        tree.try_commit(&base, StagedMetadata {
-            root_id,
-            height,
-            size
-        })?;
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height,
+                size,
+            },
+        )?;
     }
     for i in 0..iterations {
         let base = BaseVersion {
@@ -407,13 +472,20 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id; // Update root_id after each delete
         height = res.new_height;
         size = res.new_size;
-        tree.try_commit(&base, StagedMetadata {
-            root_id,
-            height,
-            size
-        })?;
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height,
+                size,
+            },
+        )?;
     }
-    assert_eq!(tree.get_height(), 1, "Height should remain 1 after deleting all nodes");
+    assert_eq!(
+        tree.get_height(),
+        1,
+        "Height should remain 1 after deleting all nodes"
+    );
     Ok(())
 }
 
@@ -424,20 +496,32 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
 
     let order = 4; // B+ tree order
     let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
-    let tree = SharedBPlusTree::new(BPlusTree::<String, String, FileStore<PageStore>>::new(store, order)?);
+    let tree = SharedBPlusTree::new(BPlusTree::<String, String, FileStore<PageStore>>::new(
+        store, order,
+    )?);
     let mut root_id = tree.get_root_id();
 
     for i in 0..order {
         let key = format!("key_{}", i);
         let value = format!("value_{}", i);
         let value_updated = format!("value_upd_{}", i);
+        println!("Inserting key: {}, value: {}", key, value);
         let res = tree.insert_with_root(key.clone(), value.clone(), root_id)?;
         root_id = res.new_root_id; // Update root_id after each insert
-        assert_eq!(tree.search_with_root(&key, root_id)?, Some(value.clone()), "Value should be inserted successfully");
+        assert_eq!(
+            tree.search_with_root(&key, root_id)?,
+            Some(value.clone()),
+            "Value should be inserted successfully"
+        );
+        println!("Inserting key: {}, updated value: {}", key, value_updated);
         let res = tree.insert_with_root(key.clone(), value_updated.clone(), root_id);
-        assert!(res.is_ok(), "Node should be inserted successfully");
+        assert!(res.is_ok(), "Updated value should be inserted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each insert
-        assert_eq!(tree.search_with_root(&key, root_id)?, Some(value_updated), "Value should be updated for duplicate key");
+        assert_eq!(
+            tree.search_with_root(&key, root_id)?,
+            Some(value_updated),
+            "Value should be updated for duplicate key"
+        );
     }
     Ok(())
 }
@@ -459,34 +543,52 @@ fn range_search_test() -> Result<()> {
             let value = format!("value_{}", i);
             let res = tree.insert_with_root(key, value.clone(), root_id)?;
             root_id = res.new_root_id; // Update root_id after each insert
-
         }
-        tree.try_commit(&base, StagedMetadata {
-            root_id,
-            height: tree.get_height(),
-            size: tree.get_size()
-        })?;
-        assert!(tree.get_root_id() == root_id, "Root ID should be correct after commit {}", tree.get_root_id());
+        tree.try_commit(
+            &base,
+            StagedMetadata {
+                root_id,
+                height: tree.get_height(),
+                size: tree.get_size(),
+            },
+        )?;
+        assert!(
+            tree.get_root_id() == root_id,
+            "Root ID should be correct after commit {}",
+            tree.get_root_id()
+        );
 
         // Perform range search
         let start = 0;
         let end = iterations as u64 - 1;
         let res = tree.search_in_range(&start, &end)?;
         assert!(res.is_some(), "Range search should be successful");
-        for (i,  value) in res.unwrap().enumerate() {
+        for (i, value) in res.unwrap().enumerate() {
             let (key, val) = value?;
-            
+
             assert_eq!(key, i as u64, "Key should match the index in range search");
-            assert_eq!(val, format!("value_{}", i), "Value should match the inserted value in range search");
+            assert_eq!(
+                val,
+                format!("value_{}", i),
+                "Value should match the inserted value in range search"
+            );
         }
 
-        let start_rand = rand::thread_rng().gen_range(0..(iterations/2)  as u64);
+        let start_rand = rand::thread_rng().gen_range(0..(iterations / 2) as u64);
         let end_rand = rand::thread_rng().gen_range(start_rand..iterations as u64);
         let res = tree.search_in_range(&start_rand, &end_rand)?;
         for (i, value) in res.unwrap().enumerate() {
             let (key, val) = value?;
-            assert_eq!(key, start_rand + i as u64, "Key should match the index in range search");
-            assert_eq!(val, format!("value_{}", start_rand + i as u64), "Value should match the inserted value in range search");
+            assert_eq!(
+                key,
+                start_rand + i as u64,
+                "Key should match the index in range search"
+            );
+            assert_eq!(
+                val,
+                format!("value_{}", start_rand + i as u64),
+                "Value should match the inserted value in range search"
+            );
         }
     }
     Ok(())
@@ -495,22 +597,24 @@ fn range_search_test() -> Result<()> {
 #[test]
 fn commits_toggle_metadata_slots_and_increment_txn() {
     let dir = TempDir::new().unwrap();
-    let order = 16; // B+ tree order
+    let order = 16;
     let tree = make_tree(&dir, order).expect("create tree");
 
     let mut last_txn = tree.get_metadata().txn_id;
 
-    for i in 0..order-1 {
+    for i in 0..order - 1 {
         loop {
-            let base = BaseVersion { committed_ptr: tree.get_metadata_ptr() };
+            let base = BaseVersion {
+                committed_ptr: tree.get_metadata_ptr(),
+            };
             let staged = StagedMetadata {
                 root_id: 100 + i as u64,
                 height: 3,
-                size: i as usize, 
+                size: i,
             };
             match tree.try_commit(&base, staged) {
                 Ok(()) => break,
-                Err(CommitError::RebaseRequired) => continue, // rare here, single thread
+                Err(CommitError::RebaseRequired) => continue, // shouldn't happen, single thread
                 Err(e) => panic!("unexpected error: {e:?}"),
             }
         }
@@ -524,17 +628,15 @@ fn commits_toggle_metadata_slots_and_increment_txn() {
 
     // Reopen and verify final state persisted
     drop(tree);
-    let tree2 = load_tree(&dir)
-        .expect("reopen tree");
+    let tree2 = load_tree(&dir).expect("reopen tree");
     let m2 = tree2.get_metadata();
     assert_eq!(m2.root_node_id, 100 + (order - 2) as u64);
     assert_eq!(m2.txn_id, last_txn);
 }
 
-// TODO: Implement functionality to recover from corrupt metadata blocks 
-//#[test]
-//fn recovery_picks_latest_valid_metadatapage_when_one_is_corrupt() {
-//}
+//TODO: Implement functionality to recover from corrupt metadata blocks
+#[test]
+fn recovery_picks_latest_valid_metadatapage_when_one_is_corrupt() {}
 
 #[test]
 fn concurrent_writers_retry_until_success() {
@@ -558,11 +660,19 @@ fn concurrent_writers_retry_until_success() {
                         size: (tid * 1000 + i) as usize,
                     };
                     loop {
-                        let base = BaseVersion { committed_ptr: t.get_metadata_ptr() };
+                        let base = BaseVersion {
+                            committed_ptr: t.get_metadata_ptr(),
+                        };
                         match t.try_commit(&base, staged.clone()) {
-                            Ok(()) => { ok += 1; break; }
+                            Ok(()) => {
+                                ok += 1;
+                                break;
+                            }
                             Err(CommitError::RebaseRequired) => continue,
-                            Err(e) => { println!("HERE HERE"); panic!("unexpected IO error: {e:?}");},
+                            Err(e) => {
+                                println!("HERE HERE");
+                                panic!("unexpected IO error: {e:?}");
+                            }
                         }
                     }
                 }
@@ -574,6 +684,9 @@ fn concurrent_writers_retry_until_success() {
     let total_ok: u64 = threads.into_iter().map(|h| h.join().unwrap()).sum();
 
     // Monotonic txn_id equals # of successful commits.
-    assert_eq!(tree.get_metadata().txn_id, total_ok + 1,  // txn_id starts at 1
-        "Total successful commits should match the final txn_id");
+    assert_eq!(
+        tree.get_metadata().txn_id,
+        total_ok + 1, // txn_id starts at 1
+        "Total successful commits should match the final txn_id"
+    );
 }

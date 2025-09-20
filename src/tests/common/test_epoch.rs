@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
+#![allow(dead_code)]
 
-use crate::bplustree::epoch::EpochManager;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default, Debug)]
 struct EpochState {
@@ -20,7 +20,9 @@ pub struct TestEpoch {
 
 impl TestEpoch {
     pub fn new() -> Self {
-        Self { state: Arc::new(Mutex::new(EpochState::default())) }
+        Self {
+            state: Arc::new(Mutex::new(EpochState::default())),
+        }
     }
 
     pub fn set_oldest_active(&self, e: u64) {

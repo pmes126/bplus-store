@@ -1,14 +1,14 @@
-use crate::bplustree::Node;
-use crate::storage::NodeStorage;
-use crate::storage::MetadataStorage;
-use crate::storage::metadata::MetadataPage;
-use crate::storage::metadata::Metadata;
+#![allow(dead_code)]
+use crate::bplustree::{Node, NodeView};
+use crate::codec::{DefaultKC, DefaultVC, KeyCodecDefault, ValueCodecDefault};
+use crate::metadata::Metadata;
+use crate::metadata::MetadataPage;
+use crate::storage::{MetadataStorage, NodeStorage, StorageError};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
-// Import your trait (adjust the path to your crate’s module layout)
 #[derive(Default, Debug)]
 pub struct StorageState {
     commits: Vec<(u8, u64, u64, usize, usize, usize)>, // (slot, txn_id, root_id, height, order, size)
@@ -22,7 +22,7 @@ pub struct TestStorage {
     pub state: Arc<Mutex<StorageState>>,
     pub fail_commit: Arc<AtomicBool>,
     pub fail_flush: Arc<AtomicBool>,
-    root_node_id: u64, // This can be used to simulate a root node ID
+    root_node_id: u64,
 }
 
 impl TestStorage {
@@ -75,8 +75,7 @@ impl MetadataStorage for TestStorage {
         size: usize,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "commit_metadata_with_object (injected failure)",
             ));
         }
@@ -88,11 +87,7 @@ impl MetadataStorage for TestStorage {
         Ok(())
     }
 
-    fn write_metadata(
-        &self,
-        slot: u8,
-        meta: &mut MetadataPage,
-    ) -> Result<(), std::io::Error> {
+    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
         // Simulate writing metadata by just logging it
         self.state.lock().unwrap().commits.push((
             slot,
@@ -107,7 +102,7 @@ impl MetadataStorage for TestStorage {
 
     fn read_metadata(&self, _slot: u8) -> Result<MetadataPage, std::io::Error> {
         // Simulate reading metadata by returning a dummy page
-        let dummy_page : MetadataPage = unsafe { std::mem::zeroed() };
+        let dummy_page: MetadataPage = unsafe { std::mem::zeroed() };
         Ok(dummy_page)
     }
 
@@ -134,8 +129,7 @@ impl MetadataStorage for TestStorage {
         metadata: &Metadata,
     ) -> Result<(), std::io::Error> {
         if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "commit_metadata_with_object (injected failure)",
             ));
         }
@@ -154,25 +148,36 @@ impl MetadataStorage for TestStorage {
 
 impl<K, V> NodeStorage<K, V> for TestStorage
 where
-    K: crate::storage::KeyCodec + Ord,
-    V: crate::storage::ValueCodec,
+    K: Ord + Clone,
+    V: Clone,
+    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
-    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, anyhow::Error> {
+    type KC = DefaultKC<K>;
+    type VC = DefaultVC<V>;
+
+    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, StorageError> {
         // Simulate reading a node by returning None
         Ok(None)
     }
 
-    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, anyhow::Error> {
+    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, StorageError> {
         // Simulate writing a node by returning a dummy ID
+        Ok(0)
+    }
+
+    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, StorageError> {
+        // Simulate reading a node view by returning None
+        Ok(None)
+    }
+
+    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, StorageError> {
+        // Simulate writing a node view by returning a dummy ID
         Ok(0)
     }
 
     fn flush(&self) -> Result<(), std::io::Error> {
         if self.fail_flush.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "flush (injected failure)",
-            ));
+            return Err(std::io::Error::other("flush (injected failure)"));
         }
         self.state.lock().unwrap().flushes += 1;
         Ok(())

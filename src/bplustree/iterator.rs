@@ -1,6 +1,9 @@
+#![allow(dead_code)]
+use crate::api::TreeError;
 use crate::bplustree::node::{Node, NodeId};
-use crate::storage::{KeyCodec, ValueCodec, NodeStorage};
-use std::fmt::Debug;
+use crate::bplustree::{EpochManager, epoch::ReaderGuard};
+use crate::storage::NodeStorage;
+use std::sync::Arc;
 
 struct TraversalFrame {
     node_id: NodeId,
@@ -8,17 +11,18 @@ struct TraversalFrame {
 }
 
 pub struct BPlusTreeIter<'a, K, V, S>
-    where K: KeyCodec + Ord,
-          V: ValueCodec,
-          S: NodeStorage<K, V>,
+where
+    K: Clone + Ord,
+    V: Clone,
+    S: NodeStorage<K, V>,
 {
-    pub(super) storage: &'a S,
-    pub current_leaf: Option<Node<K, V>>,
-    pub(super) index: usize,
-    pub(super) start: K,
-    pub(super) end: K,
+    storage: &'a S,
+    current_leaf: Option<Node<K, V>>,
+    index: usize,
+    start: K,
+    end: K,
     stack: Vec<TraversalFrame>,
-    pub phantom: std::marker::PhantomData<(K, V)>,
+    reader_guard: ReaderGuard,
 }
 
 struct LeafCursor<'a, K, V> {
@@ -28,14 +32,16 @@ struct LeafCursor<'a, K, V> {
     pos: usize,
 }
 
-impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S> 
-    where S: NodeStorage<K, V>,
-            K: KeyCodec + Clone + Ord,
-            V: ValueCodec + Clone,
+impl<'a, K, V, S> BPlusTreeIter<'a, K, V, S>
+where
+    K: Clone + Ord,
+    V: Clone,
+    S: NodeStorage<K, V>,
 {
     pub fn new(
         storage: &'a S,
         root_id: NodeId,
+        epoch_mgr: Arc<EpochManager>,
         start: &K,
         end: &K,
     ) -> Self {
@@ -46,18 +52,22 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
             start: start.clone(),
             end: end.clone(),
             index: 0,
-            phantom: std::marker::PhantomData,
+            reader_guard: epoch_mgr.pin(),
         };
         let _ = iter.descend_to_leaf(root_id, Some(start));
         iter
     }
 
-    fn descend_to_leaf(&mut self, mut node_id: NodeId, key: Option<&K>) -> Result<(), anyhow::Error> {
+    fn descend_to_leaf(
+        &mut self,
+        mut node_id: NodeId,
+        key: Option<&K>,
+    ) -> Result<(), anyhow::Error> {
         loop {
             let node = self.storage.read_node(node_id)?;
             match node {
                 Some(Node::Internal { keys, children }) => {
-                   let index = match key {
+                    let index = match key {
                         Some(k) => match keys.binary_search(k) {
                             Ok(i) => i + 1,
                             Err(i) => i,
@@ -76,8 +86,8 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
                         None => 0,
                     };
                     self.index = pos;
-                    self.current_leaf = node.clone();
-                    return Ok(())
+                    self.current_leaf = node;
+                    return Ok(());
                 }
                 None => {
                     // If we reach here, it means the node does not exist
@@ -88,12 +98,13 @@ impl<'a, K: Debug, V: Debug, S> BPlusTreeIter<'a, K, V, S>
     }
 }
 
-impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S> 
-    where S: NodeStorage<K, V>,
-          K: KeyCodec + Clone + Ord,
-          V: ValueCodec + Clone,
+impl<'a, K, V, S> Iterator for BPlusTreeIter<'a, K, V, S>
+where
+    K: Clone + Ord,
+    V: Clone,
+    S: NodeStorage<K, V>,
 {
-    type Item = Result<(K, V), anyhow::Error>;
+    type Item = Result<(K, V), TreeError>;
 
     // Returns the next item in the iteration, it returns a deep copy value of the Key and Value pair if it is within the range
     fn next(&mut self) -> Option<Self::Item> {
@@ -119,12 +130,17 @@ impl<'a, K: Debug, V: Debug, S> Iterator for BPlusTreeIter<'a, K, V, S>
                         let next_idx = i + 1;
                         if next_idx < children.len() {
                             let next_node = children[next_idx];
-                            self.stack.push(TraversalFrame { node_id: frame.node_id, index: next_idx });
+                            self.stack.push(TraversalFrame {
+                                node_id: frame.node_id,
+                                index: next_idx,
+                            });
                             let _ = self.descend_to_leaf(next_node, None);
                             break;
-                        } 
+                        }
                     }
-                    Some(Node::Leaf {..}) => { panic!("Invalid frame") }
+                    Some(Node::Leaf { .. }) => {
+                        panic!("Invalid frame")
+                    }
                     None => {
                         // If we reach here, it means we have traversed all nodes
                         return None;

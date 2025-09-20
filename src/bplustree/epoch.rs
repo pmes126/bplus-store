@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use crate::bplustree::NodeId;
-use std::collections::{HashMap, BTreeMap};
-use std::thread::{ThreadId};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::ThreadId;
 
 pub type Epoch = u64;
 
@@ -11,7 +13,7 @@ pub const COMMIT_COUNT: u64 = 10; // Number of commits before a new epoch is cre
 // Tracks active reader epochs and deferred_pages reclamation.
 #[derive(Debug)]
 pub struct EpochManager {
-    global_epoch:   AtomicU64,
+    global_epoch: AtomicU64,
     active_readers: Mutex<HashMap<ThreadId, Epoch>>,
     deferred_pages: Mutex<BTreeMap<u64, Vec<NodeId>>>, // (epoch, NodeId)
 }
@@ -37,14 +39,19 @@ impl EpochManager {
     pub fn advance(&self) -> u64 {
         self.global_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
-    
+
     pub fn current(&self) -> u64 {
         self.global_epoch.load(Ordering::SeqCst)
     }
 
     // Register a page for future reclamation
     pub fn add_reclaim_candidate(&self, epoch: u64, page_id: u64) {
-        self.deferred_pages.lock().unwrap().entry(epoch).or_default().push(page_id);
+        self.deferred_pages
+            .lock()
+            .unwrap()
+            .entry(epoch)
+            .or_default()
+            .push(page_id);
     }
 
     // Reader pins itself to current epoch
@@ -74,13 +81,20 @@ impl EpochManager {
     // Return the minimum epoch still pinned
     pub fn oldest_active(&self) -> Epoch {
         let readers = self.active_readers.lock().unwrap();
-        readers.values().copied().min().unwrap_or(self.global_epoch.load(Ordering::Relaxed))
+        readers
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.global_epoch.load(Ordering::Relaxed))
     }
 
     // Reclaim all pages older than or equal to a safe epoch
     pub fn reclaim(&self, safe_epoch: Epoch) -> Vec<NodeId> {
         let mut reclaimed = vec![];
-        let to_reclaim: Vec<u64> = self.deferred_pages.lock().unwrap()
+        let to_reclaim: Vec<u64> = self
+            .deferred_pages
+            .lock()
+            .unwrap()
             .range(..=safe_epoch) // exclude the safe_epoch itself anything older can be reclaimed
             .map(|(e, _)| *e)
             .collect();
@@ -131,6 +145,12 @@ impl EpochManager {
     }
 }
 
+impl Default for EpochManager {
+    fn default() -> Self {
+        EpochManager::new()
+    }
+}
+
 pub struct ReaderGuard {
     epoch_mgr: Arc<EpochManager>,
     tid: ThreadId,
@@ -165,7 +185,7 @@ mod tests {
             mgr.advance();
         }
 
-        for epoch in epochs[0..iterations-1].iter() {
+        for epoch in epochs[0..iterations - 1].iter() {
             let reclaim_id = *epoch;
             mgr.add_reclaim_candidate(*epoch, reclaim_id);
         }

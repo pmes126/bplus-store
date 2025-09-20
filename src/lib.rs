@@ -1,6 +1,14 @@
 //! B+ Tree library crate
 
-pub(crate) mod storage;
-pub(crate) mod bplustree;
+pub mod api;
+pub mod bplustree;
+pub mod codec;
+pub mod storage;
+
+pub(crate) mod keyfmt;
 pub(crate) mod layout;
+pub(crate) mod metadata;
+pub(crate) mod page;
 pub(crate) mod tests;
+
+pub use api::{DbBytes, TypedDb};
