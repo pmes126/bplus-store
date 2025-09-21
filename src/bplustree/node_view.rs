@@ -1,4 +1,5 @@
 use crate::page::{InternalPage, LeafPage};
+use crate::codec::{KeyCodec, ValueCodec};
 use anyhow::Result;
 
 pub type NodeId = u64;
@@ -383,6 +384,38 @@ impl NodeView {
             _ => Err(anyhow::anyhow!("Cannot merge nodes of different types")),
         }
     }
+
+    pub fn view_content<KC, VC, K, V>(&self) -> Result<(), anyhow::Error> 
+    where
+        K: std::fmt::Debug,
+        V: std::fmt::Debug,
+        KC: KeyCodec<K>,
+        VC: ValueCodec<V>,
+    {
+        match self {
+            NodeView::Internal { page } => {
+                let key_count = page.key_count();
+                let mut scratch = Vec::new();
+                for i in 0..key_count as usize {
+                    let key = page.get_key_at(i, &mut scratch)?;
+                    let key = KC::decode_key(key);
+                    let child_ptr = page.read_child_at(i + 1)?;
+                    println!("Key {}: {:?}, Child Ptr: {}", i, key, child_ptr);
+                }
+                Ok(())
+            }
+            NodeView::Leaf { page } => 
+            {
+                let key_count = page.key_count();
+                let mut scratch = Vec::new();
+                for i in 0..key_count as usize {
+                    let (k, v) = page.get_kv_at(i, &mut scratch)?;
+                    println!("Key {}: {:?}, Value: {:?}", i, k, v);
+                }
+                Ok(())
+            } 
+        }
+    }
 }
 
 #[cfg(test)]
@@ -439,7 +472,6 @@ mod tests {
         //  For key at index 1, child pointer is at index 1 
         //  For key at index 2, child pointer is at index 2
         //  For key at index 3, child pointer is at index 3
-
 
         Ok(())
     }

@@ -237,14 +237,6 @@ impl InternalPage {
         Ok(())
     }
 
-    /// Append a separator key and its right child at the far right.
-    /// `sep_key_enc` is the encoded key bytes (already order-preserving).
-    pub fn append(&mut self, sep_key_enc: &[u8], right_child: u64) -> Result<(), PageError> {
-        let idx = self.key_count() as usize; // append at end
-        self.insert_separator(idx, sep_key_enc, right_child)?;
-        Ok(())
-    }
-
     /// Insert a new key at index `idx` (0..=key_count), shifting existing keys to the right.
     pub fn insert_key_at(&mut self,
         idx: usize, 
@@ -304,6 +296,22 @@ impl InternalPage {
         Ok(())
     }
 
+    /// Append a separator key and its right child at the far right.
+    /// `sep_key_enc` is the encoded key bytes (already order-preserving).
+    pub fn append(&mut self, sep_key_enc: &[u8], right_child: u64) -> Result<(), PageError> {
+        let idx = self.key_count() as usize; // append at end
+        self.insert_separator(idx, sep_key_enc, right_child)?;
+        Ok(())
+    }
+
+    /// Push front a separator key and it's *left* child at idx 0. Used by borrowing ops.
+    pub fn push_front(&mut self, sep_key_enc: &[u8], left_child: u64) -> Result<(), PageError> {
+        self.insert_key_at(0, sep_key_enc)?;
+        self.children_shift_right_from(0);
+        self.write_child_at(0, left_child)?;
+        Ok(())
+    }
+
     /// Delete the separator at index `idx` (and child at `idx+1`)
     pub fn delete_separator(&mut self, idx: usize) -> Result<(), PageError> {
         if idx >= self.key_count() as usize {
@@ -343,69 +351,6 @@ impl InternalPage {
         self.set_key_count(self.key_count() - 1);
 
         // adjust format metadata
-        //let kb_final = &mut self.buf[ks..ks + new_len];
-        //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
-
-        Ok(())
-    }
-
-    /// Push front a new separator key (encoded bytes) and child pointer, shifting existing
-    /// keys/children to the right. Used by rebalancing operations.
-    pub fn push_front(
-        &mut self,
-        key: &[u8],
-        child: u64,
-    ) -> Result<(), PageError> {
-        let idx = 0;
-        let mut scratch = Vec::new();
-
-        // Plan splice in key block
-        let (range, repl) = self
-            .fmt()
-            .insert_plan(self.key_block(), idx, key, &mut scratch);
-        let delta_k = repl.len() as isize - (range.end - range.start) as isize;
-
-        // Capacity checks
-        let keys_end_old = self.keys_end();
-        let keys_end_new = (keys_end_old as isize + delta_k) as usize;
-        let children_end_new = keys_end_new + (self.key_count() as usize) * CHILD_ID_SIZE;
-        if children_end_new > PAGE_SIZE {
-            return Err(PageError::PageFull {});
-        }
-
-        let new_keys_end = (self.keys_end() as isize + delta_k) as usize;
-        let new_children_len = (self.key_count() as usize) * CHILD_ID_SIZE;
-        let new_used = new_keys_end + new_children_len;
-        if new_used > PAGE_SIZE {
-            return Err(PageError::PageFull {});
-        }
-
-        // 3) move children array by Δk to keep it flush after key block
-        self.move_child_dir(delta_k)?;
-
-        // 4) splice key block in-place (one copy_within + one copy)
-        let ks = self.keys_start();
-        let old_len = self.key_block_len() as usize;
-        let new_len = (old_len as isize + delta_k) as usize;
-        self.set_key_block_len(new_len as u16);
-
-        let tail_src_start = ks + range.end;
-        let tail_src_end = ks + old_len;
-        let tail_dst = (tail_src_start as isize + delta_k) as usize;
-
-        self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
-
-        let hole_start = ks + range.start;
-        self.buf[hole_start..hole_start + repl.len()].copy_from_slice(&repl);
-
-        // 5) insert child pointer at idx (shift right by one)
-        self.children_shift_right_from(idx);
-        self.write_child_at(idx, child)?;
-
-        // 6) bump key_count
-        self.set_key_count(self.key_count() + 1);
-
-        // 7) let format adjust metadata (restart offsets etc.)
         //let kb_final = &mut self.buf[ks..ks + new_len];
         //self.fmt().adjust_after_splice(kb_final, range.start, delta_k, idx);
 
@@ -557,9 +502,6 @@ impl InternalPage {
     /// Delete the child pointer at idx 
     #[inline]
     pub fn delete_child_at(&mut self, idx: usize) -> Result<(), PageError> {
-        if idx > self.key_count() as usize {
-            return Err(PageError::IndexOutOfBounds {});
-        }
         self.children_shift_left_from(idx);
         Ok(())
     }
@@ -578,7 +520,7 @@ impl InternalPage {
         let len = self.key_count() as usize + 1;
         let src = base + (from + 1) * CHILD_ID_SIZE;
         let dst = base + from * CHILD_ID_SIZE;
-        let bytes = (len - from - 1) * CHILD_ID_SIZE;
+        let bytes = (len - from) * CHILD_ID_SIZE;
         self.buf.copy_within(src..src + bytes, dst);
     }
 
@@ -789,6 +731,69 @@ mod tests {
     }
 
     #[test]
+    fn test_internal_page_replaces() {
+        let mut page = InternalPage::new(0);
+        let iterations = 10;
+        let scratch = &mut Vec::new();
+
+        page.write_leftmost_child(0).unwrap(); // first child
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            assert!(
+                page.insert_separator(i, key.as_bytes(), i as u64 + 1)
+                    .is_ok()
+            );
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+
+        for i in 0..iterations {
+            let new_key = format!("new_key{}", i);
+            assert!(page.replace_key_at(i, new_key.as_bytes()).is_ok());
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, new_key.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_internal_page_pop_last() {
+        let mut page = InternalPage::new(0);
+        let iterations = 10;
+        let scratch = &mut Vec::new();
+
+        page.write_leftmost_child(0).unwrap(); // first child
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            assert!(
+                page.insert_separator(i, key.as_bytes(), i as u64 + 1)
+                    .is_ok()
+            );
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+
+        for i in (0..iterations).rev() {
+            let mut expected_key = format!("key{}", i);
+            for _j in 0..i {
+                expected_key.push_str(&format!("key{}", i));
+            }
+            let popped_key = page.pop_last_key(scratch).unwrap();
+            assert_eq!(popped_key, expected_key.as_bytes());
+            assert_eq!(page.key_count(), i as u16);
+        }
+    }
+
+    #[test]
     fn test_internal_page_removals() {
         use rand::Rng;
         let mut rng = rand::thread_rng();
@@ -822,6 +827,50 @@ mod tests {
             let bound = page.key_count() as usize - 1;
             let idx = rng.gen_range(0..=bound) as usize;
             assert!(page.delete_separator(idx).is_ok());
+            if page.key_count() == 0 {
+                break;
+            }
+            if idx >= page.key_count() as usize {
+                assert!(page.get_key_at(idx, scratch).is_err());
+                continue;
+            }
+            let retrieved_key = page.get_key_at(idx, scratch).unwrap();
+            assert_ne!(retrieved_key, keys[idx].as_bytes());
+        }
+    }
+
+    #[test]
+    fn  test_delete_key_at() {
+        let mut page = InternalPage::new(0);
+        let scratch = &mut Vec::new();
+        let iterations = 10;
+        let mut keys: Vec<String> = Vec::new();
+        let mut children: Vec<u64> = Vec::new();
+
+        page.write_leftmost_child(0).unwrap(); // first child
+
+        for i in 0..iterations {
+            let mut key = format!("key{}", i);
+            for _j in 0..i {
+                key.push_str(&format!("key{}", i));
+            }
+            keys.push(key.clone());
+            children.push(i as u64 + 1);
+            assert!(
+                page.insert_separator(i, key.as_bytes(), i as u64 + 1)
+                    .is_ok()
+            );
+            let retrieved_key = page.get_key_at(i, scratch).unwrap();
+            assert_eq!(retrieved_key, key.as_bytes());
+            let retrieved_child = page.read_child_at(i + 1).unwrap();
+            assert_eq!(retrieved_child, i as u64 + 1);
+        }
+
+        while page.key_count() > 0 {
+            let bound = page.key_count() as usize - 1;
+            let idx = bound; // always delete last key
+            let deleted_key = page.delete_key_at(idx, scratch).unwrap();
+            assert_eq!(deleted_key, keys[idx].as_bytes());
             if page.key_count() == 0 {
                 break;
             }

@@ -412,7 +412,7 @@ impl LeafPage {
     }
 
     /// delete key and return its encoded bytes at index `idx`
-    pub fn delete_key_at(&mut self, idx: usize, scratch: &mut Vec<u8>) -> Result<Vec<u8>, PageError> {
+    pub fn delete_key_at(&mut self, idx: usize, _scratch: &mut [u8]) -> Result<Vec<u8>, PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }
@@ -584,6 +584,7 @@ impl LeafPage {
         // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
         self.set_key_block_len(new_len);
+        //self.compact_values();
         Ok(())
     }
 
@@ -592,26 +593,26 @@ impl LeafPage {
     /// Pack value bytes tightly at the end and fix slot offsets.
     pub fn compact_values(&mut self) {
         let n = self.key_count() as usize;
-        let mut write = PAGE_SIZE;
+        let mut dst = PAGE_SIZE;
         // Copy values in reverse order to avoid overlap
-        for i in (0..n).rev() {
+        for i in 0..n {
             let slot = self.read_slot(i).unwrap();
             let off = slot.val_off as usize;
             let len = slot.val_len as usize;
-            write -= len;
+            dst -= len;
             // memmove
-            self.buf.copy_within(off..off + len, write);
+            self.buf.copy_within(off..off + len, dst);
             // update slot
             self.write_slot(
                 i,
                 LeafSlot {
-                    val_off: write as u16,
+                    val_off: dst as u16,
                     val_len: len as u16,
                 },
             )
             .unwrap();
         }
-        self.set_values_hi(write as u16);
+        self.set_values_hi(dst as u16);
     }
 
     // ====== internals ======
@@ -951,6 +952,45 @@ mod tests {
         let (ke4, ve4) = new_page.get_kv_at(2, &mut scratch).unwrap();
         assert_eq!(ke4, b"date");
         assert_eq!(ve4, b"brown");
+    }
+
+    #[test]
+    fn test_replace_key() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry"];
+        let values = ["red", "yellow", "dark red"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        // Replace "banana" with "blueberry"
+        page.replace_key_at(1, "blueberry".as_bytes()).unwrap();
+
+        let mut scratch = Vec::new();
+        for (i, k) in ["apple", "blueberry", "cherry"].iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, k.as_bytes());
+            assert_eq!(ve, values[i].as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_append() {
+        let mut page = make_page();
+        let keys = ["apple", "banana", "cherry", "blueberry"];
+        let values = ["red", "yellow", "dark red", "blue"];
+
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.append(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+
+        let mut scratch = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, k.as_bytes());
+            assert_eq!(ve, values[i].as_bytes());
+        }
     }
 
     //#[test]
