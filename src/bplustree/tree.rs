@@ -979,7 +979,6 @@ where
             ));
         };
 
-        println!("Deleting key at index {} in leaf node id: {}", idx, leaf_node_id);
         leaf_node.delete_at(idx)?;
 
         track.record_staged_size(self.get_size().saturating_sub(1));
@@ -991,10 +990,6 @@ where
             return Ok(DeleteResult::Deleted(new_root_id));
         }
 
-        // materialize the leaf node for easy underflow handling
-        //let node = Node::from_node_view::<S::KC, S::VC>(leaf_node)?;
-        //let new_root_id = self.handle_underflow(path, node, track)?;
-        println!("Handling underflow for leaf node id: {}", leaf_node_id);
         let new_root_id = self.handle_underflow_view(path, leaf_node, track)?;
         Ok(DeleteResult::Deleted(new_root_id))
     }
@@ -1006,7 +1001,6 @@ where
         mut node: NodeView,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        println!("Starting underflow handling with  path:  {:?}", path);
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.storage.read_node_view(parent_id)? else {
                 return Err(TreeError::NodeNotFound(
@@ -1028,42 +1022,29 @@ where
                         ))
                     })?;
                 }
-                println!("Handling underflow for node, parent id: {}, idx: {}", parent_id, idx);
-                //println!("Contents of underflowed node: ");
-                //node.view_content::<S::KC, S::VC, K, V>()?;
                 // Try borrowing from left or right sibling, on success just propagate the update,
                 // no change in number of keys in the parent node
                 if idx > 0
                     && self.try_borrow_from_left_view(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Borrowed from left sibling : ");
-                    node.view_content::<S::KC, S::VC, K, V>()?;
                     return self.write_and_propagate_view(path, &parent_node, track);
                 }
                 if (idx < parent_node.keys_len())
                     && self.try_borrow_from_right_view(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Borrowed from right sibling : ");
-                    //node.view_content::<S::KC, S::VC, K, V>()?;
                     return self.write_and_propagate_view(path, &parent_node, track);
                 }
-                println!("Trying to merge!");
                 // Try to merge with left or right sibling
                 let mut merged = None;
                 if let Some(id) =
                     self.try_merge_with_left_view(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Merged with left sibling");
-                    node.view_content::<S::KC, S::VC, K, V>()?;
                     merged = Some(id);
                 } else if let Some(id) =
                     self.try_merge_with_right_view(&mut node, &mut parent_node, idx, track)?
                 {
-                    println!("Merged with right sibling");
-                    node.view_content::<S::KC, S::VC, K, V>()?;
                     merged = Some(id);
                 }
-                println!("Merge didn't throw errors!");
                 // We should have merged with a sibling or borrowed from it otherwise invalid state
                 if merged.is_some() {
                     // the parent node underflowed after merge
@@ -1416,14 +1397,6 @@ where
                 },
             ) => {
                 if right_sibling.keys_len() > self.min_internal_keys {
-
-                    println!("Parent Before all this:");
-                    parent_node.view_content::<S::KC, S::VC, K, V>()?;
-                    println!("Left Before borrowing from right sibling:");
-                    node.view_content::<S::KC, S::VC, K, V>()?;
-                    println!("Right Before lending:");
-                    right_sibling.view_content::<S::KC, S::VC, K, V>()?;
-
                     // Steps for Internal node are diffent we need to swap the first key of the
                     // right sibling with the separator from parent
                     // 1. Get the first key of the right sibling and the separator key from parent
@@ -1437,13 +1410,6 @@ where
                     // 3. Move separator key from parent to the left node
                     node.insert_separator_at(node.keys_len(), &separator_key, borrowed_child)?;
                     right_sibling.delete_child_at(0)?;
-
-                    println!("Left After borrowing from right sibling:");
-                    node.view_content::<S::KC, S::VC, K, V>()?;
-                    println!("Right After lending:");
-                    right_sibling.view_content::<S::KC, S::VC, K, V>()?;
-                    println!("PArent After all this:");
-                    parent_node.view_content::<S::KC, S::VC, K, V>()?;
                 } else {
                     return Ok(false); // Not enough keys to borrow
                 }
@@ -1599,9 +1565,6 @@ where
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
                 
-                //println!("Merged node content: ");
-                //merged_node.view_content::<S::KC, S::VC, K, V>()?;
-
                 track.reclaim(parent_node.child_ptr_at(idx)?.ok_or_else(|| {
                     TreeError::BackendAny(format!(
                         "Child pointer at index {} in node {} is None",
@@ -1638,9 +1601,6 @@ where
                 
                 // Merge the left sibling with the current node
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
-
-                //println!("Merged node content: ");
-                //merged_node.view_content::<S::KC, S::VC, K, V>()?;
 
                 let merged_node_id = self.write_node_view(merged_node, track)?;
                 // Update the parent node
@@ -1781,8 +1741,6 @@ where
                 // Merge the current node with the left sibling
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
-                //println!("Merged node content: ");
-                //merged_node.view_content::<S::KC, S::VC, K, V>()?;
                 // Update the parent node
                 // Reclaim the right sibling node and  remove
                 track.reclaim(parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
@@ -1820,12 +1778,6 @@ where
                 }
                 
                 let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
-                
-                println!("Merging with right node -- separator key: {:?}", S::KC::decode_key(seperator_key.as_bytes())?);
-                println!("Left node content before merge: ");
-                node.view_content::<S::KC, S::VC, K, V>()?;
-                println!("Right node content before merge: ");
-                right_sibling.view_content::<S::KC, S::VC, K, V>()?;
 
                 // The key that separates
                 // the two children has to be removed and added to the left sibling together with
@@ -1834,14 +1786,10 @@ where
                     TreeError::BackendAny("Right sibling has no children to borrow".to_string())
                 })?)?;
 
-                println!("Left node content after updating with the separator key: ");
-                node.view_content::<S::KC, S::VC, K, V>()?;
                 // Merge the current node with the right sibling
                 let merged_node = self.merge_nodes_view(node, &mut right_sibling)?;
                 let merged_node_id = self.write_node_view(merged_node, track)?;
                 
-                println!("Merged node content: ");
-                merged_node.view_content::<S::KC, S::VC, K, V>()?;
                 // Update the parent node
                 track.reclaim(parent_node.child_ptr_at(right_idx)?.ok_or_else(|| {
                     TreeError::BackendAny(format!(

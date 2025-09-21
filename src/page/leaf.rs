@@ -435,8 +435,6 @@ impl LeafPage {
                 msg: "block length out of range".to_string(),
             })?;
 
-        // remove value slot
-        self.slot_dir_remove(idx)?;
         // Shift tail part
         let tail_src_start = ks + range.end;
         //let tail_src_end   = self.keys_end();
@@ -584,35 +582,44 @@ impl LeafPage {
         // Adjust key block length
         self.set_key_count(self.key_count().saturating_sub(1));
         self.set_key_block_len(new_len);
-        //self.compact_values();
+        self.compact_values()?;
         Ok(())
     }
 
     // -------- compaction (optional) --------
 
-    /// Pack value bytes tightly at the end and fix slot offsets.
-    pub fn compact_values(&mut self) {
+    /// Pack value bytes tightly at the end and fix slot offsets. Should be called periodiacally
+    /// after deletes and before merges.
+    pub fn compact_values(&mut self) -> Result<(), PageError> {
         let n = self.key_count() as usize;
-        let mut dst = PAGE_SIZE;
-        // Copy values in reverse order to avoid overlap
+        if n == 0 {
+            self.set_values_hi(BUFFER_SIZE as u16);
+            return Ok(());
+        }
+        let mut dst = BUFFER_SIZE;
+        // 1) Snapshot all (slot_index, off, len)
+        let mut items: Vec<(usize, usize, usize)> = Vec::with_capacity(n);
         for i in 0..n {
-            let slot = self.read_slot(i).unwrap();
-            let off = slot.val_off as usize;
-            let len = slot.val_len as usize;
+            let s = self.read_slot(i)?;
+            items.push((i, s.val_off as usize, s.val_len as usize));
+        }
+
+        // 2) Sort by old offset ASC (we'll iterate DESC to move toward higher addresses)
+        items.sort_unstable_by_key(|&(_, off, _)| off);
+        for &(idx, off, len) in items.iter().rev() { 
             dst -= len;
-            // memmove
             self.buf.copy_within(off..off + len, dst);
             // update slot
             self.write_slot(
-                i,
+                idx,
                 LeafSlot {
                     val_off: dst as u16,
                     val_len: len as u16,
                 },
-            )
-            .unwrap();
+            )?;
         }
         self.set_values_hi(dst as u16);
+        Ok(())
     }
 
     // ====== internals ======
