@@ -177,6 +177,7 @@ impl TxnTracker for TransactionTracker {
     }
 }
 
+// Result of a write operation (insert or delete)
 #[derive(Debug)]
 pub struct WriteResult {
     pub new_root_id: NodeId,
@@ -186,6 +187,7 @@ pub struct WriteResult {
     pub new_size: usize,
 }
 
+// ------------ Shared BPlusTree Arc wrapper ----------
 pub struct SharedBPlusTree<K, V, S>
 where
     K: Ord + Clone,
@@ -359,7 +361,7 @@ where
     }
 }
 
-// BPlusTree implementation
+// ------------------- BPlusTree implementation -----------------
 impl<K: Debug, V: Debug, S> BPlusTree<K, V, S>
 where
     K: Clone + Ord,
