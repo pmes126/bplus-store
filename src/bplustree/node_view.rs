@@ -1,7 +1,9 @@
 use crate::page::{InternalPage, LeafPage};
 use crate::codec::{KeyCodec, ValueCodec};
+
 use anyhow::Result;
 use thiserror::Error;
+use std::fmt;
 
 pub type NodeId = u64;
 
@@ -12,7 +14,6 @@ pub enum NodeViewError {
 }
 
 /// A view of a B+ tree node stored in a page
-#[derive(Clone, Debug)]
 pub enum NodeView {
     Internal { page: InternalPage },
     Leaf { page: LeafPage },
@@ -275,12 +276,12 @@ impl NodeView {
         match self {
             NodeView::Internal { page } => {
                 //println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
-                let mut new_page = InternalPage::new(page.fmt().format_id());
+                let mut new_page = InternalPage::new(page.key_fmt().format_id());
                 page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let mut new_page = LeafPage::new(page.fmt().format_id());
+                let mut new_page = LeafPage::new(page.key_fmt().format_id());
                 page.split_off_into(idx, &mut new_page)
                     .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
@@ -457,6 +458,15 @@ impl NodeView {
                 }
                 Ok(())
             } 
+        }
+    }
+}
+
+impl fmt::Debug for NodeView {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            NodeView::Leaf { page }     => page.fmt(f),
+            NodeView::Internal { page } => page.fmt(f),
         }
     }
 }
