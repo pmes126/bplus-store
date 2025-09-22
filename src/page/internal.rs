@@ -548,11 +548,11 @@ impl InternalPage {
     // --------- key accessors ---------
     /// Return the *encoded key bytes* at index `idx`.
     #[inline]
-    pub fn get_key_at<'s>(
-        &'s self,
+    pub fn get_key_at(
+        &self,
         idx: usize,
-        scratch: &'s mut Vec<u8>,
-    ) -> Result<&'s [u8], PageError> {
+        scratch: &mut Vec<u8>,
+    ) -> Result<&[u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
         }

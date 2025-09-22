@@ -494,7 +494,7 @@ impl LeafPage {
     pub fn get_key_at<'s>(
         &'s self,
         idx: usize,
-        scratch: &'s mut Vec<u8>,
+        scratch: &mut Vec<u8>,
     ) -> Result<&'s [u8], PageError> {
         if idx >= self.key_count() as usize {
             return Err(PageError::IndexOutOfBounds {});
