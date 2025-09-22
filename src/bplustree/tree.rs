@@ -54,13 +54,10 @@ pub enum SplitResult<N> {
 pub enum TreeError {
     #[error("Bad input: {0}")]
     BadInput(String),
-
-    #[error("Failed to initialize backend: {0}")]
+    #[error("Backend error: {0}")]
     BackendAny(String),
-
     #[error("Node Not Found: {0}")]
     NodeNotFound(String),
-
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -465,11 +462,19 @@ where
         }
     }
 
+    // ---- Utilities for reading/writing nodes and metadata from/to storage ----
     // Reads a node from the B+ tree storage, using the cache if available.
     fn read_node(&self, id: NodeId) -> Result<Option<Node<K, V>>, TreeError> {
         self.storage
             .read_node(id)
             .map_err(|e| TreeError::BackendAny(format!("failed to read node {}:", e)))
+    }
+
+    // Reads a node view from the B+ tree storage, using the cache if available.
+    fn read_node_view(&self, id: NodeId) -> Result<Option<NodeView>, TreeError> {
+        self.storage
+            .read_node_view(id)
+            .map_err(|e| TreeError::BackendAny(format!("failed to read node view {}:", e)))
     }
 
     // Writes a node to the B+ tree storage and updates the cache.
@@ -500,6 +505,7 @@ where
         Ok(new_id)
     }
 
+    // ------------- Path finding logic -------------
     // Returns the path of where a key should be inserted, without decoding the nodes for
     // efficiency.
     pub fn get_insertion_path(
@@ -554,6 +560,7 @@ where
         }
     }
 
+    // ----------- Insertion logic and split handling -----------
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn insert(
         &self,
@@ -622,7 +629,7 @@ where
             left_node,
             right_node,
             split_key,
-        } = self.split_leaf_node_view(leaf_node)?;
+        } = self.split_leaf_node(leaf_node)?;
         let right_id = self.write_node_view(&right_node, track)?;
         let left_id = self.write_node_view(&left_node, track)?;
 
@@ -631,7 +638,7 @@ where
 
     // Splits a leaf node into two nodes and returns the new right node, the left node, and the
     // first key of the right node to be pushed up to the parent.
-    fn split_leaf_node_view(
+    fn split_leaf_node(
         &self,
         mut leaf_node: NodeView,
     ) -> Result<SplitResult<NodeView>, TreeError> {
@@ -654,7 +661,9 @@ where
         }
     }
 
-    fn split_internal_node_view(
+    // Splits an internal node into two nodes and returns the new right node, the left node, and
+    // the middle key to be pushed up to the parent.
+    fn split_internal_node(
         &self,
         mut internal_node: NodeView,
     ) -> Result<SplitResult<NodeView>, TreeError> {
@@ -815,7 +824,7 @@ where
                 left_node,
                 right_node,
                 split_key,
-            } = self.split_internal_node_view(node)?;
+            } = self.split_internal_node(node)?;
 
             left = self.write_node_view(&left_node, track)?;
             right = self.write_node_view(&right_node, track)?;
@@ -831,6 +840,8 @@ where
 
         Ok(new_root_id)
     }
+
+    // ----- Searches -----
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
     pub fn search(&self, key: &K) -> Result<Option<V>, TreeError> {
         let root_id = self.get_root_id();
@@ -906,6 +917,7 @@ where
         )))
     }
 
+    // ----- Deletes and underflow handling -----
     // Deletes a key from the B+ tree.
     pub fn delete(
         &mut self,
@@ -965,7 +977,7 @@ where
         Ok(DeleteResult::Deleted(new_root_id))
     }
 
-
+    // Underflow  handling for leaf and internal nodes
     fn handle_underflow(
         &self,
         mut path: Vec<(NodeId, usize)>,
@@ -993,6 +1005,7 @@ where
                 if idx > 0
                     && self.try_borrow_from_left(&mut node, &mut parent_node, idx, track)?
                 {
+                    println!("Borrowed from left sibling");
                     return self.write_and_propagate_view(path, &parent_node, track);
                 }
                 if (idx < parent_node.keys_len())
@@ -1005,6 +1018,7 @@ where
                 if let Some(id) =
                     self.try_merge_with_left(&mut node, &mut parent_node, idx, track)?
                 {
+                    println!("Merged with left sibling");
                     merged = Some(id);
                 } else if let Some(id) =
                     self.try_merge_with_right(&mut node, &mut parent_node, idx, track)?
@@ -1040,6 +1054,7 @@ where
         ))
     }
 
+    // try and borrow a key (and child for internal nodes) from the left sibling
     fn try_borrow_from_left(
         &self,
         node: &mut NodeView,
@@ -1118,6 +1133,7 @@ where
         Ok(true)
     }
 
+    // try and borrow a key (and child for internal nodes) from the right sibling
     fn try_borrow_from_right(
         &self,
         node: &mut NodeView,
@@ -1201,6 +1217,7 @@ where
         Ok(true)
     }
 
+    // try and merge with left sibling node
     fn try_merge_with_left(
         &self,
         node: &mut NodeView,
@@ -1280,6 +1297,7 @@ where
         }
     }
 
+    // try and merge with right sibling node
     fn try_merge_with_right(
         &self,
         node: &mut NodeView,
@@ -1366,6 +1384,8 @@ where
         }
     }
 
+    // Merges two nodes into one, ensuring that the total number of keys does not exceed the
+    // maximum allowed.
     pub fn merge_nodes_view<'s>(
         &'s self,
         left_node: &'s mut NodeView,
@@ -1424,6 +1444,7 @@ where
         Ok(())
     }
 
+    // ---- Commits and Metadata Management ----
     // Returns the current valid snapshot of the tree's state.
     pub fn get_snapshot(&self) -> MetadataSnapshot {
         let ptr = self.committed.load(Ordering::Acquire);
@@ -1597,6 +1618,7 @@ where
         }
     }
 
+    // ----- Traversal and Utility Methods -----
     // Traverses the B+ tree and returns all key-value pairs in a vector.
     pub fn traverse(&self) -> Result<Vec<(K, V)>, TreeError> {
         let mut result = Vec::new();
