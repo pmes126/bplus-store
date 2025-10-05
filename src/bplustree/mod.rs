@@ -1,4 +1,3 @@
-pub mod epoch;
 pub mod iterator;
 pub mod node;
 pub mod node_view;

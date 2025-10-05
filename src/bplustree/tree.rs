@@ -5,16 +5,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::bplustree::BPlusTreeIter;
-use crate::bplustree::EpochManager;
-use crate::bplustree::epoch::COMMIT_COUNT;
-use crate::bplustree::{Node, NodeView};
-use crate::codec::{CodecError, KeyCodec, ValueCodec};
+use crate::storage::epoch::EpochManager;
+use crate::storage::epoch::COMMIT_COUNT;
+use crate::bplustree::NodeView;
+use crate::codec::CodecError;
 use crate::metadata;
 use crate::metadata::{
     Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
 };
 use crate::page::LeafPage;
-use crate::storage::{MetadataStorage, NodeStorage, StorageError};
+use crate::storage::{MetadataStorage, NodeStorage, HasEpoch, StorageError};
 use crate::keyfmt::KeyFormat;
 
 use std::result::Result;
@@ -122,16 +122,16 @@ pub struct TreeConfig {
     pub target_fill_bytes: usize, // split/merge by bytes, not count
 }
 
+
 /// B+ tree structure with generic key and value types, and a storage backend
-pub struct BPlusTree<S>
+pub struct BPlusTree<'s, S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
     max_keys: usize,
     min_internal_keys: usize,
     min_leaf_keys: usize,
-    storage: S,
-    epoch_mgr: Arc<EpochManager>, // Epoch manager for transaction management
+    storage: &'s S,
     commit_count: AtomicUsize,    // Number of commits made to the tree
     txn_id: AtomicU64,            // Slot of metadata storage
     committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
@@ -182,14 +182,14 @@ pub struct WriteResult {
 }
 
 // ------------ Shared BPlusTree Arc wrapper ----------
-pub struct SharedBPlusTree<S>
+pub struct SharedBPlusTree<'s, S>
 where
     S: NodeStorage + MetadataStorage + Send + Sync + 'static,
 {
-    inner: Arc<BPlusTree<S>>,
+    inner: Arc<BPlusTree<'s, S>>,
 }
 
-impl<S> Clone for SharedBPlusTree<S>
+impl<'s, S> Clone for SharedBPlusTree<'s, S>
 where
     S: NodeStorage + MetadataStorage + Send + Sync + 'static,
 {
@@ -200,22 +200,21 @@ where
     }
 }
 
-impl<S> SharedBPlusTree<S>
+impl<'s, S> SharedBPlusTree<'s, S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
-    pub fn new(tree: BPlusTree<S>) -> Self {
+    pub fn new(tree: BPlusTree<'s, S>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
     }
 
-    pub fn from_arc(tree: Arc<BPlusTree<S>>) -> Self {
+    pub fn from_arc(tree: Arc<BPlusTree<'s, S>>) -> Self {
         Self { inner: tree }
     }
 
-//put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V)
-    pub fn insert_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+    pub fn put_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
         value: V,
@@ -224,7 +223,7 @@ where
         let mut collector = TransactionTracker::new();
         let new_root_id = self
             .inner
-            .insert_inner(key, value, root_id, &mut collector)?;
+            .put_inner(key, value, root_id, &mut collector)?;
         let write_res = WriteResult {
             new_root_id,
             reclaimed_nodes: std::mem::take(&mut collector.reclaimed),
@@ -235,9 +234,9 @@ where
         Ok(write_res)
     }
 
-    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<WriteResult, TreeError> {
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&self, key: K, value: V) -> Result<WriteResult, TreeError> {
         let root_id = self.inner.get_root_id();
-        self.insert_with_root(key, value, root_id)
+        self.put_with_root(key, value, root_id)
     }
 
     pub fn delete_with_root<K: AsRef<[u8]>>(&self, key: &K, root_id: NodeId) -> Result<WriteResult, TreeError> {
@@ -260,11 +259,11 @@ where
     }
 
     pub fn search<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
-        self.inner.search(key)
+        self.inner.get(key)
     }
 
     pub fn search_with_root<K: AsRef<[u8]>>(&self, key: &K, root_id: NodeId) -> Result<Option<Vec<u8>>, TreeError> {
-        self.inner.search_inner(key, root_id)
+        self.inner.get_inner(key, root_id)
     }
 
     pub fn get_root_id(&self) -> NodeId {
@@ -342,7 +341,7 @@ where
     }
 
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
-        Arc::clone(&self.inner.epoch_mgr)
+        Arc::clone(&self.inner.storage.epoch_mgr())
     }
 
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
@@ -351,11 +350,11 @@ where
 }
 
 // -------------------------- BPlusTree implementation ----------------------------
-impl<S> BPlusTree<S>
+impl<'s, S> BPlusTree<'s, S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
-    pub fn new(storage: S, order: usize, keyfmt_id: KeyFormat) -> Result<BPlusTree<S>, TreeError> {
+    pub fn new(storage: &'s S, order: usize, keyfmt_id: KeyFormat) -> Result<BPlusTree<'s, S>, TreeError> {
         let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt_id.id()), };
         if order < 2 {
             return Err(TreeError::BadInput("Order must be at least 2".to_string()));
@@ -393,7 +392,6 @@ where
             max_keys: order - 1,
             min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
             min_leaf_keys: (order - 1).div_ceil(2),   // Ensure min_keys is at least 1
-            epoch_mgr: EpochManager::new_shared(),    // Initialize the epoch manager
             commit_count: AtomicUsize::new(0),        // Initialize commit count
             txn_id: AtomicU64::new(init_txn_id),      // Initialize transaction ID
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
@@ -416,7 +414,6 @@ where
             max_keys,
             min_internal_keys,
             min_leaf_keys,
-            epoch_mgr: EpochManager::new_shared(), // Initialize the epoch manager
             commit_count: AtomicUsize::new(0),     // Initialize commit count
             txn_id: AtomicU64::new(md.txn_id),     // Initialize transaction ID
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
@@ -435,7 +432,6 @@ where
         };
         Self {
             storage,
-            epoch_mgr: Arc::new(epoch_mgr),
             commit_count: 0.into(),
             max_keys: order - 1,
             min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
@@ -523,26 +519,26 @@ where
 
     // -------------------------- Insertion logic and split handling ----------------------------
     // Inserts a key-value pair into the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
         value: V,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         let root_id = self.get_root_id();
-        self.insert_inner(key, value, root_id, track)
+        self.put_inner(key, value, root_id, track)
     }
 
     // Inserts a key-value pair into the B+ tree.
     //put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V)
-    pub fn insert_inner<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+    pub fn put_inner<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
         value: V,
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
-        let _guard = self.epoch_mgr.pin();
+        let _guard = self.storage.epoch_mgr().pin();
         let (mut path, found) = self.get_insertion_path(&key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
             TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
@@ -748,14 +744,14 @@ where
 
     // ----- Searches -----
     // Search for a key in the B+ tree, acquiring an epoch guard to ensure consistency.
-    pub fn search<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
+    pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
         let root_id = self.get_root_id();
-        self.search_inner(key, root_id)
+        self.get_inner(key, root_id)
     }
 
     // Search for a key and return the value if exists, without decoding the nodes for efficiency.
-    pub fn search_inner<K: AsRef<[u8]>>(&self, key: K, root_id: NodeId) -> Result<Option<Vec<u8>>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
+    pub fn get_inner<K: AsRef<[u8]>>(&self, key: K, root_id: NodeId) -> Result<Option<Vec<u8>>, TreeError> {
+        let _guard = self.storage.epoch_mgr().pin();
         let mut current_id = root_id;
 
         // Find insertion point
@@ -807,11 +803,11 @@ where
         start: K,
         end: K,
     ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
+        let _guard = self.storage.epoch_mgr().pin();
         Ok(Some(BPlusTreeIter::new(
             &self.storage,
             root_id,
-            self.epoch_mgr.clone(),
+            self.storage.epoch_mgr().clone(),
             start,
             end,
         )))
@@ -841,7 +837,7 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<DeleteResult<NodeId>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
+        let _guard = self.storage.epoch_mgr().pin();
 
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
@@ -1335,10 +1331,10 @@ where
 
     // Reclaims a node by adding it to the reclamation candidates for the current epoch.
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
-        let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
+        let epoch = self.storage.epoch_mgr().get_current_thread_epoch().ok_or_else(|| {
             TreeError::BackendAny("Failed to get epoch for current thread".to_string())
         })?;
-        self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
+        self.storage.epoch_mgr().add_reclaim_candidate(epoch, node_id);
         Ok(())
     }
 
@@ -1388,16 +1384,16 @@ where
 
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
-        let _new_epoch = self.epoch_mgr.advance(); // Bump the epoch for transaction management
+        let _new_epoch = self.storage.epoch_mgr().advance(); // Bump the epoch for transaction management
 
-        let safe_epoch = self.epoch_mgr.oldest_active();
-        let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
+        let safe_epoch = self.storage.epoch_mgr().oldest_active();
+        let reclaimed = self.storage.epoch_mgr().reclaim(safe_epoch);
         for pid in reclaimed {
             self.storage.free_node(pid)?;
         }
 
         if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
-            self.epoch_mgr.advance(); // Pin new epoch for reclamation
+            self.storage.epoch_mgr().advance(); // Pin new epoch for reclamation
         }
         Ok(())
     }
@@ -1464,14 +1460,14 @@ where
                 }
                 self.storage.flush()?; // flush to disk
                 // 4. Advance the epoch manager
-                self.epoch_mgr.advance();
-                let safe_epoch = self.epoch_mgr.oldest_active();
-                let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
+                self.storage.epoch_mgr().advance();
+                let safe_epoch = self.storage.epoch_mgr().oldest_active();
+                let reclaimed = self.storage.epoch_mgr().reclaim(safe_epoch);
                 for nid in reclaimed {
                     self.storage.free_node(nid)?;
                 }
                 if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
-                    self.epoch_mgr.advance(); // Pin new epoch for reclamation
+                    self.storage.epoch_mgr().advance(); // Pin new epoch for reclamation
                 }
 
                 unsafe {
@@ -1591,7 +1587,7 @@ where
 
     #[cfg(any(test, feature = "testing"))]
     pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
-        Arc::clone(&self.epoch_mgr)
+        Arc::clone(&self.storage.epoch_mgr())
     }
 }
 

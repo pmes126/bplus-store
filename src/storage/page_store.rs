@@ -35,7 +35,7 @@ impl Drop for PageStore {
 }
 
 impl PageStorage for PageStore {
-    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
     where
         Self: Sized,
     {

@@ -10,5 +10,6 @@ pub(crate) mod layout;
 pub(crate) mod metadata;
 pub(crate) mod page;
 pub(crate) mod tests;
+pub(crate) mod manifest;
 
 pub use api::{DbBytes, TypedDb};

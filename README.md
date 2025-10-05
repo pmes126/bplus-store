@@ -34,6 +34,23 @@ Zero network. **Multi-writer** with optimistic commits (CAS). **Snapshot** reade
 - `insert`, `get`, `remove`, `range` (forward).
 - Generic `Codec` for K/V encode/decode.
 ---
+Store (a.k.a. database / catalog): one set of files (dir), one page manager, many trees.
+
+Tree (table/namespace): identified by a stable TreeId, has its own root page + settings (key encoding, limits).
+
+Handle: lightweight client object binding a TreeId to your service.
+
+Storage-wise, you can do:
+
+Single file + page allocator with a free-list/epoch manager (recommended).
+
+Store gives you methods to create_tree, describe_tree, open_tree, and bytes ops (put/get/del/range) by TreeId.
+
+EmbeddedService<Store> implements your KvService by delegating to Store.
+
+RawClient + TreeHandle sit on top and give your examples a nice UX.
+
+KvStore::open_embedded(path) is the top door you call from examples.
 
 ## Quick start
 

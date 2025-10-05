@@ -11,35 +11,66 @@ pub mod inproc;
 #[cfg(feature = "transport-inproc")]
 pub use inproc::InprocService;
 
-
 use std::{pin::Pin, sync::Arc};
 use futures::Stream;
 
 use crate::api::encoding::{KeyConstraints, KeyEncodingId};
 use crate::api::errors::ApiError;
 
+pub type ResumeToken = Bytes;
+pub type TreeId = Bytes;
+
 #[derive(Debug, Clone)]
 pub struct TreeMeta {
-    pub id: Vec<u8>,
+    pub id: Bytes,
     pub name: String,
     pub key_encoding: KeyEncodingId,
     pub constraints: KeyConstraints,
 }
 
-#[async_trait::async_trait]
+#[derive(Clone, Copy, Debug)]
+pub enum Order { Fwd, Rev }
+
+#[derive(Clone, Debug)]
+pub struct KeyRange<'a> {
+    pub start: Bound<&'a [u8]>, // Unbounded | Included(&[u8]) | Excluded(&[u8])
+    pub end:   Bound<&'a [u8]>,
+}
+
+#[async_trait::async_trait] // if you target stable without GATs, keep this; see boxed variant below
 pub trait KvService: Send + Sync + 'static {
-    async fn create_tree(&self, name: &str, enc: KeyEncodingId, kc: KeyConstraints)
-        -> Result<TreeMeta, ApiError>;
+    // Associated stream type so implementors can avoid boxing
+    type RangeStream<'a>: Stream<Item = Result<(Bytes, Bytes), ApiError>> + Send + 'a
+    where
+        Self: 'a;
+
+    async fn create_tree(&self, name: &str,
+        enc: KeyEncodingId, kc: KeyConstraints
+    ) -> Result<TreeMeta, ApiError>;
+
     async fn describe_tree(&self, name: &str) -> Result<TreeMeta, ApiError>;
-    async fn put(&self, tree_id: &[u8], key: Vec<u8>, val: Vec<u8>) -> Result<(), ApiError>;
-    async fn get(&self, tree_id: &[u8], key: Vec<u8>) -> Result<Option<Vec<u8>>, ApiError>;
-    async fn del(&self, tree_id: &[u8], key: Vec<u8>) -> Result<bool, ApiError>;
+
+    async fn put(&self, tree: &TreeId, key: &[u8], val: &[u8]) -> Result<(), ApiError>;
+
+    async fn get(&self, tree: &TreeId, key: &[u8]) -> Result<Option<Bytes>, ApiError>;
+
+    async fn del(&self, tree: &TreeId, key: &[u8]) -> Result<bool, ApiError>;
+
+  // range scan with pagination
     async fn range(
         &self,
-        tree_id: &[u8],
-        start: Option<Vec<u8>>,
-        end: Option<Vec<u8>>,
-        reverse: bool,
+        tree: &TreeId,
+        range: KeyRange<'_>,
+        order: Order,
         limit: u32,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<(Vec<u8>, Vec<u8>), ApiError>> + Send>>, ApiError>;
+        resume: Option<ResumeToken>,
+    ) -> Result<
+        (
+            // streaming out rows (zero-copy `Bytes`)
+            std::pin::Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), ApiError>> + Send>>,
+            // next page token (None if done)
+            Option<ResumeToken>
+        ),
+        ApiError
+    >;
 }

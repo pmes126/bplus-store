@@ -1,13 +1,17 @@
-use crate::bplustree::{Node, NodeId, NodeView};
-use crate::codec::{CodecError, KeyCodec, ValueCodec};
+use crate::bplustree::{NodeId, NodeView};
+use crate::codec::CodecError;
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
+use crate::storage::epoch::EpochManager;
 use anyhow::Result;
 use std::path::Path;
 
 /// Implementations
 pub mod file_store;
 pub mod page_store;
+pub mod epoch;
+pub mod catalog;
+pub mod manifest;
 
 use thiserror::Error;
 
@@ -33,10 +37,14 @@ pub enum StorageError {
     },
 }
 
+pub trait HasEpoch {
+    fn epoch_mgr(&self) -> &std::sync::Arc<EpochManager>;
+}
+
 /// Unified storage interface for B+ tree logic
 pub trait PageStorage {
     /// Initializes the storage, creating necessary files or structures
-    fn init<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error>
     where
         Self: Sized;
 
