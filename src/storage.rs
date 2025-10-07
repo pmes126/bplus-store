@@ -3,6 +3,7 @@ use crate::codec::CodecError;
 use crate::layout::PAGE_SIZE;
 use crate::metadata::{Metadata, MetadataPage};
 use crate::storage::epoch::EpochManager;
+use crate::api::TreeMeta;
 use anyhow::Result;
 use std::path::Path;
 
@@ -60,10 +61,14 @@ pub trait PageStorage {
     /// Ensures all writes are flushed to disk
     fn flush(&self) -> Result<(), std::io::Error>;
 
-    /// Optional: allocates a new, unused page ID
+    /// Allocates a new, unused page ID
     fn allocate_page(&self) -> Result<u64, std::io::Error>;
 
+    /// Frees a page ID for future reuse
     fn free_page(&self, page_id: u64) -> Result<(), std::io::Error>;
+
+    /// Closes the storage, flushing any pending writes
+    fn close(&self) -> Result<(), std::io::Error>;
 }
 
 pub trait NodeStorage: Send + Sync + 'static {
@@ -81,14 +86,14 @@ pub trait NodeStorage: Send + Sync + 'static {
 }
 
 pub trait MetadataStorage {
-    /// Reads metadata from a specific slot
-    fn read_metadata(&self, slot: u8) -> Result<MetadataPage, std::io::Error>;
+    /// Reads metadata from a specific page
+    fn read_metadata(&self, slot: u64) -> Result<MetadataPage, std::io::Error>;
 
     /// Writes metadata to a specific slot
-    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error>;
+    fn write_metadata(&self, slot: u64, meta: &mut MetadataPage) -> Result<(), std::io::Error>;
 
     /// Reads the current root node ID from metadata
-    fn read_current_root(&self) -> Result<u64, std::io::Error>;
+    fn read_active_meta(&self, meta_a: u64, meta_b: u64) -> Result<TreeMeta, std::io::Error>;
 
     // Get the current metadata
     fn get_metadata(&self) -> Result<Metadata, std::io::Error>;
@@ -96,8 +101,9 @@ pub trait MetadataStorage {
     // Commits the provided metadata to the oldest metadata slot and advances the transaction ID
     fn commit_metadata(
         &self,
-        slot: u8,
+        slot: u64,
         txn_id: u64,
+        id: u64,
         root: u64,
         height: usize,
         order: usize,
@@ -107,7 +113,10 @@ pub trait MetadataStorage {
     // Commit metadata with a metadata object
     fn commit_metadata_with_object(
         &self,
-        slot: u8,
+        slot: u64,
         metadata: &Metadata,
     ) -> Result<(), std::io::Error>;
+
+    // bootstrap the metadata for a tree if not initialized, returns (meta_a, meta_b, Metadata)
+    fn bootstrap_metadata(&self, id: u64, order: usize) -> Result<(u64, u64, Metadata), std::io::Error>;
 }

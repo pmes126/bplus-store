@@ -1,5 +1,4 @@
 use std::{fs::File, io::{self, Read}, path::Path};
-use crc32c::crc32c;
 use crate::storage::manifest::ManifestRec;
 
 pub struct ManifestReader {

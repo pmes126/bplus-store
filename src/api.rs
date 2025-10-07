@@ -64,17 +64,28 @@ Decode(String),
 BadRangeBounds,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub struct TreeId(pub Bytes);
+pub type TreeId = u64;
 
 #[derive(Clone, Debug)]
 pub struct TreeMeta {
     pub id: TreeId,
     pub name: String,
+
+    // Encoding / schema
     pub key_encoding: KeyEncodingId,
     pub encoding_version: u16,
-    pub meta_a: u64, pub meta_b: u64,
-    pub key_limits: Option<KeyLimits>,
+
+    // Storage-level info (server/internal)
+    pub meta_a: u64,
+    pub meta_b: u64,
+
+    // Current committed state (copied from latest valid MetaPage)
+    pub root_id: u64,
+    pub height: usize,
+    pub size: usize,
+
+    // Manifest sequencing and bookkeeping
+    pub last_seq: u64,
 }
 
 #[derive(Clone, Copy, Debug)]

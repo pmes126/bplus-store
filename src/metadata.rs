@@ -4,9 +4,6 @@ use std::io::{self};
 
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-pub const METADATA_PAGE_1: u8 = 0x00; // First metadata page slot
-pub const METADATA_PAGE_2: u8 = 0x01; // Second metadata page slot
-pub const INITIAL_PAGE_ID: u8 = 0x02; // Second metadata page slot
 pub const PADDING_SIZE: usize = PAGE_SIZE - (std::mem::size_of::<Metadata>());
 
 // Metadata structure for the B+ tree
@@ -14,6 +11,7 @@ pub const PADDING_SIZE: usize = PAGE_SIZE - (std::mem::size_of::<Metadata>());
 #[repr(C)]
 pub struct Metadata {
     pub root_node_id: NodeId,
+    pub id: u64,       // Unique identifier for the B+ tree
     pub txn_id: u64,
     pub height: usize, // Height of the B+ tree
     pub order: usize,  // Order of the B+ tree
@@ -30,6 +28,7 @@ pub struct MetadataPage {
 
 pub fn new_metadata_page(
     root_id: u64,
+    id: u64,
     txn_id: u64,
     checksum: u64,
     height: usize,
@@ -39,6 +38,7 @@ pub fn new_metadata_page(
     MetadataPage {
         data: Metadata {
             root_node_id: root_id, // Initial root node ID
+            id,
             txn_id,
             height,
             order,

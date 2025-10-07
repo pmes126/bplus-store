@@ -1,5 +1,4 @@
 use std::{fs::{File, OpenOptions}, io::{self, Write, Seek, SeekFrom}, path::Path, sync::Mutex};
-use crc32c::crc32c;
 use crate::storage::manifest::ManifestRec;
 
 pub struct ManifestWriter {
@@ -44,7 +43,6 @@ impl ManifestWriter {
 fn set_seq(rec: &mut ManifestRec, seq: u64) {
     match rec {
         ManifestRec::CreateTree{seq: s, ..} => *s = seq,
-        ManifestRec::UpdateRoot{seq: s, ..} => *s = seq,
         ManifestRec::RenameTree{seq: s, ..}  => *s = seq,
         ManifestRec::DropTree{seq: s, ..}    => *s = seq,
         ManifestRec::Checkpoint{seq: s}      => *s = seq,
@@ -53,7 +51,6 @@ fn set_seq(rec: &mut ManifestRec, seq: u64) {
 fn rec_discriminant(rec: &ManifestRec) -> u8 {
     match rec {
         ManifestRec::CreateTree{..} => 1,
-        ManifestRec::UpdateRoot{..} => 2,
         ManifestRec::RenameTree{..} => 3,
         ManifestRec::DropTree{..}   => 4,
         ManifestRec::Checkpoint{..} => 5,
