@@ -171,6 +171,37 @@ Readers pin an **epoch** while walking a snapshot; writers retire old pages with
 
 ---
 
+## File Storage Mechanism and recovery
+- **Metadata**: small, fixed-size, contains `(root_id, height, size)`. Updated atomically with `CAS` on commit.
+- **Pages**: fixed-size blocks (e.g., 4KB) storing nodes. Written atomically; identified by `NodeId`.
+- **Recovery**: on startup, read metadata; if corrupted, scan for the last valid root (by height) using checksums. Handle torn writes by validating page integrity.
+
+- **Manifest**, **Replay**, **Superblock**, and **Catalog**:
+
+This storage engine supports multiple independent B+ trees inside a single store. To make that work safely across crashes, it separates the system into four distinct pieces:
+
+Superblock: the store-wide entry point, it is used to bootstrap the system by validating the manifest and locating the freelist. It contains a pointer to the manifest and some global settings.
+Manifest: the append-only log of catalog changes
+Catalog: the materialized view of active trees
+Per-tree metadata: the current committed state of each tree
+
+This separation is intentional. It keeps logical state, recovery state, and physical storage management from getting mixed together.
+
+The storage files are organized as follows:
+```
+store/
+  superblock
+  manifest
+  freelist
+  trees/
+    tree1/
+      metadata
+      pages/
+    tree2/
+      metadata
+      pages/
+```
+
 ## API surface (embedded)
 
 ### Bytes-level

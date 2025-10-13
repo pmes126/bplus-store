@@ -1,24 +1,22 @@
 #![allow(dead_code)]
 
-use crate::bplustree::EpochManager;
 use crate::bplustree::transaction::WriteTransaction;
 use crate::bplustree::tree::BPlusTree;
 use crate::bplustree::tree::SharedBPlusTree;
-use crate::codec::{KeyCodecDefault, ValueCodecDefault};
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
-use crate::storage::{MetadataStorage, NodeStorage};
+use crate::storage::{MetadataStorage, NodeStorage, HasEpoch};
+use crate::storage::epoch::EpochManager;
 
-use std::fmt::Debug;
 use std::sync::Arc;
 use tempfile::TempDir;
 
 pub mod test_epoch;
 pub mod test_storage;
 
-pub struct TestHarness<S: Send + Sync>
+pub struct TestHarness<S: Send + Sync >
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
     pub tree: Arc<BPlusTree<S>>,
     pub storage: S,
@@ -27,8 +25,9 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<S>(storage: S, order: usize) -> TestHarness<S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + Clone + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + Clone + 'static,
 {
+    let tree_meta = storage.create_tree(order).expect("Failed to create tree metadata");
     let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
     let tree =
         BPlusTree::<S>::new(storage.clone(), order, fmt).expect("Failed to create BPlusTree");
@@ -46,7 +45,7 @@ pub fn test_tree_with_epoch<S>(
     order: usize,
 ) -> TestHarness<S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + Clone + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + Clone + 'static,
 {
     let tree = Arc::new(BPlusTree::new_with_deps(
         storage.clone(),

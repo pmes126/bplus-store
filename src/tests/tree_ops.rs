@@ -496,9 +496,10 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
 fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
     let dir = TempDir::new().unwrap();
     let file_path = dir.path().join("tree.data");
+    let manifest_path = dir.path().join("tree.MANIFEST");
 
     let order = 4; // B+ tree order
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path, manifest_path)?;
     let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
     let tree = SharedBPlusTree::new(BPlusTree::<String, String, FileStore<PageStore>>::new(
         store, order, fmt,
@@ -509,7 +510,6 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
         let key = format!("key_{}", i);
         let value = format!("value_{}", i);
         let value_updated = format!("value_upd_{}", i);
-        println!("Inserting key: {}, value: {}", key, value);
         let res = tree.insert_with_root(key.clone(), value.clone(), root_id)?;
         root_id = res.new_root_id; // Update root_id after each insert
         assert_eq!(
@@ -517,7 +517,6 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
             Some(value.clone()),
             "Value should be inserted successfully"
         );
-        println!("Inserting key: {}, updated value: {}", key, value_updated);
         let res = tree.insert_with_root(key.clone(), value_updated.clone(), root_id);
         assert!(res.is_ok(), "Updated value should be inserted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each insert

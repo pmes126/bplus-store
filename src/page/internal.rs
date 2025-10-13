@@ -12,6 +12,8 @@
 //! - key_count == number of slots
 
 use crate::bplustree::node::NodeId;
+use crate::keyfmt::raw;
+use crate::keyfmt::KeyFormat; // use the trait and resolve by id
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE;
@@ -56,11 +58,11 @@ pub struct InternalPage {
 }
 
 impl InternalPage {
-    pub fn new(keyfmt_id: u8) -> Self {
+    pub fn new(keyfmt_id: KeyFormat) -> Self {
         InternalPage {
             header: Header {
                 kind: INTERNAL_NODE_TAG,
-                keyfmt_id,
+                keyfmt_id: keyfmt_id.id(),
                 key_count: 0u16,
                 key_block_len: 0u16,
             },
@@ -87,14 +89,17 @@ impl InternalPage {
     pub fn kind(&self) -> u8 {
         self.header.kind
     }
+
     #[inline]
     pub fn key_count(&self) -> u16 {
         self.header.key_count
     }
+
     #[inline]
-    fn keyfmt_id(&self) -> u8 {
+    pub fn keyfmt_id(&self) -> u8 {
         self.header.keyfmt_id
     }
+
     #[inline]
     fn set_key_count(&mut self, n: u16) {
         self.header.key_count = n;
@@ -104,6 +109,7 @@ impl InternalPage {
     fn key_block_len(&self) -> u16 {
         self.header.key_block_len
     }
+
     #[inline]
     fn set_key_block_len(&mut self, n: u16) {
         self.header.key_block_len = n;
@@ -113,18 +119,22 @@ impl InternalPage {
     fn keys_start(&self) -> usize {
         0
     } // <-- buf already excludes the header
+ 
     #[inline]
     fn keys_end(&self) -> usize {
         self.key_block_len() as usize
     }
+
     #[inline]
     fn children_base(&self) -> usize {
         self.keys_end()
     }
+
     #[inline]
     fn children_len(&self) -> usize {
         (self.key_count() as usize + 1) * CHILD_ID_SIZE
     }
+
     #[inline]
     fn children_end(&self) -> usize {
         self.children_base() + self.children_len()
@@ -141,6 +151,11 @@ impl InternalPage {
     pub fn key_fmt(&self) -> &dyn KeyBlockFormat {
         resolve_key_format(self.keyfmt_id())
             .expect("unknown key format id; register it in keyfmt::resolve_key_format")
+    }
+    
+    // Return the keyfmt_id of this page's header as a u8, for use in the manifest and page header.
+    pub fn key_fmt_id(&self) -> u8 {
+        self.keyfmt_id()
     }
 
     // Lightweight view for calling the format
@@ -624,7 +639,7 @@ impl InternalPage {
 
 impl Default for InternalPage {
     fn default() -> Self {
-        InternalPage::new(0) // Default key format id is 0
+        InternalPage::new(KeyFormat::Raw(raw::RawFormat)) // Default key format id is Raw
     }
 }
 

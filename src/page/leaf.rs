@@ -15,6 +15,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 // Hook these to your actual crate paths:
 use crate::keyfmt::KeyBlockFormat; // use the trait and resolve by id
+use crate::keyfmt::KeyFormat; // use the trait and resolve by id
 use crate::keyfmt::resolve_key_format; // you implement: u8 -> &'static dyn KeyBlockFormat
 use crate::layout::PAGE_SIZE; // const PAGE_SIZE: usize
 use crate::page::LEAF_NODE_TAG;
@@ -69,11 +70,11 @@ pub struct LeafPage {
 }
 
 impl LeafPage {
-    pub fn new(keyfmt_id: u8) -> Self {
+    pub fn new(keyfmt_id: KeyFormat) -> Self {
         LeafPage {
             header: Header {
                 kind: LEAF_NODE_TAG,
-                keyfmt_id,
+                keyfmt_id : keyfmt_id.id(),
                 key_count: 0u16,
                 key_block_len: 0u16,
                 values_hi: BUFFER_SIZE as u16, // the hi address within buf where values start
@@ -101,14 +102,17 @@ impl LeafPage {
     pub fn kind(&self) -> u8 {
         self.header.kind
     }
+
     #[inline]
     pub fn key_count(&self) -> u16 {
         self.header.key_count
     }
+
     #[inline]
-    fn keyfmt_id(&self) -> u8 {
+    pub fn keyfmt_id(&self) -> u8 {
         self.header.keyfmt_id
     }
+
     #[inline]
     fn set_key_count(&mut self, n: u16) {
         self.header.key_count = n;
@@ -118,6 +122,7 @@ impl LeafPage {
     fn key_block_len(&self) -> u16 {
         self.header.key_block_len
     }
+
     #[inline]
     fn set_key_block_len(&mut self, n: u16) {
         self.header.key_block_len = n;
@@ -127,10 +132,12 @@ impl LeafPage {
     fn values_hi_usize(&self) -> usize {
         self.header.values_hi as usize
     }
+
     #[inline]
     fn set_values_hi(&mut self, off: u16) {
         self.header.values_hi = off
     }
+
     #[inline]
     fn keys_start(&self) -> usize {
         0
@@ -139,10 +146,12 @@ impl LeafPage {
     fn keys_end(&self) -> usize {
         self.key_block_len() as usize
     }
+
     #[inline]
     fn slots_base(&self) -> usize {
         self.keys_end()
     }
+
     #[inline]
     fn slots_end(&self) -> usize {
         self.slots_base() + self.key_count() as usize * SLOT_SIZE

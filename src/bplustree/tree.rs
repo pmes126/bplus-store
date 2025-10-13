@@ -10,12 +10,12 @@ use crate::storage::epoch::COMMIT_COUNT;
 use crate::bplustree::NodeView;
 use crate::codec::CodecError;
 use crate::metadata;
-use crate::metadata::{
-    Metadata, {METADATA_PAGE_1, METADATA_PAGE_2},
-};
+use crate::metadata::Metadata;
 use crate::page::LeafPage;
 use crate::storage::{MetadataStorage, NodeStorage, HasEpoch, StorageError};
+use crate::storage::catalog::TreeMeta;
 use crate::keyfmt::KeyFormat;
+use crate::api::{KeyEncodingId, TreeId};
 
 use std::result::Result;
 use thiserror::Error;
@@ -128,10 +128,26 @@ pub struct BPlusTree<'s, S>
 where
     S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
+    // B+ tree properties (immutable after init)
+    // identity + wiring
+    id: TreeId,
+    storage: &'s S,
+
+    // comparator contract (immutable)
+    key_encoding: KeyEncodingId,
+    encoding_version: u16,
+
+    // layout contract (immutable)
+    key_format: KeyFormat,
+
+    // where meta lives (immutable)
+    meta_a: u64,
+    meta_b: u64, 
+    // B+ tree order and balancing (immutable)
     max_keys: usize,
     min_internal_keys: usize,
     min_leaf_keys: usize,
-    storage: &'s S,
+    // Current state (updated on commit)
     commit_count: AtomicUsize,    // Number of commits made to the tree
     txn_id: AtomicU64,            // Slot of metadata storage
     committed: AtomicPtr<Metadata>, // Pointer to the committed metadata,
@@ -184,14 +200,14 @@ pub struct WriteResult {
 // ------------ Shared BPlusTree Arc wrapper ----------
 pub struct SharedBPlusTree<'s, S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
     inner: Arc<BPlusTree<'s, S>>,
 }
 
 impl<'s, S> Clone for SharedBPlusTree<'s, S>
 where
-    S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -322,6 +338,7 @@ where
     //    self.inner.traverse()
     //}
 
+    /*
     pub fn search_range_at_root<'a, K: AsRef<[u8]>>(
         &'a self,
         root_id: NodeId,
@@ -340,7 +357,9 @@ where
         self.inner.search_range(root_id, start, end)
     }
 
-    pub fn get_epoch_mgr(&self) -> Arc<EpochManager> {
+    */
+
+    pub fn epoch_mgr(&self) -> Arc<EpochManager> {
         Arc::clone(&self.inner.storage.epoch_mgr())
     }
 
@@ -354,23 +373,26 @@ impl<'s, S> BPlusTree<'s, S>
 where
     S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
 {
-    pub fn new(storage: &'s S, order: usize, keyfmt_id: KeyFormat) -> Result<BPlusTree<'s, S>, TreeError> {
-        let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt_id.id()), };
-        if order < 2 {
-            return Err(TreeError::BadInput("Order must be at least 2".to_string()));
-        }
+
+    pub fn new(storage: &'s S, meta: &TreeMeta) -> Result<BPlusTree<'s, S>, TreeError> {
+        let keyfmt = meta.keyfmt_id;
+        let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt), };
         // Initialize the root node ID
         let init_id = storage
             .write_node_view(&root_node)
             .map_err(|e| TreeError::BackendAny(e.to_string()))?;
+        storage.write_node_view_at_offset(&root_node, meta.root_id)
+            .map_err(|e| TreeError::BackendAny(format!("failed to write root node {}:", e)))?;
         let init_txn_id = 1; // Initial transaction ID
+
         let md1 = Metadata {
             root_node_id: init_id,
             txn_id: init_txn_id, // Initial transaction ID
             height: 1,           // Initial height
             checksum: 0,         // Placeholder for checksum
             size: 0,             // Initial size
-            order,
+            order: meta.order,
+            id: meta.id
         };
         let md2 = Metadata {
             root_node_id: init_id,
@@ -378,67 +400,33 @@ where
             height: 1,           // Initial height
             checksum: 0,         // Placeholder for checksum
             size: 0,             // Initial size
-            order,
+            order: meta.order,
+            id: meta.id
         };
+
         let mut metadata_1 = metadata::new_metadata_page_with_object(&md1);
         let mut metadata_2 = metadata::new_metadata_page_with_object(&md2);
-        storage.write_metadata(METADATA_PAGE_1, &mut metadata_1)?;
-        storage.write_metadata(METADATA_PAGE_2, &mut metadata_2)?;
+
+        storage.write_metadata(meta.meta_a, &mut metadata_1)?;
+        storage.write_metadata(meta.meta_a, &mut metadata_2)?;
 
         let md_ptr = Box::new(md1); // Convert metadata to raw pointer
 
         Ok(Self {
+            id: meta.id.clone(),
             storage,
-            max_keys: order - 1,
-            min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
-            min_leaf_keys: (order - 1).div_ceil(2),   // Ensure min_keys is at least 1
+            key_encoding: meta.key_encoding,
+            key_format: meta.keyfmt_id,
+            encoding_version: meta.format_version,
+            meta_a: meta.meta_a,
+            meta_b: meta.meta_b,
+            max_keys: meta.order - 1,
+            min_internal_keys: meta.order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
+            min_leaf_keys: (meta.order - 1).div_ceil(2),   // Ensure min_keys is at least 1
             commit_count: AtomicUsize::new(0),        // Initialize commit count
             txn_id: AtomicU64::new(init_txn_id),      // Initialize transaction ID
             committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
         })
-    }
-
-    pub fn load(storage: S) -> Result<BPlusTree<S>, TreeError> {
-        println!("Loading B+ tree with root ID from storage");
-        let md = storage.get_metadata()?;
-        let md_ptr = Box::new(md);
-        let order = md.order;
-        debug_assert!(order >= 2);
-
-        let max_keys = order - 1;
-        let min_internal_keys = (order - 1).saturating_div(2); // Ensure min_internal_keys is at 
-        let min_leaf_keys = order.saturating_div(2); // Ensure min_keys is at least 1
-
-        Ok(Self {
-            storage,
-            max_keys,
-            min_internal_keys,
-            min_leaf_keys,
-            commit_count: AtomicUsize::new(0),     // Initialize commit count
-            txn_id: AtomicU64::new(md.txn_id),     // Initialize transaction ID
-            committed: AtomicPtr::new(Box::into_raw(md_ptr)), // Initialize committed pointer
-        })
-    }
-
-    #[cfg(any(test, feature = "testing"))]
-    pub fn new_with_deps(storage: S, epoch_mgr: EpochManager, order: usize) -> Self {
-        let meta = Metadata {
-            root_node_id: 2,
-            txn_id: 0,   // Initial transaction ID
-            height: 1,   // Initial height
-            checksum: 0, // Placeholder for checksum
-            size: 0,     // Initial size
-            order,
-        };
-        Self {
-            storage,
-            commit_count: 0.into(),
-            max_keys: order - 1,
-            min_internal_keys: order.div_ceil(2) - 1, // Ensure min_internal_keys is at least 2
-            min_leaf_keys: (order - 1).div_ceil(2),   // Ensure min_keys is at least 1
-            txn_id: AtomicU64::new(1),                // Initial transaction ID
-            committed: AtomicPtr::new(Box::into_raw(Box::new(meta))), // Initialize committed pointer
-        }
     }
 
     // ---- Utilities for reading/writing nodes and metadata from/to storage ----
@@ -732,7 +720,7 @@ where
             key = split_key;
         }
 
-        let mut new_root = NodeView::new_internal(0u8);
+        let mut new_root = NodeView::new_internal(self.key_format);
         new_root.write_leftmost_child(left)?;
         new_root.insert_separator_at(0, &key, right)?;
         
@@ -794,6 +782,7 @@ where
         }
     }
 
+/*
     // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
     // pairs.
     //<K: AsRef<[u8]>, V: AsRef<[u8]>>
@@ -812,6 +801,7 @@ where
             end,
         )))
     }
+*/
 
     // ----- Deletes and underflow handling -----
     // Deletes a key from the B+ tree.
@@ -1280,7 +1270,7 @@ where
 
     // Merges two nodes into one, ensuring that the total number of keys does not exceed the
     // maximum allowed.
-    pub fn merge_nodes_view<'s>(
+    pub fn merge_nodes_view(
         &'s self,
         left_node: &'s mut NodeView,
         right_node: &'s mut NodeView,
@@ -1366,8 +1356,9 @@ where
 
         // Commit the metadata for the new root
         self.storage.commit_metadata(
-            target_slot as u8,
+            target_slot,
             self.txn_id.load(Ordering::Relaxed),
+            self.id,
             new_root_id,
             self.get_height(),
             self.get_order(),
@@ -1423,6 +1414,7 @@ where
         let new_txn_id = current.txn_id + 1;
         let metadata = Metadata {
             root_node_id: new_meta.root_id,
+            id : self.id,
             height: new_meta.height,
             size: new_meta.size,
             txn_id: new_txn_id,
@@ -1449,7 +1441,7 @@ where
 
                 let res = self
                     .storage
-                    .commit_metadata_with_object(slot as u8, &metadata);
+                    .commit_metadata_with_object(slot, &metadata);
                 if let Err(e) = res {
                     // ❌ commit failed, restore old metadata
                     unsafe {
@@ -1504,6 +1496,7 @@ where
 
         Metadata {
             root_node_id: meta.root_node_id,
+            id: meta.id,
             height: meta.height,
             size: meta.size,
             checksum: meta.checksum,

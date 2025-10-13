@@ -5,12 +5,13 @@ use std::{fmt, str::FromStr};
 use bytes::Bytes;
 use std::ops::Bound;
 
+#[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyEncodingId {
-BeU64,
-ZigZagI64,
-Utf8,
-RawBytes,
+BeU64 = 0,
+ZigZagI64 = 1,
+Utf8 = 2,
+RawBytes = 3,
 }
 
 impl fmt::Display for KeyEncodingId {
@@ -36,6 +37,20 @@ other => Err(format!("unknown key encoding: {}", other)),
 }
 }
 }
+
+impl TryFrom<u64> for KeyEncodingId {
+type Error = String;
+fn try_from(value: u64) -> Result<Self, Self::Error> {
+match value {
+0 => Ok(Self::BeU64),
+1 => Ok(Self::ZigZagI64),
+2 => Ok(Self::Utf8),
+3 => Ok(Self::RawBytes),
+other => Err(format!("unknown key encoding id: {}", other)),
+}
+}
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct KeyConstraints {
@@ -66,28 +81,6 @@ BadRangeBounds,
 
 pub type TreeId = u64;
 
-#[derive(Clone, Debug)]
-pub struct TreeMeta {
-    pub id: TreeId,
-    pub name: String,
-
-    // Encoding / schema
-    pub key_encoding: KeyEncodingId,
-    pub encoding_version: u16,
-
-    // Storage-level info (server/internal)
-    pub meta_a: u64,
-    pub meta_b: u64,
-
-    // Current committed state (copied from latest valid MetaPage)
-    pub root_id: u64,
-    pub height: usize,
-    pub size: usize,
-
-    // Manifest sequencing and bookkeeping
-    pub last_seq: u64,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct KeyLimits { pub min_len: u32, pub max_len: u32 }
 
@@ -100,4 +93,15 @@ pub enum Order { Fwd, Rev }
 pub struct KeyRange<'a> {
     pub start: Bound<&'a [u8]>,
     pub end:   Bound<&'a [u8]>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum KeyFormatId {
+    Raw,
+    PrefixRestarts,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub struct KeyFormatParams {
+    pub restart_interval: u16, // only meaningful for PrefixRestarts
 }

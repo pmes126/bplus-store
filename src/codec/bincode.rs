@@ -2,11 +2,13 @@ use crate::bplustree::{Node, NodeView};
 use crate::codec::{
     CodecError, KeyCodec, KeyCodecDefault, NodeCodec, ValueCodec, ValueCodecDefault,
 };
+use crate::keyfmt::raw::RawFormat;
 use crate::layout::PAGE_SIZE;
 use crate::page::INTERNAL_NODE_TAG;
 use crate::page::InternalPage;
 use crate::page::LEAF_NODE_TAG;
 use crate::page::LeafPage;
+use crate::keyfmt::KeyFormat;
 
 // initial capacity for encoding buffers
 const INIT_ENC_CAP: usize = 256;
@@ -15,7 +17,7 @@ pub struct BeU64;
 pub struct Utf8;
 pub struct RawBuf;
 
-const KEY_FORMAT: u8 = 0u8;
+const KEY_FORMAT_DEFAULT: KeyFormat = KeyFormat::Raw(RawFormat);
 
 impl KeyCodec<u64> for BeU64 {
     fn encode_key(key: &u64, out: &mut [u8]) -> Result<usize, CodecError> {
@@ -230,13 +232,12 @@ impl ValueCodecDefault<Vec<u8>> for () {
 
 //=======NodeCodec implementation using default codecs for K and V =======
 // This codec uses the default KeyCodec and ValueCodec for K and V respectively
+// It will decode a page into a Node<K,V> by decoding the keys and values using the default
+// codecs
 pub struct DefaultNodeCodec<KC, VC> {
     _marker_k: std::marker::PhantomData<KC>,
     _marker_v: std::marker::PhantomData<VC>,
 }
-
-// A Codec for transforming between a NodeView and a buffer
-pub struct NoopNodeViewCodec;
 
 impl<K, V, KC, VC> NodeCodec<K, V> for DefaultNodeCodec<KC, VC>
 where
@@ -307,7 +308,7 @@ where
     fn encode(node: &Node<K, V>) -> Result<[u8; PAGE_SIZE], CodecError> {
         match node {
             Node::Leaf { keys, values } => {
-                let mut page = LeafPage::new(KEY_FORMAT);
+                let mut page = LeafPage::new(KEY_FORMAT_DEFAULT);
                 {
                     let mut encode_buf_key: Vec<u8> = Vec::with_capacity(INIT_ENC_CAP);
                     let mut encode_buf_val: Vec<u8> = Vec::with_capacity(INIT_ENC_CAP);
@@ -327,7 +328,7 @@ where
                     .copied()
             }
             Node::Internal { keys, children } => {
-                let mut page = InternalPage::new(KEY_FORMAT);
+                let mut page = InternalPage::new(KEY_FORMAT_DEFAULT);
                 let leftmost_child = children.first().ok_or(CodecError::EncodeFailure {
                     msg: "Internal node must have at least one child".to_string(),
                 })?;
@@ -351,6 +352,11 @@ where
     }
 }
 
+// A Codec for transforming between a NodeView and a buffer
+pub struct NoopNodeViewCodec;
+
+// A NodeViewCodec simply wraps the page encoding/decoding without transforming to/from
+// Node<K,V>.
 impl NoopNodeViewCodec {
     pub fn decode(buf: &[u8; PAGE_SIZE]) -> Result<NodeView, CodecError> {
         let node_type = buf.first().copied().ok_or(CodecError::DecodeFailure {

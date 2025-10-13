@@ -4,12 +4,11 @@ pub mod api;
 pub mod bplustree;
 pub mod codec;
 pub mod storage;
+pub mod store;
 
 pub(crate) mod keyfmt;
 pub(crate) mod layout;
-pub(crate) mod metadata;
 pub(crate) mod page;
 pub(crate) mod tests;
-pub(crate) mod manifest;
 
-pub use api::{DbBytes, TypedDb};
+//pub use api::{DbBytes, TypedDb};

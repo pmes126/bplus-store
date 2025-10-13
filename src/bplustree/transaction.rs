@@ -1,5 +1,5 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::storage::{MetadataStorage, NodeStorage};
+use crate::storage::{MetadataStorage, NodeStorage, HasEpoch};
 use anyhow::Result;
 
 enum WriteOp<K, V> {
@@ -27,7 +27,7 @@ impl WriteTransaction
 {
     pub fn new<S>(tree: SharedBPlusTree<S>) -> Self
     where
-        S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
     {
         Self {
             staged_update: {
@@ -69,7 +69,7 @@ impl WriteTransaction
     // Replay staged ops from base/root; tree handles encoding inside.
     pub fn commit<S>(&mut self, tree: &SharedBPlusTree<S>) -> Result<TxnStatus>
     where
-        S: NodeStorage + MetadataStorage + Send + Sync + 'static,
+        S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
     {
         for _ in 0..MAX_COMMIT_RETRIES {
             // Rebuild speculative state by replaying changes from the saved base root.
@@ -81,7 +81,7 @@ impl WriteTransaction
             for op in &self.changes {
                 match op {
                     WriteOp::Insert(k, v) => {
-                        let wr = tree.insert_with_root(k.clone(), v.clone(), current_root)?;
+                        let wr = tree.put_with_root(k.clone(), v.clone(), current_root)?;
                         reclaimed_nodes_local.extend(wr.reclaimed_nodes);
                         staged_nodes.extend(wr.staged_nodes);
                         current_root = wr.new_root_id;
@@ -122,7 +122,7 @@ impl WriteTransaction
             if res.is_ok() {
                 // Publish all reclaimed pages after success.
                 for id in reclaimed_nodes_local.drain(..) {
-                    tree.get_epoch_mgr().add_reclaim_candidate(0, id);
+                    tree.epoch_mgr().add_reclaim_candidate(0, id);
                 }
                 self.reclaimed_nodes.clear();
                 self.changes.clear();
@@ -130,7 +130,7 @@ impl WriteTransaction
             } else {
                 // Conflict: clean up speculative nodes, refresh base+root, and retry.
                 for id in staged_nodes.drain(..) {
-                    tree.get_epoch_mgr().add_reclaim_candidate(0, id);
+                    tree.epoch_mgr().add_reclaim_candidate(0, id);
                 }
                 self.reclaimed_nodes.clear();
                 self.tree_base_version = BaseVersion {
@@ -166,6 +166,7 @@ mod tests {
         // Simulate another writer already published
         #[cfg(any(test, feature = "testing"))]
         h.tree.test_force_publish(&Metadata {
+            id: 1,
             root_node_id: 99,
             height: 2,
             size: 5,

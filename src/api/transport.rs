@@ -20,14 +20,6 @@ use crate::api::errors::ApiError;
 pub type ResumeToken = Bytes;
 pub type TreeId = Bytes;
 
-#[derive(Debug, Clone)]
-pub struct TreeMeta {
-    pub id: Bytes,
-    pub name: String,
-    pub key_encoding: KeyEncodingId,
-    pub constraints: KeyConstraints,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum Order { Fwd, Rev }
 

@@ -1,3 +1,4 @@
+use crate::keyfmt::KeyFormat;
 use crate::page::{InternalPage, LeafPage};
 use crate::codec::{KeyCodec, ValueCodec};
 
@@ -22,14 +23,14 @@ pub enum NodeView {
 impl NodeView {
     // --- Initialization ---
     #[inline]
-    pub fn new_internal(format_id: u8) -> Self {
+    pub fn new_internal(format_id: KeyFormat) -> Self {
         NodeView::Internal {
             page: InternalPage::new(format_id),
         }
     }
 
     #[inline]
-    pub fn new_leaf(format_id: u8) -> Self {
+    pub fn new_leaf(format_id: KeyFormat) -> Self {
         NodeView::Leaf {
             page: LeafPage::new(format_id),
         }
@@ -275,13 +276,14 @@ impl NodeView {
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, anyhow::Error> {
         match self {
             NodeView::Internal { page } => {
-                //println!("Splitting internal node at index {} with format id {}", idx, page.fmt().format_id() );
-                let mut new_page = InternalPage::new(page.key_fmt().format_id());
+                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id()))?;
+                let mut new_page = InternalPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page).map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Internal { page: new_page })
             }
             NodeView::Leaf { page } => {
-                let mut new_page = LeafPage::new(page.key_fmt().format_id());
+                let keyfmt_id = KeyFormat::from_id(page.keyfmt_id()).ok_or_else(|| anyhow::anyhow!("Unknown key format id: {}", page.keyfmt_id()))?;
+                let mut new_page = LeafPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)
                     .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(NodeView::Leaf { page: new_page })
