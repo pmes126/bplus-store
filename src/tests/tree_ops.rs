@@ -262,9 +262,7 @@ fn write_and_delete_lockstep() -> Result<(), anyhow::Error> {
     }
     for i in 0..bound {
         let key = i;
-        println!("Deleting key: {}", key);
         let res = tree.delete_with_root(&key, root_id);
-        println!("Delete result: {:?}", res);
         assert!(res.is_ok(), "Node should be deleted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each delete
         let res = tree.search_with_root(&key, root_id)?;
@@ -311,7 +309,6 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     for i in 0..order as u64 * multiplier {
         let key = i;
         let res = tree.delete_with_root(&key, root_id);
-        println!("Deleting key: {}, result: {:?}", key, res);
         assert!(res.is_ok(), "Key should be deleted successfully");
         let r = res.unwrap();
         root_id = r.new_root_id; // Update root_id after each delete
@@ -509,7 +506,6 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
         let key = format!("key_{}", i);
         let value = format!("value_{}", i);
         let value_updated = format!("value_upd_{}", i);
-        println!("Inserting key: {}, value: {}", key, value);
         let res = tree.insert_with_root(key.clone(), value.clone(), root_id)?;
         root_id = res.new_root_id; // Update root_id after each insert
         assert_eq!(
@@ -517,7 +513,6 @@ fn insert_duplicate_keys_should_overwrite_value() -> Result<()> {
             Some(value.clone()),
             "Value should be inserted successfully"
         );
-        println!("Inserting key: {}, updated value: {}", key, value_updated);
         let res = tree.insert_with_root(key.clone(), value_updated.clone(), root_id);
         assert!(res.is_ok(), "Updated value should be inserted successfully");
         root_id = res.unwrap().new_root_id; // Update root_id after each insert

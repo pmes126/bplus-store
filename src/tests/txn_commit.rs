@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use crate::bplustree::transaction::WriteTransaction;
+use crate::bplustree::transaction::MAX_COMMIT_RETRIES;
 use crate::tests::common;
 use rand::Rng;
 use rand::seq::SliceRandom;
@@ -26,6 +27,7 @@ fn commit_happy_path() {
     }
 }
 
+
 /*
 #[cfg(feature = "testing")]
 #[test]
@@ -40,7 +42,7 @@ fn commit_with_retries() {
         trx.insert(i, format!("value_{}", i)).expect("insert");
     }
 
-    match trx.commit() {
+    match trx.commit(&tree) {
         Ok(_) => panic!("Commit should have failed due to injected failure"),
         Err(_e) => {}
     }
@@ -48,7 +50,7 @@ fn commit_with_retries() {
     let fail_pattern = format!("return->{}", MAX_COMMIT_RETRIES-1);
     fail::cfg("tree::commit::try_commit_failure", &fail_pattern).unwrap();
     // Now we expect the commit to succeed after retries
-    trx.commit().expect("commit after retries");
+    trx.commit(&tree).expect("commit after retries");
     // run the commit
     fail::remove("tree::commit::try_commit_failure");
     for i in 0..100 {
@@ -148,7 +150,9 @@ fn commit_failure_should_reclaim_nodes() {
     }
 
     // Simulate a failure during commit
-    //fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
+    fail::cfg("tree::commit::try_commit_failure", "return").unwrap();
+    // TODO: Failure injection is not working as expected, the commit is succeeding instead of
+    // failing. Need to investigate why the failure injection is not taking effect.
     //match trx.commit(&tree) {
     //    Ok(_) => panic!("Commit should have failed"),
     //    Err(e) => assert!(matches!(e, anyhow::Error { .. })),
@@ -200,41 +204,41 @@ fn noop_tx_commit_no_side_effects() {
     );
 }
 
-//#[test]
-//fn node_reclamation_in_tx_commit() {
-//    let dir = TempDir::new().unwrap();
-//    let order = 10;
-//    let tree = common::make_tree(&dir, order).expect("create tree");
-//
-//    // Start a transaction
-//    let mut trx = WriteTransaction::new(tree.clone());
-//
-//    // Insert some data
-//    for i in 0..100 {
-//        trx.insert(i, format!("value_{}", i)).expect("insert");
-//    }
-//
-//    // Delete some data
-//    for i in 0..100 {
-//        trx.delete(&i).expect("delete");
-//    }
-//
-//    assert!(
-//        trx.get_reclaimed_nodes().is_empty(),
-//        "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
-//    );
-//
-//    // Commit the transaction
-//    trx.commit(&tree).expect("commit");
-//
-//    let deffered = tree.get_epoch_mgr().get_deferred_pages();
-//
-//    assert!(
-//        !deffered.is_empty(),
-//        "Deferred pages should not be empty after commit"
-//    );
-//    assert!(
-//        trx.get_reclaimed_nodes().is_empty(),
-//        "Reclaimed nodes in tx should be empty after commit"
-//    );
-//}
+#[test]
+fn node_reclamation_in_tx_commit() {
+    let dir = TempDir::new().unwrap();
+    let order = 10;
+    let tree = common::make_tree(&dir, order).expect("create tree");
+
+    // Start a transaction
+    let mut trx = WriteTransaction::new(tree.clone());
+
+    // Insert some data
+    for i in 0..100 {
+        trx.insert(i, format!("value_{}", i)).expect("insert");
+    }
+
+    // Delete some data
+    for i in 0..100 {
+        trx.delete(&i).expect("delete");
+    }
+
+    assert!(
+        trx.get_reclaimed_nodes().is_empty(),
+        "No nodes should be reclaimed before commit, the transaction reclaimed nodes should not be empty"
+    );
+
+    // Commit the transaction
+    trx.commit(&tree).expect("commit");
+
+    let deffered = tree.get_epoch_mgr().get_deferred_pages();
+
+    assert!(
+        !deffered.is_empty(),
+        "Deferred pages should not be empty after commit"
+    );
+    assert!(
+        trx.get_reclaimed_nodes().is_empty(),
+        "Reclaimed nodes in tx should be empty after commit"
+    );
+}
