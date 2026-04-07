@@ -1,5 +1,5 @@
 use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
-use crate::storage::{MetadataStorage, NodeStorage, HasEpoch};
+use crate::storage::{NodeStorage, HasEpoch, PageStorage};
 use anyhow::Result;
 
 enum WriteOp<K, V> {
@@ -25,9 +25,10 @@ pub struct WriteTransaction
 
 impl WriteTransaction
 {
-    pub fn new<S>(tree: SharedBPlusTree<S>) -> Self
+    pub fn new<S,P>(tree: SharedBPlusTree<S, P>) -> Self
     where
-        S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+        S: NodeStorage + HasEpoch + Send + Sync + 'static,
+        P: PageStorage + Send + Sync + 'static,
     {
         Self {
             staged_update: {
@@ -67,9 +68,10 @@ impl WriteTransaction
     }
 
     // Replay staged ops from base/root; tree handles encoding inside.
-    pub fn commit<S>(&mut self, tree: &SharedBPlusTree<S>) -> Result<TxnStatus>
+    pub fn commit<S, P>(&mut self, tree: &SharedBPlusTree<S, P>) -> Result<TxnStatus>
     where
-        S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+        S: NodeStorage + HasEpoch + Send + Sync + 'static,
+        P: PageStorage + Send + Sync + 'static,
     {
         for _ in 0..MAX_COMMIT_RETRIES {
             // Rebuild speculative state by replaying changes from the saved base root.

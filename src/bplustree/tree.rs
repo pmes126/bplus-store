@@ -4,16 +4,15 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use crate::bplustree::BPlusTreeIter;
 use crate::storage::epoch::EpochManager;
 use crate::storage::epoch::COMMIT_COUNT;
 use crate::bplustree::NodeView;
 use crate::codec::CodecError;
-use crate::metadata;
-use crate::metadata::Metadata;
+use crate::store::metadata::Metadata;
+use crate::storage::metadata_manager::MetadataManager;
 use crate::page::LeafPage;
-use crate::storage::{MetadataStorage, NodeStorage, HasEpoch, StorageError};
-use crate::storage::catalog::TreeMeta;
+use crate::storage::{NodeStorage, PageStorage, HasEpoch, StorageError};
+use crate::store::catalog::TreeMeta;
 use crate::keyfmt::KeyFormat;
 use crate::api::{KeyEncodingId, TreeId};
 
@@ -124,14 +123,16 @@ pub struct TreeConfig {
 
 
 /// B+ tree structure with generic key and value types, and a storage backend
-pub struct BPlusTree<'s, S>
+pub struct BPlusTree<'s, S, P>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
+        P: PageStorage + Send + Sync + 'static,
 {
     // B+ tree properties (immutable after init)
     // identity + wiring
     id: TreeId,
     storage: &'s S,
+    page_storage: &'s P,
 
     // comparator contract (immutable)
     key_encoding: KeyEncodingId,
@@ -198,16 +199,18 @@ pub struct WriteResult {
 }
 
 // ------------ Shared BPlusTree Arc wrapper ----------
-pub struct SharedBPlusTree<'s, S>
+pub struct SharedBPlusTree<'s, S, P>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
+        P: PageStorage + Send + Sync + 'static,
 {
-    inner: Arc<BPlusTree<'s, S>>,
+    inner: Arc<BPlusTree<'s, S, P>>,
 }
 
-impl<'s, S> Clone for SharedBPlusTree<'s, S>
+impl<'s, S, P> Clone for SharedBPlusTree<'s, S, P>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -216,17 +219,18 @@ where
     }
 }
 
-impl<'s, S> SharedBPlusTree<'s, S>
+impl<'s, S, P> SharedBPlusTree<'s, S, P>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
 {
-    pub fn new(tree: BPlusTree<'s, S>) -> Self {
+    pub fn new(tree: BPlusTree<'s, S, P>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
     }
 
-    pub fn from_arc(tree: Arc<BPlusTree<'s, S>>) -> Self {
+    pub fn from_arc(tree: Arc<BPlusTree<'s, S, P>>) -> Self {
         Self { inner: tree }
     }
 
@@ -323,7 +327,7 @@ where
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
 
-    pub fn arc(&self) -> Arc<BPlusTree<S>> {
+    pub fn arc(&self) -> Arc<BPlusTree<S ,P>> {
         Arc::clone(&self.inner)
     }
 
@@ -369,12 +373,13 @@ where
 }
 
 // -------------------------- BPlusTree implementation ----------------------------
-impl<'s, S> BPlusTree<'s, S>
+impl<'s, S, P> BPlusTree<'s, S, P>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
+    P : PageStorage + Send + Sync + 'static,
 {
 
-    pub fn new(storage: &'s S, meta: &TreeMeta) -> Result<BPlusTree<'s, S>, TreeError> {
+    pub fn new(storage: &'s S, page_storage: &'s P, meta: &TreeMeta) -> Result<BPlusTree<'s, S, P>, TreeError> {
         let keyfmt = meta.keyfmt_id;
         let root_node = NodeView::Leaf { page: LeafPage::new(keyfmt), };
         // Initialize the root node ID
@@ -383,6 +388,7 @@ where
             .map_err(|e| TreeError::BackendAny(e.to_string()))?;
         storage.write_node_view_at_offset(&root_node, meta.root_id)
             .map_err(|e| TreeError::BackendAny(format!("failed to write root node {}:", e)))?;
+
         let init_txn_id = 1; // Initial transaction ID
 
         let md1 = Metadata {
@@ -394,27 +400,13 @@ where
             order: meta.order,
             id: meta.id
         };
-        let md2 = Metadata {
-            root_node_id: init_id,
-            txn_id: init_txn_id, // Initial transaction ID
-            height: 1,           // Initial height
-            checksum: 0,         // Placeholder for checksum
-            size: 0,             // Initial size
-            order: meta.order,
-            id: meta.id
-        };
-
-        let mut metadata_1 = metadata::new_metadata_page_with_object(&md1);
-        let mut metadata_2 = metadata::new_metadata_page_with_object(&md2);
-
-        storage.write_metadata(meta.meta_a, &mut metadata_1)?;
-        storage.write_metadata(meta.meta_a, &mut metadata_2)?;
 
         let md_ptr = Box::new(md1); // Convert metadata to raw pointer
 
         Ok(Self {
             id: meta.id.clone(),
             storage,
+            page_storage,
             key_encoding: meta.key_encoding,
             key_format: meta.keyfmt_id,
             encoding_version: meta.format_version,
@@ -1355,7 +1347,8 @@ where
         let target_slot = new_txn_id % 2;
 
         // Commit the metadata for the new root
-        self.storage.commit_metadata(
+        MetadataManager::commit_metadata(
+            self.page_storage,
             target_slot,
             self.txn_id.load(Ordering::Relaxed),
             self.id,
@@ -1439,9 +1432,8 @@ where
                 // 3. Commit metadata to the double-buffered slot
                 let slot = new_txn_id % 2;
 
-                let res = self
-                    .storage
-                    .commit_metadata_with_object(slot, &metadata);
+                let res = 
+                    MetadataManager::commit_metadata_with_object(self.page_storage, slot, &metadata);
                 if let Err(e) = res {
                     // ❌ commit failed, restore old metadata
                     unsafe {

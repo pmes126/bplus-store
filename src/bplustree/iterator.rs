@@ -1,7 +1,7 @@
 #![allow(dead_code)]
-use crate::api::TreeError;
+use crate::bplustree::tree::TreeError;
 use crate::bplustree::node::{Node, NodeId};
-use crate::bplustree::{EpochManager, epoch::ReaderGuard};
+use crate::storage::epoch::{EpochManager, ReaderGuard};
 use crate::storage::NodeStorage;
 use std::sync::Arc;
 

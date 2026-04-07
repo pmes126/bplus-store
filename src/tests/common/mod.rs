@@ -5,7 +5,7 @@ use crate::bplustree::tree::BPlusTree;
 use crate::bplustree::tree::SharedBPlusTree;
 use crate::storage::file_store::FileStore;
 use crate::storage::page_store::PageStore;
-use crate::storage::{MetadataStorage, NodeStorage, HasEpoch};
+use crate::storage::{NodeStorage, HasEpoch};
 use crate::storage::epoch::EpochManager;
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ pub mod test_storage;
 
 pub struct TestHarness<S: Send + Sync >
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + 'static,
 {
     pub tree: Arc<BPlusTree<S>>,
     pub storage: S,
@@ -25,7 +25,7 @@ where
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<S>(storage: S, order: usize) -> TestHarness<S>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + Clone + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + Clone + 'static,
 {
     let tree_meta = storage.create_tree(order).expect("Failed to create tree metadata");
     let fmt = crate::keyfmt::KeyFormat::Raw(crate::keyfmt::raw::RawFormat);
@@ -45,7 +45,7 @@ pub fn test_tree_with_epoch<S>(
     order: usize,
 ) -> TestHarness<S>
 where
-    S: NodeStorage + MetadataStorage + HasEpoch + Send + Sync + Clone + 'static,
+    S: NodeStorage + HasEpoch + Send + Sync + Clone + 'static,
 {
     let tree = Arc::new(BPlusTree::new_with_deps(
         storage.clone(),
@@ -74,7 +74,8 @@ pub fn load_tree(
     dir: &TempDir,
 ) -> Result<SharedBPlusTree<FileStore<PageStore>>, anyhow::Error> {
     let file_path = dir.path().join("tree.data");
-    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path)?;
+    let manifest_path = dir.path().join("manifest.data");
+    let store: FileStore<PageStore> = FileStore::<PageStore>::new(file_path, manifest_path)?;
     let tree = BPlusTree::<FileStore<PageStore>>::load(store)?;
     Ok(SharedBPlusTree::new(tree))
 }
@@ -82,7 +83,7 @@ pub fn load_tree(
 #[cfg(any(test, feature = "testing"))]
 pub fn test_trx<S>(tree: SharedBPlusTree<S>) -> WriteTransaction
 where
-    S: NodeStorage + MetadataStorage + Send + Sync,
+    S: NodeStorage + Send + Sync,
 {
     WriteTransaction::new(tree.clone())
 }

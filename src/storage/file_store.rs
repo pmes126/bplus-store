@@ -5,13 +5,10 @@ use crate::storage::epoch::EpochManager;
 use crate::codec::bincode::NoopNodeViewCodec;
 use crate::layout::PAGE_SIZE;
 use crate::storage::{Storage, HasEpoch, NodeStorage, PageStorage, StorageError};
-use crate::storage::manifest::{writer::ManifestWriter};
+use crate::store::manifest::writer::ManifestWriter;
 
-use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
-use zerocopy::AsBytes;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 pub struct FileStore<S: PageStorage> 
 {
@@ -27,17 +24,6 @@ where
     fn epoch_mgr(&self) -> &Arc<EpochManager> {
         &self.epoch_mgr
     }
-}
-
-impl<S: PageStorage> Storage for FileStore<S>
-    where
-        S: Send + Sync + 'static,
-
-{
-    
-
-    pub fn epoch_mgr(&self) -> &Arc<EpochManager> { &self.epoch_mgr }
-
 }
 
 impl<S: PageStorage> FileStore<S>
@@ -86,4 +72,3 @@ where
         self.store.free_page(id)
     }
 }
-

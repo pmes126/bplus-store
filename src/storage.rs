@@ -5,7 +5,6 @@ use crate::storage::epoch::EpochManager;
 
 use anyhow::Result;
 use std::path::Path;
-use std::io::Write;
 
 /// Implementations
 pub mod file_store;

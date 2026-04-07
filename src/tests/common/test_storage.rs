@@ -1,9 +1,6 @@
 #![allow(dead_code)]
 use crate::bplustree::{Node, NodeView};
-use crate::codec::{DefaultKC, DefaultVC, KeyCodecDefault, ValueCodecDefault};
-use crate::metadata::Metadata;
-use crate::metadata::MetadataPage;
-use crate::storage::{MetadataStorage, NodeStorage, StorageError};
+use crate::storage::{NodeStorage, StorageError};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -64,114 +61,21 @@ impl TestStorage {
     }
 }
 
-impl MetadataStorage for TestStorage {
-    fn commit_metadata(
-        &self,
-        slot: u8,
-        txn_id: u64,
-        root_id: u64,
-        height: usize,
-        order: usize,
-        size: usize,
-    ) -> Result<(), std::io::Error> {
-        if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::other(
-                "commit_metadata_with_object (injected failure)",
-            ));
-        }
-        self.state
-            .lock()
-            .unwrap()
-            .commits
-            .push((slot, txn_id, root_id, height, order, size));
-        Ok(())
-    }
-
-    fn write_metadata(&self, slot: u8, meta: &mut MetadataPage) -> Result<(), std::io::Error> {
-        // Simulate writing metadata by just logging it
-        self.state.lock().unwrap().commits.push((
-            slot,
-            meta.data.txn_id,
-            meta.data.root_node_id,
-            meta.data.height,
-            meta.data.order,
-            meta.data.size,
-        ));
-        Ok(())
-    }
-
-    fn read_metadata(&self, _slot: u8) -> Result<MetadataPage, std::io::Error> {
-        // Simulate reading metadata by returning a dummy page
-        let dummy_page: MetadataPage = unsafe { std::mem::zeroed() };
-        Ok(dummy_page)
-    }
-
-    fn read_current_root(&self) -> Result<u64, std::io::Error> {
-        // Simulate reading the current root by returning a dummy value
-        Ok(0)
-    }
-
-    fn get_metadata(&self) -> Result<Metadata, std::io::Error> {
-        // Simulate getting metadata by returning a dummy value
-        Ok(Metadata {
-            txn_id: 0,
-            root_node_id: 0,
-            height: 0,
-            order: 0,
-            size: 0,
-            checksum: 0,
-        })
-    }
-
-    fn commit_metadata_with_object(
-        &self,
-        slot: u8,
-        metadata: &Metadata,
-    ) -> Result<(), std::io::Error> {
-        if self.fail_commit.load(Ordering::Relaxed) {
-            return Err(std::io::Error::other(
-                "commit_metadata_with_object (injected failure)",
-            ));
-        }
-        // Simulate writing metadata by just logging it
-        self.state.lock().unwrap().commits.push((
-            slot,
-            metadata.txn_id,
-            metadata.root_node_id,
-            metadata.height,
-            metadata.order,
-            metadata.size,
-        ));
-        Ok(())
-    }
-}
-
-impl<K, V> NodeStorage<K, V> for TestStorage
+impl NodeStorage for TestStorage
 where
-    K: Ord + Clone,
-    V: Clone,
-    (): KeyCodecDefault<K> + ValueCodecDefault<V>,
 {
-    type KC = DefaultKC<K>;
-    type VC = DefaultVC<V>;
-
-    fn read_node(&self, _id: u64) -> Result<Option<Node<K, V>>, StorageError> {
+    fn read_node_view(&self, _id: u64) -> Result<Option<Node>, StorageError> {
         // Simulate reading a node by returning None
         Ok(None)
     }
 
-    fn write_node(&self, _node: &Node<K, V>) -> Result<u64, StorageError> {
+    fn write_node_view(&self, node_view: &NodeView) -> anyhow::Result<u64, StorageError> {
         // Simulate writing a node by returning a dummy ID
         Ok(0)
     }
 
-    fn read_node_view(&self, _id: u64) -> Result<Option<NodeView>, StorageError> {
-        // Simulate reading a node view by returning None
-        Ok(None)
-    }
-
-    fn write_node_view(&self, _node_view: &NodeView) -> Result<u64, StorageError> {
-        // Simulate writing a node view by returning a dummy ID
+    fn write_node_view_at_offset(&self, node_view: &NodeView, offset: u64) -> anyhow::Result<u64, StorageError> {
+        // Simulate writing a node by returning a dummy ID
         Ok(0)
     }
 
