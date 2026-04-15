@@ -227,7 +227,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(matches!(err, CommitError::Io(_)));
+        assert!(matches!(err, CommitError::Metadata(_)));
 
         // No publish, no flush, no epoch advance
         let m = h.tree.metadata();
@@ -255,7 +255,7 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert!(matches!(err, CommitError::Io(_)));
+        assert!(matches!(err, CommitError::Storage(_)));
 
         // State already published
         let m = h.tree.metadata();

@@ -5,8 +5,10 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-const SUPERBLOCK_MAGIC: u32 = 0x53555052; // "SUPR" in ASCII
-const SUPERBLOCK_VERSION: u32 = 1;
+/// Magic number identifying a superblock ("SUPR" in ASCII).
+pub const SUPERBLOCK_MAGIC: u32 = 0x53555052;
+/// Current on-disk format version. Bumped on breaking layout changes.
+pub const SUPERBLOCK_VERSION: u32 = 1;
 const SUPERBLOCK_SIZE: usize = std::mem::size_of::<Superblock>();
 
 /// Magic number for a freelist snapshot file ("FLS1" in little-endian).
@@ -69,7 +71,7 @@ pub fn read_freepages_snapshot(
     let mut ids = vec![0u64; hdr.count as usize];
     for i in 0..ids.len() {
         let mut b = [0u8; 8];
-        f.read(&mut b)?;
+        f.read_exact(&mut b)?;
         ids[i] = u64::from_le_bytes(b);
     }
     Ok((hdr.next_page_id, ids))
@@ -93,7 +95,7 @@ pub struct Superblock {
     pub freelist_head: u64,
     /// CRC-32C over the superblock fields.
     pub crc32c: u32,
-    _pad: u32,
+    pub _pad: u32,
 }
 
 /// Header of a freelist snapshot page.

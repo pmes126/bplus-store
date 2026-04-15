@@ -1,29 +1,27 @@
-//! Example: bytes-level API usage
-use bplustree::api::DbBuilder;
-use bplustree::storage::{file_store::FileStore, page_store::PageStore};
+//! Bytes-level embedded API example.
+//!
+//! Opens a database, creates a raw-bytes tree, inserts entries, reads them back.
+
+use bplustree::api::Db;
 
 fn main() -> anyhow::Result<()> {
-    // Real app should pass a persistent file path
-    let db_path = std::env::temp_dir().join(format!("bplustree-{}.db", std::process::id()));
+    let dir = tempfile::tempdir()?;
+    let db = Db::open(dir.path())?;
+    let tree = db.create_tree::<Vec<u8>, Vec<u8>>("data", 64)?;
 
-    // Storage backend
-    let store = FileStore::<PageStore>::new(&db_path)?;
+    tree.put(&b"alpha".to_vec(), &b"1".to_vec())?;
+    tree.put(&b"beta".to_vec(), &b"2".to_vec())?;
 
-    let db = DbBuilder::new(store).order(64).build_bytes()?;
-
-    db.put(b"alpha", b"1")?;
-    db.put(b"beta", b"2")?;
-
-    //assert_eq!(db.get(b"alpha")?, Some(b"1".to_vec()));
-
-    let rows = db.scan_range_collect(b"a", b"c", 100)?.unwrap();
-    for (k, v) in rows {
-        println!(
-            "{} -> {}",
-            String::from_utf8_lossy(&k),
-            String::from_utf8_lossy(&v)
-        );
-    }
+    let alpha = tree.get(&b"alpha".to_vec())?;
+    let beta = tree.get(&b"beta".to_vec())?;
+    println!(
+        "alpha -> {}",
+        alpha.as_deref().map(String::from_utf8_lossy).unwrap_or_default()
+    );
+    println!(
+        "beta  -> {}",
+        beta.as_deref().map(String::from_utf8_lossy).unwrap_or_default()
+    );
 
     Ok(())
 }

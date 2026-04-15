@@ -1,49 +1,35 @@
-use self::storage::file_store::FileStore;
-use crate::api::DbBuilder;
-use ::bplustree::*;
+//! End-to-end example: fetch a URL in a loop and store responses by request number.
 
+use bplustree::api::Db;
 use reqwest::Error;
-use storage::page_store::PageStore;
+use std::time::Duration;
 use tempfile::TempDir;
-use tokio::time::{Duration, interval};
+use tokio::time::interval;
 
 #[tokio::main]
-async fn main() {
-    let dir = TempDir::new().unwrap();
-
-    let file_path = dir.path().join("tree.data");
-    let store = FileStore::<PageStore>::new(&file_path).unwrap();
-
-    let db = DbBuilder::new(store)
-        .order(64)
-        .build_typed::<u64, String>()
-        .unwrap();
-
-    let mut tx = db.begin_write().unwrap();
+async fn main() -> anyhow::Result<()> {
+    let dir = TempDir::new()?;
+    let db = Db::open(dir.path())?;
+    let tree = db.create_tree::<u64, String>("requests", 64)?;
 
     let mut ticker = interval(Duration::from_secs(2));
     let url = "https://httpbin.org/get";
-    for i in 1..=50 {
+    let mut txn = tree.txn();
+    for i in 1u64..=5 {
         ticker.tick().await;
-
         match fetch_url(url).await {
             Ok(body) => {
-                println!("Request #{}:\n{}", i, body);
-                tx.insert(i, body).unwrap();
+                println!("Request #{i}");
+                txn.insert(&i, &body)?;
             }
-            Err(err) => eprintln!("Error on request #{}: {}", i, err),
+            Err(err) => eprintln!("Error on request #{i}: {err}"),
         }
     }
-    let _ = tx.commit(db.get_inner());
-
-    let res = db.get_inner().traverse().unwrap();
-    for (k, v) in &res {
-        println!("key {:?}, value: {:?}", k, v)
-    }
+    txn.commit()?;
+    println!("stored {} entries", tree.len());
+    Ok(())
 }
 
 async fn fetch_url(url: &str) -> Result<String, Error> {
-    let response = reqwest::get(url).await?;
-    let body = response.text().await?;
-    Ok(body)
+    reqwest::get(url).await?.text().await
 }

@@ -5,15 +5,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::api::{KeyEncodingId, TreeId};
+use crate::bplustree::node_view::NodeViewError;
 use crate::bplustree::NodeView;
-use crate::codec::CodecError;
 use crate::database::catalog::TreeMeta;
 use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
 use crate::page::LeafPage;
 use crate::storage::epoch::COMMIT_COUNT;
 use crate::storage::epoch::EpochManager;
-use crate::storage::metadata_manager::MetadataManager;
+use crate::storage::metadata_manager::{MetadataError, MetadataManager};
 use crate::storage::{HasEpoch, NodeStorage, PageStorage, StorageError};
 
 use std::result::Result;
@@ -62,36 +62,40 @@ pub enum SplitResult<N> {
 /// Errors that can occur during B+ tree operations.
 #[derive(Debug, Error)]
 pub enum TreeError {
-    #[error("Bad input: {0}")]
+    /// The caller supplied an invalid key or parameter.
+    #[error("bad input: {0}")]
     BadInput(String),
-    #[error("Backend error: {0}")]
-    BackendAny(String),
-    #[error("Node Not Found: {0}")]
+    /// An internal tree invariant was violated (indicates a bug or corruption).
+    #[error("tree invariant violated: {0}")]
+    Invariant(&'static str),
+    /// A required node was not found in storage.
+    #[error("node not found: {0}")]
     NodeNotFound(String),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
+    /// A storage-layer error during node I/O.
     #[error(transparent)]
     Storage(#[from] StorageError),
+    /// A metadata page read or write failed.
     #[error(transparent)]
-    Codec(#[from] CodecError),
+    Metadata(#[from] MetadataError),
+    /// A node-view operation failed (wrong kind or underlying page error).
     #[error(transparent)]
-    Any(#[from] anyhow::Error),
+    NodeView(#[from] NodeViewError),
 }
 
 /// Errors that can occur when committing a transaction.
 #[derive(Debug, Error)]
 pub enum CommitError {
-    #[error("Commit failed after {0} retries")]
-    MaxRetries(usize),
-    #[error("Commit aborted due to node not found: {0}")]
-    NodeNotFound(String),
-    #[error("Commit aborted due to IO error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Commit aborted due to codec error: {0}")]
-    Codec(#[from] CodecError),
-    #[error("Commit aborted due to root mismatch, try rebasing")]
+    /// The metadata write failed; the commit was rolled back.
+    #[error("metadata write failed: {0}")]
+    Metadata(#[from] MetadataError),
+    /// A storage error occurred during flush or node reclamation.
+    #[error("storage error during commit: {0}")]
+    Storage(#[from] StorageError),
+    /// The base version is stale; the caller should rebase and retry.
+    #[error("stale base — rebase and retry")]
     RebaseRequired,
-    #[error("Test Commit error")]
+    /// Commit was aborted by a test failpoint.
+    #[error("commit aborted (test injection)")]
     Injected,
 }
 
@@ -305,10 +309,7 @@ where
         let mut collector = TransactionTracker::new();
         let delete_res = self.inner.delete_inner(key, root_id, &mut collector)?;
         let DeleteResult::Deleted(new_root_id) = delete_res else {
-            return Err(TreeError::BackendAny(format!(
-                "Failed to delete key: {:?}",
-                delete_res
-            )));
+            return Err(TreeError::NodeNotFound("key not found for deletion".to_string()));
         };
         let write_res = WriteResult {
             new_root_id,
@@ -447,12 +448,8 @@ where
         let root_node = NodeView::Leaf {
             page: LeafPage::new(keyfmt),
         };
-        let init_id = storage
-            .write_node_view(&root_node)
-            .map_err(|e| TreeError::BackendAny(e.to_string()))?;
-        storage
-            .write_node_view_at_offset(&root_node, meta.root_id)
-            .map_err(|e| TreeError::BackendAny(format!("failed to write root node {}:", e)))?;
+        let init_id = storage.write_node_view(&root_node)?;
+        storage.write_node_view_at_offset(&root_node, meta.root_id)?;
 
         let init_txn_id = 1;
 
@@ -526,9 +523,7 @@ where
 
     /// Reads a node view from storage by its ID.
     fn read_node_view(&self, id: NodeId) -> Result<Option<NodeView>, TreeError> {
-        self.storage
-            .read_node_view(id)
-            .map_err(|e| TreeError::BackendAny(format!("failed to read node view {}:", e)))
+        Ok(self.storage.read_node_view(id)?)
     }
 
     /// Writes a node view to storage and records it with the transaction tracker.
@@ -537,10 +532,7 @@ where
         node: &NodeView,
         tracker: &mut impl TxnTracker,
     ) -> Result<u64, TreeError> {
-        let new_id = self
-            .storage
-            .write_node_view(node)
-            .map_err(|e| TreeError::BackendAny(format!("failed to write node {}:", e)))?;
+        let new_id = self.storage.write_node_view(node)?;
         tracker.add_new(new_id);
         Ok(new_id)
     }
@@ -581,9 +573,7 @@ where
                 },
                 None => {
                     // Node not found, this should not happen as we are traversing the path
-                    return Err(TreeError::BackendAny(
-                        "Node not found while getting insertion path".to_string(),
-                    ));
+                    return Err(TreeError::Invariant("node not found while traversing path"));
                 }
             }
         }
@@ -611,16 +601,14 @@ where
         let _guard = self.epoch_mgr.pin();
         let (mut path, found) = self.get_insertion_path(&key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
-            TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
+            TreeError::Invariant("insertion path is empty")
         })?;
         let mut leaf_node = self.storage.read_node_view(leaf_node_id)?.ok_or_else(|| {
             TreeError::NodeNotFound(format!("Leaf node with ID {} not found", leaf_node_id))
         })?;
 
         let NodeView::Leaf { .. } = &mut leaf_node else {
-            return Err(TreeError::BackendAny(
-                "Expected a leaf node for insertion".to_string(),
-            ));
+            return Err(TreeError::Invariant("expected leaf node at insertion point"));
         };
 
         if found {
@@ -672,9 +660,7 @@ where
                 split_key,
             })
         } else {
-            Err(TreeError::BackendAny(
-                "Expected a leaf node for splitting".to_string(),
-            ))
+            Err(TreeError::Invariant("expected leaf node for splitting"))
         }
     }
 
@@ -687,9 +673,9 @@ where
             let mid = internal_node.keys_len() / 2;
             let split_idx = mid + 1;
             let right_node = internal_node.split_off(split_idx)?;
-            let split_key = internal_node.pop_key()?.ok_or_else(|| {
-                TreeError::BackendAny("Internal node has no mid keys for split".to_string())
-            })?;
+            let split_key = internal_node
+                .pop_key()?
+                .ok_or(TreeError::Invariant("internal node has no mid key for split"))?;
 
             Ok(SplitResult::SplitNodes {
                 left_node: internal_node,
@@ -697,9 +683,7 @@ where
                 split_key,
             })
         } else {
-            Err(TreeError::BackendAny(
-                "Expected an internal node for splitting".to_string(),
-            ))
+            Err(TreeError::Invariant("expected internal node for splitting"))
         }
     }
 
@@ -732,15 +716,10 @@ where
             })?;
 
             let NodeView::Internal { .. } = parent_node else {
-                return Err(TreeError::BackendAny(
-                    "Expected internal node while updating parents".to_string(),
-                ));
+                return Err(TreeError::Invariant("expected internal node while updating parents"));
             };
             if insert_pos > parent_node.keys_len() + 1 {
-                return Err(TreeError::BackendAny(format!(
-                    "Insert position {} out of bounds for children in node {}",
-                    insert_pos, parent_id
-                )));
+                return Err(TreeError::Invariant("insert position out of bounds for parent node"));
             }
             // Reclaim the original child and replace its pointer.
             track.reclaim(parent_node.child_ptr_at(insert_pos)?);
@@ -767,9 +746,7 @@ where
                 ));
             };
             let NodeView::Internal { .. } = &mut node else {
-                return Err(TreeError::BackendAny(
-                    "Expected internal node in propagation path".to_string(),
-                ));
+                return Err(TreeError::Invariant("expected internal node in propagation path"));
             };
             let left_child_prev = node.child_ptr_at(insert_pos)?;
             track.reclaim(left_child_prev);
@@ -820,8 +797,7 @@ where
         loop {
             match self
                 .storage
-                .read_node_view(current_id)
-                .map_err(|e| TreeError::BackendAny(e.to_string()))?
+                .read_node_view(current_id)?
             {
                 Some(node) => match &node {
                     NodeView::Leaf { .. } => {
@@ -844,9 +820,7 @@ where
                     }
                 },
                 None => {
-                    return Err(TreeError::BackendAny(
-                        "Node not found while getting insertion path".to_string(),
-                    ));
+                    return Err(TreeError::Invariant("node not found during search"));
                 }
             }
         }
@@ -882,9 +856,7 @@ where
     ) -> Result<NodeId, TreeError> {
         let res = self.delete_inner(key, root_id, track)?;
         match res {
-            DeleteResult::NotFound => Err(TreeError::BackendAny(
-                "Key not found for deletion".to_string(),
-            )),
+            DeleteResult::NotFound => Err(TreeError::NodeNotFound("key not found".to_string())),
             DeleteResult::Deleted(new_root_id) => Ok(new_root_id),
         }
     }
@@ -900,7 +872,7 @@ where
 
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
         let (leaf_node_id, idx) = path.pop().ok_or_else(|| {
-            TreeError::BackendAny("Insertion path is empty, tree might be corrupted".to_string())
+            TreeError::Invariant("insertion path is empty")
         })?;
 
         if !found {
@@ -912,9 +884,7 @@ where
         })?;
 
         let NodeView::Leaf { .. } = &mut leaf_node else {
-            return Err(TreeError::BackendAny(
-                "Expected a leaf node for deletion".to_string(),
-            ));
+            return Err(TreeError::Invariant("expected leaf node at deletion point"));
         };
 
         leaf_node.delete_at(idx)?;
@@ -948,9 +918,7 @@ where
             };
             {
                 let NodeView::Internal { .. } = &mut parent_node else {
-                    return Err(TreeError::BackendAny(
-                        "Expected internal node as parent".to_string(),
-                    ));
+                    return Err(TreeError::Invariant("expected internal node as parent"));
                 };
                 // If the root has only one child left, collapse it.
                 if path.is_empty() && parent_node.children_len()? == 1 {
@@ -999,9 +967,7 @@ where
                 }
             }
         }
-        Err(TreeError::BackendAny(
-            "Node underflow couldn't be resolved".to_string(),
-        ))
+        Err(TreeError::Invariant("node underflow could not be resolved"))
     }
 
     /// Attempts to borrow a key (and child pointer for internal nodes) from the left sibling.
@@ -1055,9 +1021,7 @@ where
                 }
             }
             _ => {
-                return Err(TreeError::BackendAny(
-                    "Expected matching node types for borrowing".to_string(),
-                ));
+                return Err(TreeError::Invariant("mismatched node types for borrow"));
             }
         };
         let new_node_id = self.write_node_view(node, track)?;
@@ -1126,9 +1090,7 @@ where
                 }
             }
             _ => {
-                return Err(TreeError::BackendAny(
-                    "Expected matching node types for borrowing".to_string(),
-                ));
+                return Err(TreeError::Invariant("mismatched node types for borrow"));
             }
         }
         let new_node_id = self.write_node_view(node, track)?;
@@ -1198,9 +1160,7 @@ where
                 parent_node.replace_child_at(left_child_idx, merged_node_id)?;
                 Ok(Some(merged_node_id))
             }
-            _ => Err(TreeError::BackendAny(
-                "Expected matching node types for merging".to_string(),
-            )),
+            _ => Err(TreeError::Invariant("mismatched node types for merge")),
         }
     }
 
@@ -1263,9 +1223,7 @@ where
                 parent_node.replace_child_at(idx, merged_node_id)?;
                 Ok(Some(merged_node_id))
             }
-            _ => Err(TreeError::BackendAny(
-                "Expected matching node types for merging".to_string(),
-            )),
+            _ => Err(TreeError::Invariant("mismatched node types for merge")),
         }
     }
 
@@ -1278,9 +1236,7 @@ where
         match (&mut *left_node, &mut *right_node) {
             (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if left_node.keys_len() + right_node.keys_len() > self.max_keys {
-                    return Err(TreeError::BackendAny(
-                        "Cannot merge leaf nodes, total keys exceed max keys".to_string(),
-                    ));
+                    return Err(TreeError::Invariant("merge would exceed max keys"));
                 }
                 // TODO: merge into the emptier node.
                 left_node.merge_into(right_node)?;
@@ -1288,25 +1244,22 @@ where
             }
             (NodeView::Internal { .. }, NodeView::Internal { .. }) => {
                 if left_node.keys_len() + right_node.keys_len() > self.max_keys {
-                    return Err(TreeError::BackendAny(
-                        "Cannot merge internal nodes, total keys exceed max keys".to_string(),
-                    ));
+                    return Err(TreeError::Invariant("merge would exceed max keys"));
                 }
                 // TODO: merge into the emptier node.
                 left_node.merge_into(right_node)?;
                 Ok(left_node)
             }
-            _ => Err(TreeError::BackendAny(
-                "Expected matching node types for merging".to_string(),
-            )),
+            _ => Err(TreeError::Invariant("mismatched node types for merge")),
         }
     }
 
     /// Registers a node for deferred reclamation after the current epoch retires.
     pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
-        let epoch = self.epoch_mgr.get_current_thread_epoch().ok_or_else(|| {
-            TreeError::BackendAny("Failed to get epoch for current thread".to_string())
-        })?;
+        let epoch = self
+            .epoch_mgr
+            .get_current_thread_epoch()
+            .ok_or(TreeError::Invariant("failed to get epoch for current thread"))?;
         self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
         Ok(())
     }
@@ -1425,7 +1378,7 @@ where
                         drop(Box::from_raw(new_ptr));
                     }
                     self.committed.store(current_ptr, Ordering::Release);
-                    return Err(CommitError::Io(e));
+                    return Err(CommitError::Metadata(e));
                 }
                 self.storage.flush()?;
                 self.epoch_mgr.advance();

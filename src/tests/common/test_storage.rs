@@ -122,15 +122,17 @@ impl NodeStorage for TestStorage {
         Ok(offset)
     }
 
-    fn flush(&self) -> Result<(), std::io::Error> {
+    fn flush(&self) -> Result<(), StorageError> {
         if self.fail_flush.load(Ordering::Relaxed) {
-            return Err(std::io::Error::other("flush (injected failure)"));
+            return Err(StorageError::Io(std::io::Error::other(
+                "flush (injected failure)",
+            )));
         }
         self.state.lock().unwrap().flushes += 1;
         Ok(())
     }
 
-    fn free_node(&self, pid: u64) -> Result<(), std::io::Error> {
+    fn free_node(&self, pid: u64) -> Result<(), StorageError> {
         self.state.lock().unwrap().freed.push(pid);
         Ok(())
     }

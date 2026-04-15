@@ -1,6 +1,7 @@
 //! Codec traits and error types for encoding and decoding keys, values, and nodes.
 
 pub mod bincode;
+pub mod kv;
 
 use crate::bplustree::node::Node;
 use crate::layout::PAGE_SIZE;

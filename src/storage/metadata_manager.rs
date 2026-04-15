@@ -1,5 +1,6 @@
 //! Utilities for reading and writing double-buffered B+ tree metadata pages.
 
+use thiserror::Error;
 use zerocopy::AsBytes;
 
 use crate::database::metadata::{
@@ -7,6 +8,20 @@ use crate::database::metadata::{
 };
 use crate::layout::PAGE_SIZE;
 use crate::storage::PageStorage;
+
+/// Errors that can occur when reading or writing a metadata page.
+#[derive(Debug, Error)]
+pub enum MetadataError {
+    /// An underlying I/O error from the page backend.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// The stored checksum does not match the computed checksum.
+    #[error("metadata checksum mismatch")]
+    ChecksumMismatch,
+    /// The raw page bytes could not be interpreted as a metadata page.
+    #[error("corrupt metadata page: {0}")]
+    Corrupt(String),
+}
 
 /// Reads, writes, and commits double-buffered tree metadata pages.
 pub struct MetadataManager;
@@ -16,20 +31,17 @@ impl MetadataManager {
     fn read_metadata<S: PageStorage>(
         storage: &S,
         slot: u64,
-    ) -> Result<MetadataPage, std::io::Error> {
+    ) -> Result<MetadataPage, MetadataError> {
         let mut buf = [0u8; PAGE_SIZE];
-        storage.read_page(slot as u64, &mut buf)?;
+        storage.read_page(slot, &mut buf)?;
 
         let metadata = MetadataPage::from_bytes(&buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        // Validate checksum
+            .map_err(|e| MetadataError::Corrupt(e.to_string()))?;
+
         let checksum = metadata.data.checksum;
         let calculated_checksum = calculate_checksum(metadata);
         if checksum != calculated_checksum {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Metadata checksum mismatch",
-            ));
+            return Err(MetadataError::ChecksumMismatch);
         }
         Ok(*metadata)
     }
@@ -39,11 +51,11 @@ impl MetadataManager {
         storage: &S,
         slot: u64,
         meta: &mut MetadataPage,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), MetadataError> {
         let checksum = calculate_checksum(meta);
         meta.data.checksum = checksum;
         let buf = meta.as_bytes();
-        storage.write_page_at_offset(slot as u64, buf)?;
+        storage.write_page_at_offset(slot, buf)?;
         Ok(())
     }
 
@@ -52,7 +64,7 @@ impl MetadataManager {
         storage: &S,
         meta_a: u64,
         meta_b: u64,
-    ) -> Result<Metadata, std::io::Error> {
+    ) -> Result<Metadata, MetadataError> {
         let meta0 = Self::read_metadata(storage, meta_a)?;
         let meta1 = Self::read_metadata(storage, meta_b)?;
         let active_meta = if meta0.data.txn_id >= meta1.data.txn_id {
@@ -60,7 +72,6 @@ impl MetadataManager {
         } else {
             meta1
         };
-
         Ok(active_meta.data)
     }
 
@@ -69,7 +80,7 @@ impl MetadataManager {
         storage: &S,
         meta_a: u64,
         meta_b: u64,
-    ) -> Result<Metadata, std::io::Error> {
+    ) -> Result<Metadata, MetadataError> {
         let meta0 = Self::read_metadata(storage, meta_a)?;
         let meta1 = Self::read_metadata(storage, meta_b)?;
         if meta0.data.txn_id >= meta1.data.txn_id {
@@ -89,10 +100,9 @@ impl MetadataManager {
         height: usize,
         order: usize,
         size: usize,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), MetadataError> {
         let mut metadata_page = new_metadata_page(root, txn_id, id, 0, height, order, size);
-        Self::write_metadata(storage, slot, &mut metadata_page)?;
-        Ok(())
+        Self::write_metadata(storage, slot, &mut metadata_page)
     }
 
     /// Writes a pre-built [`Metadata`] object to `slot`, calculating its checksum first.
@@ -100,10 +110,9 @@ impl MetadataManager {
         storage: &S,
         slot: u64,
         metadata: &Metadata,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), MetadataError> {
         let mut metadata_page = new_metadata_page_with_object(metadata);
-        Self::write_metadata(storage, slot, &mut metadata_page)?;
-        Ok(())
+        Self::write_metadata(storage, slot, &mut metadata_page)
     }
 
     /// Allocates two metadata pages and writes initial metadata to both.
@@ -111,7 +120,7 @@ impl MetadataManager {
         storage: &S,
         id: u64,
         order: usize,
-    ) -> Result<(u64, u64, Metadata), std::io::Error> {
+    ) -> Result<(u64, u64, Metadata), MetadataError> {
         let initial_txn_id = 1;
         let meta_a = storage.allocate_page()?;
         let meta_b = storage.allocate_page()?;

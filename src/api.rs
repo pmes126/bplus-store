@@ -1,11 +1,24 @@
-//! Public API types shared across transport layers and internal database logic.
+//! Public embedded API for the B+ tree key-value store.
+//!
+//! Surface:
+//! - [`Db`]: opens/creates the database and hands out typed trees.
+//! - [`Tree<K,V>`]: typed handle for `put`/`get`/`delete`/`range`.
+//! - [`WriteTxn`]: batched write transaction with optimistic commit.
+//! - [`RangeIter`]: concrete forward-range iterator, no boxing.
+//!
+//! The layering is purely synchronous. Async / gRPC transports should wrap this
+//! core in a separate module, not be baked into the core trait surface.
 
-pub mod transport;
+pub mod db;
 
-use bytes::Bytes;
-use std::ops::Bound;
+pub use crate::codec::kv::{KeyCodec, ValueCodec};
+pub use db::{Db, RangeIter, Tree, WriteTxn};
+
 use std::{fmt, str::FromStr};
 use thiserror::Error;
+
+use crate::bplustree::tree::{CommitError, TreeError};
+use crate::storage::StorageError;
 
 /// Wire encoding used to compare and serialize keys in a B+ tree.
 #[repr(u64)]
@@ -40,7 +53,7 @@ impl FromStr for KeyEncodingId {
             "zigzag_i64" => Ok(Self::ZigZagI64),
             "utf8" => Ok(Self::Utf8),
             "raw" => Ok(Self::RawBytes),
-            other => Err(format!("unknown key encoding: {}", other)),
+            other => Err(format!("unknown key encoding: {other}")),
         }
     }
 }
@@ -53,50 +66,9 @@ impl TryFrom<u64> for KeyEncodingId {
             1 => Ok(Self::ZigZagI64),
             2 => Ok(Self::Utf8),
             3 => Ok(Self::RawBytes),
-            other => Err(format!("unknown key encoding id: {}", other)),
+            other => Err(format!("unknown key encoding id: {other}")),
         }
     }
-}
-
-/// Structural constraints on keys stored in a tree (fixed vs. variable length).
-#[derive(Debug, Clone, Copy)]
-pub struct KeyConstraints {
-    /// Whether all keys have the same fixed length.
-    pub fixed_key_len: bool,
-    /// Exact key length in bytes when `fixed_key_len` is true; otherwise unused.
-    pub key_len: u32,
-    /// Maximum allowed key length in bytes.
-    pub max_key_len: u32,
-}
-
-impl Default for KeyConstraints {
-    fn default() -> Self {
-        Self {
-            fixed_key_len: false,
-            key_len: 0,
-            max_key_len: 1 << 20,
-        }
-    }
-}
-
-/// Errors returned by API and transport layer operations.
-#[derive(Debug, Error)]
-pub enum ApiError {
-    /// Underlying transport connection failed.
-    #[error("transport: {0}")]
-    Transport(#[from] tonic::transport::Error),
-    /// RPC call returned a non-OK status.
-    #[error("rpc: {0}")]
-    Rpc(#[from] tonic::Status),
-    /// Key encoding string is not recognized.
-    #[error("rpc: {0}")]
-    UnknownEncoding(String),
-    /// Key bytes could not be decoded for the tree's encoding.
-    #[error("key type incompatible with tree encoding {0}")]
-    Decode(String),
-    /// Scan range has end before start in key order.
-    #[error("range request requires end >= start in key order")]
-    BadRangeBounds,
 }
 
 /// Stable numeric identifier for a logical B+ tree within the database.
@@ -111,39 +83,37 @@ pub struct KeyLimits {
     pub max_len: u32,
 }
 
-/// An opaque token used to resume a paginated scan from a prior position.
-pub type ResumeToken = Bytes;
-
-/// Direction for a range scan.
-#[derive(Clone, Copy, Debug)]
-pub enum Order {
-    /// Forward (ascending key order).
-    Fwd,
-    /// Reverse (descending key order).
-    Rev,
-}
-
-/// Half-open or fully-bounded key range for a scan request.
-#[derive(Clone, Debug)]
-pub struct KeyRange<'a> {
-    /// Inclusive or exclusive lower bound of the range.
-    pub start: Bound<&'a [u8]>,
-    /// Inclusive or exclusive upper bound of the range.
-    pub end: Bound<&'a [u8]>,
-}
-
-/// On-page layout strategy for storing keys in a B+ tree node.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum KeyFormatId {
-    /// Keys stored verbatim with no compression.
-    Raw,
-    /// Keys compressed using prefix-restart encoding.
-    PrefixRestarts,
-}
-
-/// Parameters that tune a specific [`KeyFormatId`] layout.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
-pub struct KeyFormatParams {
-    /// Number of keys between prefix restart points; only meaningful for [`KeyFormatId::PrefixRestarts`].
-    pub restart_interval: u16,
+/// Errors returned by the embedded API.
+#[derive(Debug, Error)]
+pub enum ApiError {
+    /// I/O error from the storage backend.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// Error from the tree core (invariant, not-found, etc.).
+    #[error(transparent)]
+    Tree(#[from] TreeError),
+    /// Error during commit (CAS retry exhausted, metadata write failed, etc.).
+    #[error(transparent)]
+    Commit(#[from] CommitError),
+    /// Storage-layer error surfaced through the API.
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    /// The provided key type is incompatible with the tree's pinned encoding.
+    #[error("key type incompatible with tree encoding {expected}")]
+    IncompatibleKeyType {
+        /// Encoding the tree was created with.
+        expected: KeyEncodingId,
+    },
+    /// A value could not be decoded against its [`ValueCodec`].
+    #[error("decode: {0}")]
+    Decode(String),
+    /// An internal invariant was violated.
+    #[error("internal: {0}")]
+    Internal(String),
+    /// Scan range has end before start in key order.
+    #[error("range request requires end >= start in key order")]
+    BadRangeBounds,
+    /// Write transaction exceeded its retry budget.
+    #[error("transaction aborted after exhausting retries")]
+    TxnAborted,
 }

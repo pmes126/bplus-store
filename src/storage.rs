@@ -8,7 +8,6 @@ use crate::codec::CodecError;
 use crate::layout::PAGE_SIZE;
 use crate::storage::epoch::EpochManager;
 
-use anyhow::Result;
 use std::path::Path;
 
 pub mod epoch;
@@ -22,23 +21,18 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum StorageError {
+    /// An underlying I/O error from the file or page backend.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// A node could not be encoded or decoded.
     #[error(transparent)]
     Codec(#[from] CodecError),
-    #[error("page corrupted: {msg}")]
-    CodecError { msg: String },
-    #[error("Storage error: {msg}")]
-    StorageAny { msg: String },
+    /// A requested page or node ID was not found.
     #[error("page {pid} not found")]
     NotFound { pid: NodeId },
-    #[error("invariant: {0}")]
+    /// An internal storage invariant was violated.
+    #[error("storage invariant violated: {0}")]
     Invariant(&'static str),
-    #[error("backend error: {source}")]
-    Other {
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
 }
 
 /// Provides access to the shared [`EpochManager`] owned by a storage instance.
@@ -98,8 +92,8 @@ pub trait NodeStorage: Send + Sync + 'static {
     ) -> Result<u64, StorageError>;
 
     /// Flushes any cached writes to persistent storage
-    fn flush(&self) -> Result<(), std::io::Error>;
+    fn flush(&self) -> Result<(), StorageError>;
 
     /// Frees a node by its ID
-    fn free_node(&self, id: u64) -> Result<(), std::io::Error>;
+    fn free_node(&self, id: u64) -> Result<(), StorageError>;
 }
