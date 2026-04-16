@@ -386,16 +386,89 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Old test that relied on the 3-type-parameter `BPlusTree::new` API.
-/// TODO: rewrite once a typed facade over SharedBPlusTree is available.
+/// Inserting the same key twice should overwrite the value, not duplicate it.
 #[test]
-#[ignore = "requires typed BPlusTree API not yet ported to current architecture"]
-fn insert_duplicate_keys_should_overwrite_value() {}
+fn insert_duplicate_keys_should_overwrite_value() {
+    let dir = TempDir::new().unwrap();
+    let tree = make_tree(&dir, 16).expect("create tree");
+    let mut root_id = tree.get_root_id();
 
-/// Requires `search_in_range` which is not yet implemented on `SharedBPlusTree`.
+    let res = tree.insert_with_root(k(42), b"first".to_vec(), root_id).unwrap();
+    root_id = res.new_root_id;
+
+    let res = tree.insert_with_root(k(42), b"second".to_vec(), root_id).unwrap();
+    root_id = res.new_root_id;
+
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(&base, StagedMetadata {
+        root_id,
+        height: res.new_height,
+        size: res.new_size,
+    }).unwrap();
+
+    let val = tree.search(&k(42)).unwrap();
+    assert_eq!(val, Some(b"second".to_vec()), "second insert should overwrite the first");
+}
+
+/// Range scan via `search_range` returns entries in key order within the given bounds.
 #[test]
-#[ignore = "search_in_range is not yet implemented"]
-fn range_search_test() {}
+fn range_search_test() {
+    let dir = TempDir::new().unwrap();
+    let order = 8;
+    let n = 50u64;
+    let tree = make_tree(&dir, order).expect("create tree");
+    let mut root_id = tree.get_root_id();
+
+    for i in 0..n {
+        let res = tree.insert_with_root(k(i), v_bytes(i), root_id).unwrap();
+        root_id = res.new_root_id;
+    }
+
+    let base = BaseVersion {
+        committed_ptr: tree.get_metadata(),
+    };
+    tree.try_commit(&base, StagedMetadata {
+        root_id,
+        height: tree.get_height(),
+        size: n as usize,
+    }).unwrap();
+
+    // Bounded range [10, 20).
+    let results: Vec<_> = tree
+        .search_range(&k(10), Some(&k(20)))
+        .expect("range")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("iterate");
+
+    assert_eq!(results.len(), 10, "range [10,20) should yield 10 entries");
+    for (offset, (key, val)) in results.iter().enumerate() {
+        let expected = 10 + offset as u64;
+        assert_eq!(key.as_slice(), &k(expected), "key mismatch at offset {offset}");
+        assert_eq!(val, &v_bytes(expected), "value mismatch at offset {offset}");
+    }
+
+    // Unbounded range from key 45 to end.
+    let tail: Vec<_> = tree
+        .search_range(&k(45), None)
+        .expect("range")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("iterate");
+
+    assert_eq!(tail.len(), 5, "range [45, end) should yield 5 entries");
+    assert_eq!(tail.first().unwrap().0.as_slice(), &k(45));
+    assert_eq!(tail.last().unwrap().0.as_slice(), &k(49));
+
+    // Range beyond all keys.
+    let empty: Vec<_> = tree
+        .search_range(&k(100), Some(&k(200)))
+        .expect("range")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("iterate");
+
+    assert!(empty.is_empty(), "range beyond all keys should be empty");
+}
 
 #[test]
 fn commits_toggle_metadata_slots_and_increment_txn() {
