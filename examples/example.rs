@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         match fetch_url(url).await {
             Ok(body) => {
                 println!("Request #{i}");
-                txn.insert(&i, &body)?;
+                txn.insert(&i, &body);
             }
             Err(err) => eprintln!("Error on request #{i}: {err}"),
         }

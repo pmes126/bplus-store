@@ -9,8 +9,8 @@ fn main() -> anyhow::Result<()> {
     let tree = db.create_tree::<u64, String>("users", 64)?;
 
     let mut txn = tree.txn();
-    txn.insert(&1u64, &"first".to_string())?;
-    txn.insert(&2u64, &"second".to_string())?;
+    txn.insert(&1u64, &"first".to_string());
+    txn.insert(&2u64, &"second".to_string());
     txn.commit()?;
 
     assert_eq!(tree.get(&1u64)?.as_deref(), Some("first"));

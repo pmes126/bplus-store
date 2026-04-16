@@ -1,136 +1,125 @@
 # cow-bptree
 
-> Status: **alpha** — APIs may change.  
-> MSRV: **1.77**  
+> Status: **alpha** — APIs may change.
 > License: **MIT OR Apache-2.0**
 
-Embedded, copy-on-write **B+-tree** key-value store in Rust.  
-Zero network. **Multi-writer** with optimistic commits (CAS). **Snapshot** readers via epochs. Streaming range scans.
-
-> Status: early but usable. API surface is small; internals are evolving.
+Embedded, copy-on-write **B+-tree** key-value store in Rust.
+Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
+**Snapshot** readers via epoch-based reclamation.
 
 ---
 
 ## Why
 
-- **Predictable perf:** slotted pages, bounded fanout, no surprise heap storms.
-- **Multi-writer:** high write concurrency without blocking, multiple writers proceed in parallel; losers just retry.
-- **Crash-safe:** atomic metadata updates; no fsck.
-- **Space-efficient:** copy-on-write, epoch-based reclamation.
-- **Embedded-first:** link it like a library, call `get/put/delete/scan`.
-- **Clean API:** bytes-level for engines; typed façade for apps.
-- **Real snapshots:** readers pin epochs and never block writers.
+- **Multi-writer:** concurrent writers proceed in parallel; losers retry via OCC.
+- **Crash-safe:** COW + atomic metadata publish; no WAL, no fsck.
+- **Predictable perf:** slotted pages, bounded fanout, no heap storms.
+- **Epoch snapshots:** readers pin an epoch and never block writers.
+- **Embedded-first:** link as a library, call `put`/`get`/`delete`.
+- **Pluggable encoding:** `NodeStorage` is a swappable node encoding strategy on top of raw `PageStorage`.
 
 ---
 
 ## Features
 
-- COW page mutation via in-memory views over `[u8; PAGE_SIZE]`, persisted with `PageStorage` and epoch-pinned read snapshots
-- **Multiple concurrent writers** (optimistic concurrency; CAS on metadata)
-- Range scans with a streaming iterator
-- Batched write transaction (stage → commit → reclaim)
-- Pluggable storage via `NodeStorage` / `MetadataStorage`
-- Built-in codecs for `Vec<u8>`, `u64` (big-endian), `String` (UTF-8)
-- `insert`, `get`, `remove`, `range` (forward).
-- Generic `Codec` for K/V encode/decode.
+- Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
+- Multiple concurrent writers (optimistic concurrency; CAS on metadata)
+- Batched write transactions (stage &rarr; commit &rarr; reclaim)
+- Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
+- Multi-tree support: one database directory, many named trees
+- Manifest-based crash recovery with catalog replay
+- Superblock validation (magic + format version)
+- Built-in codecs for `u64`, `i64`, `String`, `Vec<u8>`
+- Typed `Tree<K, V>` API with `KeyCodec` / `ValueCodec` traits
+
 ---
-Store (a.k.a. database / catalog): one set of files (dir), one page manager, many trees.
-
-Tree (table/namespace): identified by a stable TreeId, has its own root page + settings (key encoding, limits).
-
-Handle: lightweight client object binding a TreeId to your service.
-
-Storage-wise, you can do:
-
-Single file + page allocator with a free-list/epoch manager (recommended).
-
-Store gives you methods to create_tree, describe_tree, open_tree, and bytes ops (put/get/del/range) by TreeId.
-
-EmbeddedService<Store> implements your KvService by delegating to Store.
-
-RawClient + TreeHandle sit on top and give your examples a nice UX.
-
-KvStore::open_embedded(path) is the top door you call from examples.
 
 ## Quick start
-
-## Installation
-
-Add the crate (once published):
 
 ```toml
 [dependencies]
 cow-bptree = "0.1"
 ```
 
-### Build
+### Build & test
+
 ```bash
 cargo build
+cargo test --tests
+cargo run --example bytes_api
+cargo run --example typed_api
+cargo bench
 ```
 
 ### Bytes-level API
+
 ```rust
-use bplustree::DbBytes;
-use bplustree::storage::{file_store::FileStore, page_store::PageStore};
+use bplustree::api::Db;
 
-let path  = std::env::temp_dir().join("bpt.db");
-let store = FileStore::<PageStore>::new(&path)?;
-let db    = DbBytes::new(store, /*order*/ 64)?;
+let dir = tempfile::tempdir()?;
+let db = Db::open(dir.path())?;
+let tree = db.create_tree::<Vec<u8>, Vec<u8>>("data", 64)?;
 
-// CRUD
-db.put(b"alpha", b"1")?;
-assert_eq!(db.get(b"alpha")?, Some(b"1".to_vec()));
-db.delete(b"alpha")?;
+tree.put(&b"alpha".to_vec(), &b"1".to_vec())?;
+tree.put(&b"beta".to_vec(), &b"2".to_vec())?;
 
-// Streaming scan [a, c)
-if let Some(mut it) = db.scan_range(b"a", b"c")? {
-    while let Some((k, v)) = it.next() {
-        // ...
-    }
-}
+let val = tree.get(&b"alpha".to_vec())?;
+assert_eq!(val.as_deref(), Some(&b"1"[..]));
+
+tree.delete(&b"alpha".to_vec())?;
 ```
 
-### Typed façade (uses your codecs)
+### Typed API
+
 ```rust
-use bplustree::api::TypedDb;
-use bplustree::bplustree::tree::BPlusTree;
-use bplustree::storage::{file_store::FileStore, page_store::PageStore};
+use bplustree::api::Db;
 
-let path  = std::env::temp_dir().join("bpt.db");
-let store = FileStore::<PageStore>::new(&path)?;
-let tree  = BPlusTree::<u64, String, _>::new(store, 64)?;
-let kv    = TypedDb::from_tree(tree);
+let dir = tempfile::tempdir()?;
+let db = Db::open(dir.path())?;
+let tree = db.create_tree::<u64, String>("users", 64)?;
 
-kv.put(42, "answer".into())?;
-assert_eq!(kv.get(&42)?, Some("answer".into()));
+tree.put(&42, &"answer".to_string())?;
+assert_eq!(tree.get(&42)?.as_deref(), Some("answer"));
 ```
 
-### Batched write transaction (OCC)
+### Batched write transaction
+
 ```rust
-// Bytes
-let mut w = db.begin_write()?;
-w.put(b"k1".to_vec(), b"v1".to_vec())?;
-w.delete(&b"k1".to_vec())?;
-w.commit()?;
+let tree = db.create_tree::<u64, String>("events", 64)?;
 
-// Typed
-let mut t = kv.begin_write()?;
-t.put(1u64, "a".into())?;
-t.delete(&1)?;
-t.commit()?;
+let mut txn = tree.txn();
+txn.insert(&1, &"first".to_string());
+txn.insert(&2, &"second".to_string());
+txn.commit()?;  // atomic CAS; retries internally on conflict
 ```
 
-### Example & tests
-```bash
-cargo run --example bytes_api
-cargo test --tests
-```
+---
 
-### Benchmarks (Criterion)
-```bash
-cargo bench
-```
-Reports under `target/criterion/...`.
+## API surface
+
+### `Db`
+
+- `Db::open(dir)` — opens or creates a database
+- `db.create_tree::<K, V>(name, order)` — creates a named tree
+- `db.open_tree::<K, V>(name)` — opens an existing tree
+- `db.tree::<K, V>(name, order)` — open-or-create
+
+### `Tree<K, V>`
+
+- `tree.put(&key, &value)` — insert or replace
+- `tree.get(&key)` — lookup, returns `Option<V>`
+- `tree.delete(&key)` — remove
+- `tree.txn()` — start a batched `WriteTxn`
+- `tree.len()` / `tree.is_empty()`
+
+### `WriteTxn<K, V>`
+
+- `txn.insert(&key, &value)` — stage an insert
+- `txn.delete(&key)` — stage a delete
+- `txn.commit()` — atomically apply all staged operations
+
+> `delete` returns an error if the key is not found.
+> `commit` returns `Err(ApiError::TxnAborted)` if the retry budget is exhausted.
 
 ---
 
@@ -142,185 +131,189 @@ Multiple writers run in parallel:
 2. Apply writes on a staged tree (COW pages).
 3. **Commit** by CAS-ing the metadata pointer.
 
-If another writer published first, commit returns a **stale base** error → retry against the latest base (re-run read/compute/apply inside the loop). Readers never block writers.
+If another writer published first, the transaction rebases from the latest root and
+retries (up to a configurable limit). Readers never block writers.
 
 ---
 
-## Epoch-based reclamation (short)
+## Epoch-based reclamation
 
-Readers pin an **epoch** while walking a snapshot; writers retire old pages with the **current epoch** at commit. A reclaimer frees pages only after all readers older than that epoch have unpinned. No blocking, no UAF.
+Readers pin an **epoch** while walking a snapshot; writers retire old pages with the
+**current epoch** at commit. A reclaimer frees pages only after all readers older than
+that epoch have unpinned. No blocking, no use-after-free.
 
-**How it flows**
-
-1. **Pin**: reader grabs `epoch_now` and reads from the committed root seen at pin.
-2. **Write**: writer builds a staged tree (COW), collects `reclaimed_nodes`.
-3. **Commit**: writer `CAS`-publishes new metadata `(root_id, height, size)`. On success, tag each reclaimed page with `retire_epoch = epoch_now`.
-4. **GC**: periodically compute `min_pinned` across threads; free any page with `retire_epoch < min_pinned`.
-
-**Notes**
-
-* Multiple writers are fine: if a `CAS` fails (stale base), the writer retries from the latest root.
-* Long scans keep old pages alive (by design). Keep scans bounded or reclaim opportunistically.
-* On disk, “free” = return to a freelist; the file doesn’t shrink immediately. Crash safety comes from atomic metadata publish—after restart, only the last committed root is visible.
-* Key ordering must be preserved by codecs (e.g., big-endian numerics), or scans will be wrong.
-
-**Atomics (rule of thumb)**
-
-* Publish commit with **Release**; readers load root/metadata with **Acquire**.
-* Reader pins/unpins use Release; reclaimer reads pins with Acquire.
+1. **Pin**: reader grabs `epoch_now` and reads from the committed root.
+2. **Write**: writer builds a staged tree (COW), collects reclaimed node IDs.
+3. **Commit**: writer CAS-publishes new metadata `(root_id, height, size)`. On success,
+   tag each reclaimed page with `retire_epoch = epoch_now`.
+4. **GC**: compute `min_pinned` across threads; free any page with
+   `retire_epoch < min_pinned`.
 
 ---
 
-## File Storage Mechanism and recovery
-- **Metadata**: small, fixed-size, contains `(root_id, height, size)`. Updated atomically with `CAS` on commit.
-- **Pages**: fixed-size blocks (e.g., 4KB) storing nodes. Written atomically; identified by `NodeId`.
-- **Recovery**: on startup, read metadata; if corrupted, scan for the last valid root (by height) using checksums. Handle torn writes by validating page integrity.
+## On-disk layout
 
-- **Manifest**, **Replay**, **Superblock**, and **Catalog**:
-
-This storage engine supports multiple independent B+ trees inside a single store. To make that work safely across crashes, it separates the system into four distinct pieces:
-
-Superblock: the store-wide entry point, it is used to bootstrap the system by validating the manifest and locating the freelist. It contains a pointer to the manifest and some global settings.
-Manifest: the append-only log of catalog changes
-Catalog: the materialized view of active trees
-Per-tree metadata: the current committed state of each tree
-
-This separation is intentional. It keeps logical state, recovery state, and physical storage management from getting mixed together.
-
-The storage files are organized as follows:
 ```
-store/
-  superblock
-  manifest
-  freelist
-  trees/
-    tree1/
-      metadata
-      pages/
-    tree2/
-      metadata
-      pages/
+<dir>/
+  data.db         # all pages: superblock, tree nodes, metadata slots
+  manifest.log    # append-only log of catalog operations (CreateTree, RenameTree, DeleteTree)
 ```
 
-## API surface (embedded)
+### Recovery path
 
-### Bytes-level
-- `DbBytes<S>::new(storage, order) -> Result<Self>`
-- `get(&[u8]) -> Result<Option<Vec<u8>>>`
-- `put(&[u8], &[u8]) -> Result<()>`
-- `delete(&[u8]) -> Result<()>`
-- `scan_range(start, end) -> Result<Option<BytesIter>>`
-- `begin_write() -> Result<WriteTxnBytes<'_, S>>`
+`database::open` reads the superblock (page 0) to validate magic + format version,
+replays the manifest to rebuild the in-memory catalog, then reconciles each tree's
+catalog entry against its on-disk A/B metadata pages (source of truth for
+`root_id`, `height`, `size` after a crash).
 
-### Typed
-- `TypedDb::from_tree(BPlusTree<K,V,S>)`
-- `get(&K) -> Result<Option<V>>`
-- `put(K, V) -> Result<()>`
-- `delete(&K) -> Result<()>`
-- `scan_range(&start, &end) -> Result<Option<TypedIter<'_, K,V,S>>>`
-- `begin_write() -> Result<TypedWriteTxn<'_, K,V,S>>`
+### Key components
 
-> Iterators yield `(key, value)`; stop when `next()` returns `None`.  
-> `delete` returns `Result<()>`; “not found” surfaces as an engine error.
+- **Superblock** (page 0): magic number, format version, generation counter.
+- **Manifest**: append-only log of `CreateTree`, `RenameTree`, `DeleteTree`,
+  `Checkpoint` records. Provides crash-safe durability for catalog state.
+- **Catalog**: in-memory map of `TreeId -> TreeMeta`, rebuilt by replaying the manifest.
+- **Per-tree metadata**: A/B alternating pages storing `(root_node_id, height, size, txn_id)`.
+  Commit writes to the inactive slot; readers always see a consistent pair.
+
+---
+
+## Architecture
+
+```
+src/
+  api.rs, api/                  # Db, Tree<K,V>, WriteTxn, ApiError
+  codec.rs, codec/              # KeyCodec/ValueCodec traits, bincode codecs, kv (API codecs)
+  database.rs, database/        # Database, catalog, manifest, metadata, superblock
+  bplustree/                    # BPlusTree core: search, insert, delete, commit, transaction
+  storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage, EpochManager
+  page.rs, page/                # Slotted page layouts (leaf, internal)
+  keyfmt.rs, keyfmt/            # Key encoding formats (raw, prefix-compressed)
+  layout.rs                     # PAGE_SIZE constant
+examples/
+  bytes_api.rs                  # Vec<u8> key/value CRUD
+  typed_api.rs                  # u64/String with batched transaction
+  example.rs                    # async HTTP fetch + store
+benches/
+  bench_insert.rs               # Criterion benchmarks
+```
+
+### Layer overview (bottom to top)
+
+**Page layer** (`page/`, `layout.rs`): fixed 4 KB slotted pages. Header &rarr; slot
+directory &rarr; packed data region. Leaf pages store `(key, value)` pairs; internal
+pages store `(key, right_child)` with `leftmost_child` in the header.
+
+**Storage layer** (`storage.rs`, `storage/`): `PageStorage` trait for raw page I/O;
+`NodeStorage` trait for encoded node I/O (pluggable encoding strategy).
+`FilePageStorage` is the concrete file-backed `PageStorage`.
+`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage`.
+
+**Database layer** (`database.rs`, `database/`): `Database<S>` owns a
+`PagedNodeStorage<S>` for node encoding and an `Arc<S>` for raw metadata I/O (both
+share the same underlying storage instance). Manages the superblock, manifest, catalog,
+and tree lifecycle.
+
+**B+ tree core** (`bplustree/`): `BPlusTree` / `SharedBPlusTree` — search, insert,
+delete, commit with CAS. `WriteTransaction` buffers operations for batched atomic
+commits.
+
+**API layer** (`api.rs`, `api/`): `Db` opens a `Database`, leaks it for `'static`
+lifetime, and hands out typed `Tree<K, V>` handles. Purely synchronous.
 
 ---
 
 ## Design sketch
 
-- **On-page layout:** fixed header → slot directory → packed data region.  
+- **On-page layout:** fixed header &rarr; slot directory &rarr; packed data region.
   Leaves: `(key, value)`. Internals: `(key, right_child)` + `leftmost_child` in header.
-- **Ordering:** **lexicographic**; key codec must preserve order (big-endian numerics, UTF‑8 strings).
+- **Ordering:** lexicographic; key codecs must preserve order (big-endian numerics, UTF-8 strings).
 - **COW:** writes clone touched pages. Commit swaps `(root_id, height, size)` atomically.
 - **Epochs:** readers pin an epoch; GC reclaims dead pages post-commit.
 
 ---
 
-## Project layout
-
-```
-src/
-  api.rs                     # bytes + typed façade, iterators, write txn (OCC)
-  lib.rs
-  bplustree/
-    tree.rs                  # BPlusTree/SharedBPlusTree, commit/try_commit, search/insert/delete
-    iterator.rs              # BPlusTreeIter
-    node.rs                  # NodeId, node helpers
-    epoch.rs                 # reader pins
-    ...                      # internals
-  storage/
-    trait.rs                 # NodeStorage, MetadataStorage, codecs
-    file_store.rs            # file-backed storage
-    page_store.rs            # page IO
-    page/                    # on-page layouts (leaf/internal)
-benches/
-  bench_insert.rs            # Criterion
-examples/
-  bytes_api.rs               # minimal embedded usage
-tests/
-  api_basic.rs               # CRUD/scan/txn tests
-```
----
-KeyCodec turns K into raw, order-preserving bytes.
-
-KeyBlockFormat (Raw / Prefix with restarts) arranges many encoded keys inside a page:
----
-
 ## Gotchas
 
-- **Order-preserving keys:** if your codec doesn’t preserve order, scans are wrong.
-- **Commit conflicts:** normal under load. Handle `CommitError::StaleBase` by retrying.
-- **Large values:** consider overflow pages for jumbo blobs.
-- **Durability:** depends on storage `sync_all()`; tune fsync policy to your needs.
+- **Order-preserving keys:** if your codec doesn't preserve lexicographic order, scans will be wrong.
+- **Commit conflicts:** normal under load. `WriteTxn` retries automatically up to a budget.
+- **Large values:** must fit in a single 4 KB page. Overflow pages are not yet implemented.
+- **Durability:** depends on storage `fsync` policy.
+
+---
+
+## Design trade-offs: COW, sibling pointers, and batched writes
+
+### Why COW?
+
+Copy-on-write is the foundation of the concurrency model. Every write clones only the
+pages it touches (leaf + ancestors), then atomically publishes a new root via CAS on the
+metadata pointer. Readers never block writers because they see a consistent snapshot
+pinned at their epoch. This is the same approach used by LMDB, BoltDB, and redb in
+production.
+
+### Sibling pointers and range iteration
+
+Traditional B+ trees link leaves with `next`/`prev` pointers for fast sequential scans.
+Under COW this creates a cascade problem: COW-copying one leaf gives it a new page ID,
+which invalidates its left sibling's `next` pointer, forcing a COW-copy of that sibling
+too, and so on through the entire leaf chain.
+
+The standard solution (used by LMDB, BoltDB, redb) is to not use sibling pointers at
+all. Range iteration instead uses a **cursor** that maintains a stack of
+`(node_id, index)` frames from root to leaf. When a leaf is exhausted, the cursor pops
+up to the parent, advances the index, and descends back down. The cost is O(log n) per
+leaf transition in the worst case, but in practice the tree height is 3-5 even for
+millions of keys, and parent pages are hot in cache.
+
+This is the next major feature to be implemented: a cursor-based iterator backed by a
+traversal stack, replacing the current placeholder.
+
+### Batched writes
+
+The `WriteTransaction` buffers operations and replays them against the current root at
+commit time. If the CAS fails (another writer committed first), it rebases from the new
+root and retries. This is correct for the OCC model. Two potential improvements for
+large batches:
+
+- **Sort the batch by key** before replay, so leaf access is sequential and minimises
+  the number of distinct COW page copies.
+- **Bulk-load path** for initial data ingestion: build subtrees bottom-up rather than
+  inserting through the tree one key at a time.
+
+### Where this design fits
+
+- **Embedded databases** (the LMDB/redb/BoltDB niche) where the store is linked as a
+  library, not accessed over a network.
+- **Read-heavy workloads** where readers must never block and always see consistent
+  snapshots.
+- **Crash safety without a WAL**: COW gives atomic commits for free since old pages
+  survive until the new root is published.
+- **Low-to-moderate write contention**: OCC retries are cheap when conflicts are rare.
+
+### Where it struggles
+
+- **Write-heavy workloads with high contention**: OCC retries discard and redo all
+  speculative work.
+- **Large sequential bulk loads**: COW copies O(height) pages per insert; a bulk-load
+  path would amortise this.
+- **Very large values**: the fixed 4 KB page size means values must fit in a single
+  page. Overflow pages or external value storage are not yet implemented.
 
 ---
 
 ## Roadmap
 
-- Prefix scans & `RangeBounds` helpers
-- Page data compaction
-- Background GC tuning
-- Optional network service + driver (gRPC) after the embedded API hardens
+- Cursor-based range iterator (no sibling pointers; parent-stack traversal)
+- Sorted batch replay for write transactions
+- Freelist crash recovery (persist freelist to snapshot on close, restore on open)
+- Bulk-load path for large initial imports
+- Overflow pages for large values
+- Fuzz testing (`cargo-fuzz`) for page layout and codec correctness
+- Configurable page size (currently hardcoded to 4 KB)
+- CI pipeline (build, test, lint, benchmarks)
 
 ---
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0.
-You may choose either license.
-
----
-## Contribution
-PRs welcome! Please open an issue for discussion first.
-
----
-
-## TODO / Known Gaps
-
-Priorities: P0 = must-have for public use, P1 = nice soon, P2 = later
-
-- [x] P0: Remove anyhow usage
-- [x] P0: Epoch-based reclamation, make sure leak-free on panic paths
-- [x] P0: Recovery path on startup: detect last good metadata/page epoch; handle torn writes; checksum validation
-- [x] P0: More Benchmarks (Criterion)
-- [x] P0: CI (build, test, lint)
-- [x] P1: More tests (edge cases, error paths)
-- [x] P1: More provided codecs (u32, i64, etc.)
-- [x] P1: Fuzz testing (e.g., cargo-fuzz)
-- [x] P1: More storage backends (in-memory, etc.)
-- [x] P1: Page size tuning (configurable PAGE_SIZE)
-- [x] P1: Write transaction batching (multiple ops per commit)
-- [x] P1: Better error types (distinguish not-found, conflicts, etc.)
-- [x] P1: More documentation (design doc, usage guide)
-- [x] P1: More examples (complex usage patterns)
-- [x] P2: Prefix scans & RangeBounds helpers
-- [x] P2: Background GC tuning (adaptive frequency)
-- [x] P2: Optional network service + driver (gRPC)
-- [x] P2: Support for large values (overflow pages) Or calculate max value size based on order and page size
-- [x] P2: Performance optimizations (hot paths)
-- [x] P2: Async support (async storage backends)  
-- [x] P2: Monitoring & metrics (operation counts, latencies)
-- [x] P2: Advanced features (transactions, secondary indexes)
-- [x] P2: API stability (semver, deprecation policy)
-- [x] P2: Contributor guidelines (code of conduct, contributing doc)
-- [x] P2: Roadmap & vision (long-term goals)
-- [x] P2: Prefix compression / fence keys on internal nodes.
+Dual-licensed under MIT or Apache-2.0. You may choose either license.

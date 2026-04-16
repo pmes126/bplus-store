@@ -1,8 +1,7 @@
 //! Write transaction for the B+ tree with optimistic concurrency control.
 
-use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata};
+use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata, TreeError};
 use crate::storage::{HasEpoch, NodeStorage, PageStorage};
-use anyhow::Result;
 
 /// A single buffered write operation.
 enum WriteOp<K, V> {
@@ -67,22 +66,20 @@ impl WriteTransaction {
     }
 
     /// Buffers an insert of the given key-value pair.
-    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
+    pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
         self.changes.push(WriteOp::Insert(
             key.as_ref().to_vec(),
             value.as_ref().to_vec(),
         ));
-        Ok(())
     }
 
     /// Buffers a delete of the given key.
-    pub fn delete<K: AsRef<[u8]>>(&mut self, key: K) -> Result<()> {
+    pub fn delete<K: AsRef<[u8]>>(&mut self, key: K) {
         self.changes.push(WriteOp::Delete(key.as_ref().to_vec()));
-        Ok(())
     }
 
     /// Replays buffered operations and attempts to commit via CAS, retrying on conflicts.
-    pub fn commit<S, P>(&mut self, tree: &SharedBPlusTree<S, P>) -> Result<TxnStatus>
+    pub fn commit<S, P>(&mut self, tree: &SharedBPlusTree<S, P>) -> Result<TxnStatus, TreeError>
     where
         S: NodeStorage + HasEpoch + Send + Sync + 'static,
         P: PageStorage + Send + Sync + 'static,

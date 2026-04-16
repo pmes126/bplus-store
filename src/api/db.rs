@@ -132,12 +132,8 @@ where
     /// Inserts or replaces the value for `key`.
     pub fn put(&self, key: &K, value: &V) -> Result<(), ApiError> {
         let mut txn = WriteTransaction::new(self.inner.clone());
-        txn.insert(key.encode(), value.encode())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        match txn
-            .commit(&self.inner)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
+        txn.insert(key.encode(), value.encode());
+        match txn.commit(&self.inner)? {
             TxnStatus::Committed => Ok(()),
             TxnStatus::Aborted => Err(ApiError::TxnAborted),
         }
@@ -155,12 +151,8 @@ where
     /// Deletes the value for `key`. Returns an error if the key is not found.
     pub fn delete(&self, key: &K) -> Result<(), ApiError> {
         let mut txn = WriteTransaction::new(self.inner.clone());
-        txn.delete(key.encode())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        match txn
-            .commit(&self.inner)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
+        txn.delete(key.encode());
+        match txn.commit(&self.inner)? {
             TxnStatus::Committed => Ok(()),
             TxnStatus::Aborted => Err(ApiError::TxnAborted),
         }
@@ -215,29 +207,19 @@ where
     V: ValueCodec,
 {
     /// Stages an insert of `key` → `value`.
-    pub fn insert(&mut self, key: &K, value: &V) -> Result<(), ApiError> {
-        self.inner
-            .insert(key.encode(), value.encode())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        Ok(())
+    pub fn insert(&mut self, key: &K, value: &V) {
+        self.inner.insert(key.encode(), value.encode());
     }
 
     /// Stages a delete of `key`.
-    pub fn delete(&mut self, key: &K) -> Result<(), ApiError> {
-        self.inner
-            .delete(key.encode())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        Ok(())
+    pub fn delete(&mut self, key: &K) {
+        self.inner.delete(key.encode());
     }
 
     /// Commits all staged operations. Returns `Err(ApiError::TxnAborted)` if
     /// the retry budget is exhausted.
     pub fn commit(mut self) -> Result<(), ApiError> {
-        match self
-            .inner
-            .commit(&self.tree.inner)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
+        match self.inner.commit(&self.tree.inner)? {
             TxnStatus::Committed => Ok(()),
             TxnStatus::Aborted => Err(ApiError::TxnAborted),
         }

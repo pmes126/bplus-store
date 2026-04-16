@@ -38,7 +38,7 @@ fn commit_happy_path() {
     let mut trx = WriteTransaction::new(tree.clone());
 
     for i in 0..100u64 {
-        trx.insert(k(i), v_bytes(i)).expect("insert");
+        trx.insert(k(i), v_bytes(i));
     }
 
     trx.commit(&tree).expect("commit");
@@ -59,7 +59,7 @@ fn commit_with_random_inserts() {
     keys.shuffle(&mut thread_rng());
 
     for &key in &keys {
-        trx.insert(k(key), v_bytes(key)).expect("insert");
+        trx.insert(k(key), v_bytes(key));
     }
 
     trx.commit(&tree).expect("commit");
@@ -81,7 +81,7 @@ fn contending_parallel_transactions() {
                 let mut trx = WriteTransaction::new(t.clone());
                 for j in 0..100u64 {
                     trx.insert(k(i * 100 + j), v_bytes(i * 100 + j))
-                        .expect("insert");
+                        ;
                 }
                 trx.commit(&t).expect("commit");
             });
@@ -101,8 +101,8 @@ fn commit_with_conflicting_transactions() {
     let mut t1 = WriteTransaction::new(tree.clone());
     let mut t2 = WriteTransaction::new(tree.clone());
 
-    t1.insert(k(42), b"value_42_t1".to_vec()).expect("insert t1");
-    t2.insert(k(42), b"value_42_t2".to_vec()).expect("insert t2");
+    t1.insert(k(42), b"value_42_t1".to_vec());
+    t2.insert(k(42), b"value_42_t2".to_vec());
 
     t1.commit(&tree).expect("commit t1");
     // t2 will rebase on top of t1's commit and win.
@@ -124,14 +124,14 @@ fn commit_failure_should_reclaim_nodes() {
 
     let mut trx = WriteTransaction::new(tree.clone());
     for i in 0..10u64 {
-        trx.insert(k(i), v_bytes(i)).expect("insert");
+        trx.insert(k(i), v_bytes(i));
     }
     trx.commit(&tree).expect("commit");
 
     // Overwrite all values in a second transaction.
     let mut trx2 = WriteTransaction::new(tree.clone());
     for i in 0..10u64 {
-        trx2.insert(k(i), v_bytes(i * 2)).expect("insert");
+        trx2.insert(k(i), v_bytes(i * 2));
     }
     trx2.commit(&tree).expect("commit overwrite");
 
