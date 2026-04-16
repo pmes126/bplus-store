@@ -1,0 +1,271 @@
+//! Embedded database façade.
+//!
+//! `Db::open` initialises a [`Database`] and exposes `create_tree` / `open_tree`
+//! to obtain typed [`Tree`] handles. All storage details are encapsulated inside
+//! the [`Database`] layer — this module never touches storage types directly.
+
+use std::marker::PhantomData;
+use std::path::Path;
+
+use crate::codec::kv::{KeyCodec, ValueCodec};
+use crate::api::ApiError;
+use crate::bplustree::transaction::{TxnStatus, WriteTransaction};
+use crate::bplustree::tree::SharedBPlusTree;
+use crate::database::{self, Database};
+use crate::keyfmt::KeyFormat;
+use crate::keyfmt::raw::RawFormat;
+use crate::storage::file_page_storage::FilePageStorage;
+use crate::storage::paged_node_storage::PagedNodeStorage;
+
+type InnerTree = SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>;
+
+/// Embedded database handle.
+///
+/// All storage wiring is owned by the inner [`Database`]. This struct only
+/// adds typed tree handles on top.
+pub struct Db {
+    database: &'static Database<FilePageStorage>,
+}
+
+// SAFETY: Database<FilePageStorage> is Send+Sync (FilePageStorage uses Arc<File> + atomics).
+// The &'static ref is just a leaked Box, safe to share.
+unsafe impl Send for Db {}
+unsafe impl Sync for Db {}
+
+impl Db {
+    /// Opens (or creates) the database rooted at `dir`.
+    ///
+    /// The directory must already exist. On first open the data file and
+    /// manifest are created automatically.
+    pub fn open<P: AsRef<Path>>(dir: P) -> Result<Self, ApiError> {
+        let db = database::open::<FilePageStorage, _>(dir)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let database: &'static Database<FilePageStorage> = Box::leak(Box::new(db));
+        Ok(Self { database })
+    }
+
+    /// Creates a new named tree and returns a typed handle.
+    pub fn create_tree<K, V>(
+        &self,
+        name: &str,
+        order: usize,
+    ) -> Result<Tree<K, V>, ApiError>
+    where
+        K: KeyCodec,
+        V: ValueCodec,
+    {
+        let key_format = KeyFormat::Raw(RawFormat);
+        let tree_meta = self
+            .database
+            .create_tree(name, K::ENCODING, key_format, order, None)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let inner = self
+            .database
+            .bind_tree(&tree_meta)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        Ok(Tree {
+            inner,
+            _k: PhantomData,
+            _v: PhantomData,
+        })
+    }
+
+    /// Opens an existing named tree from the catalog.
+    pub fn open_tree<K, V>(&self, name: &str) -> Result<Tree<K, V>, ApiError>
+    where
+        K: KeyCodec,
+        V: ValueCodec,
+    {
+        let tree_meta = self
+            .database
+            .describe_tree(name)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let inner = self
+            .database
+            .bind_tree(&tree_meta)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        Ok(Tree {
+            inner,
+            _k: PhantomData,
+            _v: PhantomData,
+        })
+    }
+
+    /// Opens an existing tree, or creates one with the given `order` if it
+    /// does not exist yet.
+    pub fn tree<K, V>(
+        &self,
+        name: &str,
+        order: usize,
+    ) -> Result<Tree<K, V>, ApiError>
+    where
+        K: KeyCodec,
+        V: ValueCodec,
+    {
+        match self.open_tree(name) {
+            Ok(t) => Ok(t),
+            Err(_) => self.create_tree(name, order),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tree<K, V>
+// ---------------------------------------------------------------------------
+
+/// Typed handle to a single B+ tree inside a [`Db`].
+pub struct Tree<K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    inner: InnerTree,
+    _k: PhantomData<fn() -> K>,
+    _v: PhantomData<fn() -> V>,
+}
+
+impl<K, V> Tree<K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    /// Inserts or replaces the value for `key`.
+    pub fn put(&self, key: &K, value: &V) -> Result<(), ApiError> {
+        let mut txn = WriteTransaction::new(self.inner.clone());
+        txn.insert(key.encode(), value.encode())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        match txn
+            .commit(&self.inner)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            TxnStatus::Committed => Ok(()),
+            TxnStatus::Aborted => Err(ApiError::TxnAborted),
+        }
+    }
+
+    /// Returns the value for `key`, or `None` if the key is absent.
+    pub fn get(&self, key: &K) -> Result<Option<V>, ApiError> {
+        let kb = key.encode();
+        match self.inner.search(kb)? {
+            Some(bytes) => Ok(Some(V::decode(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Deletes the value for `key`. Returns an error if the key is not found.
+    pub fn delete(&self, key: &K) -> Result<(), ApiError> {
+        let mut txn = WriteTransaction::new(self.inner.clone());
+        txn.delete(key.encode())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        match txn
+            .commit(&self.inner)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            TxnStatus::Committed => Ok(()),
+            TxnStatus::Aborted => Err(ApiError::TxnAborted),
+        }
+    }
+
+    /// Starts a batched write transaction.
+    pub fn txn(&self) -> WriteTxn<'_, K, V> {
+        WriteTxn {
+            inner: WriteTransaction::new(self.inner.clone()),
+            tree: self,
+        }
+    }
+
+    /// Returns a forward range iterator from `start` (inclusive) to `end`
+    /// (exclusive).
+    ///
+    /// **Note**: range iteration is pending the tree-iterator rewrite.
+    pub fn range(&self, _start: &K, _end: &K) -> Result<RangeIter<'_, K, V>, ApiError> {
+        Err(ApiError::Internal(
+            "range scan pending tree iterator rewrite".to_string(),
+        ))
+    }
+
+    /// Returns the number of entries currently in the tree.
+    pub fn len(&self) -> usize {
+        self.inner.get_size()
+    }
+
+    /// Returns true if the tree is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WriteTxn
+// ---------------------------------------------------------------------------
+
+/// Batched write transaction with optimistic CAS commit.
+pub struct WriteTxn<'t, K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    inner: WriteTransaction,
+    tree: &'t Tree<K, V>,
+}
+
+impl<'t, K, V> WriteTxn<'t, K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    /// Stages an insert of `key` → `value`.
+    pub fn insert(&mut self, key: &K, value: &V) -> Result<(), ApiError> {
+        self.inner
+            .insert(key.encode(), value.encode())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Stages a delete of `key`.
+    pub fn delete(&mut self, key: &K) -> Result<(), ApiError> {
+        self.inner
+            .delete(key.encode())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Commits all staged operations. Returns `Err(ApiError::TxnAborted)` if
+    /// the retry budget is exhausted.
+    pub fn commit(mut self) -> Result<(), ApiError> {
+        match self
+            .inner
+            .commit(&self.tree.inner)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            TxnStatus::Committed => Ok(()),
+            TxnStatus::Aborted => Err(ApiError::TxnAborted),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RangeIter (placeholder)
+// ---------------------------------------------------------------------------
+
+/// Concrete forward-range iterator. Placeholder until the tree iterator rewrite.
+pub struct RangeIter<'t, K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    _t: PhantomData<&'t ()>,
+    _k: PhantomData<fn() -> K>,
+    _v: PhantomData<fn() -> V>,
+}
+
+impl<'t, K, V> Iterator for RangeIter<'t, K, V>
+where
+    K: KeyCodec,
+    V: ValueCodec,
+{
+    type Item = Result<(K, V), ApiError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
