@@ -417,7 +417,23 @@ where
         self.put(key, value)
     }
 
-    // TODO: implement traverse() and search_range() once the iterator API is stable.
+    /// Returns a forward range iterator scanning `[start, end)`.
+    ///
+    /// Pass `None` for `end` to scan from `start` to the end of the tree.
+    pub fn search_range(
+        &self,
+        start: &[u8],
+        end: Option<&[u8]>,
+    ) -> Result<super::iterator::BPlusTreeIter<'_, S>, TreeError> {
+        let root_id = self.inner.get_root_id();
+        super::iterator::BPlusTreeIter::new(
+            self.inner.storage,
+            root_id,
+            &self.inner.epoch_mgr,
+            start,
+            end,
+        )
+    }
 
     /// Returns a clone of the shared epoch manager.
     pub fn epoch_mgr(&self) -> Arc<EpochManager> {

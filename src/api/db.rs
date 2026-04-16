@@ -9,6 +9,7 @@ use std::path::Path;
 
 use crate::codec::kv::{KeyCodec, ValueCodec};
 use crate::api::ApiError;
+use crate::bplustree::iterator::BPlusTreeIter;
 use crate::bplustree::transaction::{TxnStatus, WriteTransaction};
 use crate::bplustree::tree::SharedBPlusTree;
 use crate::database::{self, Database};
@@ -168,12 +169,27 @@ where
 
     /// Returns a forward range iterator from `start` (inclusive) to `end`
     /// (exclusive).
-    ///
-    /// **Note**: range iteration is pending the tree-iterator rewrite.
-    pub fn range(&self, _start: &K, _end: &K) -> Result<RangeIter<'_, K, V>, ApiError> {
-        Err(ApiError::Internal(
-            "range scan pending tree iterator rewrite".to_string(),
-        ))
+    pub fn range(&self, start: &K, end: &K) -> Result<RangeIter<'_, K, V>, ApiError> {
+        let start_bytes = start.encode();
+        let end_bytes = end.encode();
+        let inner = self.inner.search_range(&start_bytes, Some(&end_bytes))?;
+        Ok(RangeIter {
+            inner,
+            _k: PhantomData,
+            _v: PhantomData,
+        })
+    }
+
+    /// Returns a forward range iterator from `start` (inclusive) to the end
+    /// of the tree.
+    pub fn range_from(&self, start: &K) -> Result<RangeIter<'_, K, V>, ApiError> {
+        let start_bytes = start.encode();
+        let inner = self.inner.search_range(&start_bytes, None)?;
+        Ok(RangeIter {
+            inner,
+            _k: PhantomData,
+            _v: PhantomData,
+        })
     }
 
     /// Returns the number of entries currently in the tree.
@@ -227,16 +243,21 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// RangeIter (placeholder)
+// RangeIter
 // ---------------------------------------------------------------------------
 
-/// Concrete forward-range iterator. Placeholder until the tree iterator rewrite.
+type InnerNodeStorage = PagedNodeStorage<FilePageStorage>;
+
+/// Typed forward-range iterator over `(K, V)` pairs.
+///
+/// Wraps a bytes-level [`BPlusTreeIter`] and decodes keys and values via
+/// [`KeyCodec`] / [`ValueCodec`].
 pub struct RangeIter<'t, K, V>
 where
     K: KeyCodec,
     V: ValueCodec,
 {
-    _t: PhantomData<&'t ()>,
+    inner: BPlusTreeIter<'t, InnerNodeStorage>,
     _k: PhantomData<fn() -> K>,
     _v: PhantomData<fn() -> V>,
 }
@@ -247,7 +268,20 @@ where
     V: ValueCodec,
 {
     type Item = Result<(K, V), ApiError>;
+
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        let (key_bytes, val_bytes) = match self.inner.next()? {
+            Ok(pair) => pair,
+            Err(e) => return Some(Err(e.into())),
+        };
+        let key = match K::decode(&key_bytes) {
+            Ok(k) => k,
+            Err(e) => return Some(Err(e)),
+        };
+        let value = match V::decode(&val_bytes) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok((key, value)))
     }
 }
