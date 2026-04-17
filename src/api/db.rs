@@ -22,8 +22,9 @@ type InnerTree = SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, Fil
 
 /// Embedded database handle.
 ///
-/// All storage wiring is owned by the inner [`Database`]. This struct only
-/// adds typed tree handles on top.
+/// The inner [`Database`] is intentionally leaked (`Box::leak`) so that trees
+/// can hold `&'static` references to storage. Call [`Db::close`] to reclaim
+/// the allocation when the database is no longer needed.
 pub struct Db {
     database: &'static Database<FilePageStorage>,
 }
@@ -107,6 +108,18 @@ impl Db {
             Ok(t) => Ok(t),
             Err(_) => self.create_tree(name, order),
         }
+    }
+
+    /// Reclaims the leaked [`Database`] allocation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that **no** [`Tree`], [`WriteTxn`], or
+    /// [`RangeIter`] handles derived from this `Db` are still alive.
+    /// Using a tree handle after `close` is undefined behaviour.
+    pub unsafe fn close(self) {
+        let ptr = self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
+        drop(unsafe { Box::from_raw(ptr) });
     }
 }
 

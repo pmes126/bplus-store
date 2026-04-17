@@ -150,14 +150,14 @@ pub struct TreeConfig {
 }
 
 /// B+ tree with generic storage backends for nodes and pages.
-pub struct BPlusTree<S, P>
+pub struct BPlusTree<'s, S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
     id: TreeId,
-    storage: Arc<S>,
-    page_storage: Arc<P>,
+    storage: &'s S,
+    page_storage: &'s P,
     epoch_mgr: Arc<EpochManager>,
     #[allow(dead_code)]
     key_encoding: KeyEncodingId,
@@ -176,7 +176,7 @@ where
     committed: AtomicPtr<Metadata>,
 }
 
-impl<S, P> Drop for BPlusTree<S, P>
+impl<S, P> Drop for BPlusTree<'_, S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
