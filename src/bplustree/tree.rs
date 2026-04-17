@@ -1324,7 +1324,12 @@ where
         }
     }
 
-    /// Commits new metadata in a single-threaded context; intended for testing and debugging.
+    /// Commits new metadata in a single-threaded context; intended for testing only.
+    ///
+    /// This method mutates through a shared pointer without CAS and is
+    /// unsound under concurrent access.  Gated behind `#[cfg(test)]` to
+    /// prevent accidental use in production code.
+    #[cfg(test)]
     pub fn commit(
         &self,
         new_root_id: NodeId,

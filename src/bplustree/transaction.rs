@@ -132,15 +132,22 @@ impl WriteTransaction {
 
             let res = tree.try_commit(&self.tree_base_version, staged_update);
             if res.is_ok() {
-                // Register reclaimed pages for deferred freeing.
+                // Register reclaimed (old) pages for deferred freeing at the
+                // current epoch.  Readers pinned at an earlier epoch may still
+                // be walking the old tree, so these pages must not be freed
+                // until all such readers have unpinned.
+                let epoch = tree.epoch_mgr().current();
                 for id in reclaimed_nodes_local.drain(..) {
-                    tree.epoch_mgr().add_reclaim_candidate(0, id);
+                    tree.epoch_mgr().add_reclaim_candidate(epoch, id);
                 }
                 self.reclaimed_nodes.clear();
                 self.changes.clear();
                 return Ok(TxnStatus::Committed);
             } else {
                 // CAS conflict: discard speculative nodes, refresh base and root, then retry.
+                // These pages were never published so no reader can reference them since global
+                // epoch starts at 1;
+                // epoch 0 ensures they are freed on the next reclamation pass.
                 for id in staged_nodes.drain(..) {
                     tree.epoch_mgr().add_reclaim_candidate(0, id);
                 }
