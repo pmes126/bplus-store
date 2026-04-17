@@ -150,14 +150,14 @@ pub struct TreeConfig {
 }
 
 /// B+ tree with generic storage backends for nodes and pages.
-pub struct BPlusTree<'s, S, P>
+pub struct BPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
     id: TreeId,
-    storage: &'s S,
-    page_storage: &'s P,
+    storage: Arc<S>,
+    page_storage: Arc<P>,
     epoch_mgr: Arc<EpochManager>,
     #[allow(dead_code)]
     key_encoding: KeyEncodingId,
@@ -174,6 +174,21 @@ where
     commit_count: AtomicUsize,
     txn_id: AtomicU64,
     committed: AtomicPtr<Metadata>,
+}
+
+impl<S, P> Drop for BPlusTree<S, P>
+where
+    S: NodeStorage + Send + Sync + 'static,
+    P: PageStorage + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        let ptr = self.committed.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        }
+    }
 }
 
 /// Default [`TxnTracker`] implementation that accumulates node accounting in memory.
