@@ -13,6 +13,16 @@ pub type Epoch = u64;
 pub const COMMIT_COUNT: u64 = 10;
 
 /// Tracks active reader epochs and coordinates deferred page reclamation.
+///
+/// # Memory ordering
+///
+/// - **`global_epoch`**: advanced by writers with `SeqCst` (`fetch_add`) to
+///   ensure the new epoch is visible before any deferred pages are tagged.
+///   Readers load with `Acquire` in `pin()` to see all COW page writes that
+///   preceded the epoch advance.
+///
+/// - **`active_readers`** / **`deferred_pages`**: protected by `Mutex`.  The
+///   mutex lock/unlock provides implicit Acquire/Release barriers.
 #[derive(Debug)]
 pub struct EpochManager {
     global_epoch: AtomicU64,
@@ -61,8 +71,11 @@ impl EpochManager {
     }
 
     /// Pins the current thread to the current epoch and returns a guard that unpins on drop.
+    ///
+    /// Uses `Acquire` so that the reader sees all COW page writes that
+    /// happened before the writer advanced the epoch.
     pub fn pin(self: &Arc<Self>) -> ReaderGuard {
-        let epoch = self.global_epoch.load(Ordering::Relaxed);
+        let epoch = self.global_epoch.load(Ordering::Acquire);
         let tid = std::thread::current().id();
         self.active_readers.lock().unwrap().insert(tid, epoch);
 

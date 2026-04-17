@@ -150,6 +150,24 @@ pub struct TreeConfig {
 }
 
 /// B+ tree with generic storage backends for nodes and pages.
+///
+/// # Memory ordering
+///
+/// The concurrency model uses a single atomic pointer (`committed`) as the
+/// publish point for new tree roots.  Ordering contracts:
+///
+/// - **`committed`** (`AtomicPtr<Metadata>`): writers publish via `compare_exchange`
+///   with `SeqCst` success ordering, ensuring a total order across all CAS
+///   operations.  Readers load with `Acquire` so that all COW page writes
+///   performed before the pointer was published are visible.  Rollback stores
+///   (on metadata-write failure) use `Release` to pair with readers' `Acquire`.
+///
+/// - **`commit_count`** (`AtomicUsize`): heuristic trigger for epoch advancement.
+///   Uses `Relaxed` — no other memory location depends on its value.
+///
+/// - **`txn_id`** (`AtomicU64`): only used by the single-threaded debug `commit()`
+///   path.  The production path (`try_commit`) reads the transaction ID from the
+///   `Metadata` struct behind the atomic pointer instead.
 pub struct BPlusTree<'s, S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
@@ -1324,7 +1342,7 @@ where
         MetadataManager::commit_metadata(
             self.page_storage,
             target_slot,
-            self.txn_id.load(Ordering::Relaxed),
+            new_txn_id,
             self.id,
             new_root_id,
             self.get_height(),

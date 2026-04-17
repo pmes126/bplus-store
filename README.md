@@ -343,12 +343,17 @@ large batches:
 
 - Cursor-based range iterator (no sibling pointers; parent-stack traversal)
 - Sorted batch replay for write transactions
-- Freelist crash recovery (persist freelist to snapshot on close, restore on open)
 - Bulk-load path for large initial imports
 - Overflow pages for large values
 - Fuzz testing (`cargo-fuzz`) for page layout and codec correctness
 - Configurable page size (currently hardcoded to 4 KB)
 - CI pipeline (build, test, lint, benchmarks)
+- **Sharded epoch pinning** — `EpochManager::pin()`/`unpin()` currently acquire a
+  central `Mutex<HashMap<ThreadId, Epoch>>` on every read operation. Under high reader
+  concurrency this serialises the pin/unpin brackets even though the tree walk itself is
+  lock-free. Replace with per-thread atomic slots (a `Vec<AtomicU64>` indexed by a
+  thread-claimed slot) so that pin is a single atomic store and `oldest_active()` is a
+  lock-free scan. This is the approach used by crossbeam-epoch and similar libraries.
 
 ---
 

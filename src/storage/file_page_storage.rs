@@ -20,6 +20,13 @@ const INITIAL_PAGE_ID: u32 = 16;
 const FREE_LIST_SNAPSHOT_MAGIC: u32 = 0x314C5346;
 
 /// A [`PageStorage`] backend that reads and writes fixed-size pages to a single flat file.
+///
+/// # Memory ordering
+///
+/// `next_page_id` uses `SeqCst` for all operations.  Strictly speaking `Relaxed`
+/// would suffice — uniqueness is guaranteed by `fetch_add` atomicity, and page
+/// data is synchronized by `fdatasync` rather than by memory ordering — but the
+/// counter is not on the hot path and `SeqCst` makes the intent unambiguous.
 pub struct FilePageStorage {
     file: Arc<File>,
     /// In-memory list of freed page IDs available for reuse.
