@@ -25,11 +25,14 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 - Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
 - Multiple concurrent writers (optimistic concurrency; CAS on metadata)
 - Batched write transactions (stage &rarr; commit &rarr; reclaim)
+- Cursor-based range iteration (parent-stack traversal, no sibling pointers)
+- Physical fullness handling: large values trigger page splits before reaching max keys
 - Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
 - Multi-tree support: one database directory, many named trees
-- Manifest-based crash recovery with catalog replay
-- Superblock validation (magic + format version)
-- Built-in codecs for `u64`, `i64`, `String`, `Vec<u8>`
+- Manifest-based crash recovery with CRC-framed catalog log
+- Superblock and metadata page CRC validation
+- Exclusive file locking to prevent multi-process corruption
+- Built-in order-preserving codecs for `u64`, `i64`, `String`, `Vec<u8>`
 - Typed `Tree<K, V>` API with `KeyCodec` / `ValueCodec` traits
 
 ---
@@ -110,6 +113,8 @@ txn.commit()?;  // atomic CAS; retries internally on conflict
 - `tree.get(&key)` — lookup, returns `Option<V>`
 - `tree.delete(&key)` — remove
 - `tree.txn()` — start a batched `WriteTxn`
+- `tree.range(&start, &end)` — forward range scan `[start, end)`
+- `tree.range_from(&start)` — forward range scan from `start` to end of tree
 - `tree.len()` / `tree.is_empty()`
 
 ### `WriteTxn<K, V>`
@@ -192,29 +197,39 @@ that epoch have unpinned. No blocking, no use-after-free.
 
 ```
 <dir>/
-  data.db         # all pages: superblock, tree nodes, metadata slots
-  manifest.log    # append-only log of catalog operations (CreateTree, RenameTree, DeleteTree)
+  data.db            # all pages: superblock, tree nodes, metadata slots
+  manifest.log       # append-only CRC-framed catalog log
+  freelist.snapshot   # optional; written on graceful shutdown
+  db.lock            # exclusive flock held while the database is open
 ```
 
 ### Recovery path
 
-`database::open` reads the superblock (page 0) to validate magic + format version,
-replays the manifest to rebuild the in-memory catalog, then reconciles each tree's
-catalog entry against its on-disk A/B metadata pages (source of truth for
-`root_id`, `height`, `size` after a crash).
+`database::open` acquires an exclusive file lock (`db.lock`), validates the superblock
+(page 0, including CRC-32C), replays the CRC-framed manifest to rebuild the in-memory
+catalog, then reconciles each tree's catalog entry against its on-disk A/B metadata pages
+(source of truth for `root_id`, `height`, `size` after a crash). If a freelist snapshot
+exists, freed page IDs are restored so they can be reused.
 
 ### Key components
 
-- **Superblock** (page 0): magic number, format version, generation counter.
+- **Superblock** (page 0): magic number, format version, generation counter, CRC-32C.
 - **Manifest**: append-only log of `CreateTree`, `RenameTree`, `DeleteTree`,
-  `Checkpoint` records. Provides crash-safe durability for catalog state.
+  `Checkpoint` records. Each record is CRC-framed; truncated trailing records (crash
+  mid-write) are silently skipped, CRC mismatches are reported as corruption.
 - **Catalog**: in-memory map of `TreeId -> TreeMeta`, rebuilt by replaying the manifest.
 - **Per-tree metadata**: A/B alternating pages storing `(root_node_id, height, size, txn_id)`.
   Commit writes to the inactive slot; readers always see a consistent pair.
+  Each page is CRC32-validated on read.
+- **File lock**: exclusive `flock` on `db.lock` prevents concurrent access from multiple
+  processes.
 
 ---
 
 ## Architecture
+
+For a detailed description of the architecture, design decisions, and trade-offs, see
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```
 src/
@@ -259,26 +274,6 @@ lifetime, and hands out typed `Tree<K, V>` handles. Purely synchronous.
 
 ---
 
-## Design sketch
-
-- **On-page layout:** fixed header &rarr; slot directory &rarr; packed data region.
-  Leaves: `(key, value)`. Internals: `(key, right_child)` + `leftmost_child` in header.
-- **Ordering:** lexicographic; key codecs must preserve order (big-endian numerics, UTF-8 strings).
-- **COW:** writes clone touched pages. Commit swaps `(root_id, height, size)` atomically.
-- **Epochs:** readers pin an epoch; GC reclaims dead pages post-commit.
-
----
-
-## Gotchas
-
-- **Order-preserving keys:** if your codec doesn't preserve lexicographic order, scans will be wrong.
-- **Commit conflicts:** normal under load. `WriteTxn` retries automatically up to a budget.
-- **Large values:** must fit in a single 4 KB page. Overflow pages are not yet implemented.
-- **Durability:** each commit calls `fdatasync()` once. Node pages have no checksums
-  (only metadata pages are CRC32-protected).
-
----
-
 ## Design trade-offs: COW, sibling pointers, and batched writes
 
 ### Why COW?
@@ -303,8 +298,8 @@ up to the parent, advances the index, and descends back down. The cost is O(log 
 leaf transition in the worst case, but in practice the tree height is 3-5 even for
 millions of keys, and parent pages are hot in cache.
 
-This is the next major feature to be implemented: a cursor-based iterator backed by a
-traversal stack, replacing the current placeholder.
+This cursor-based iterator is implemented in `BPlusTreeIter` and exposed through
+`tree.range()` and `tree.range_from()`.
 
 ### Batched writes
 
@@ -317,6 +312,14 @@ large batches:
   the number of distinct COW page copies.
 - **Bulk-load path** for initial data ingestion: build subtrees bottom-up rather than
   inserting through the tree one key at a time.
+
+### Physical fullness and large values
+
+The tree handles both logical overflow (`keys_len() > max_keys`) and physical overflow
+(`PageFull` from the slotted page layer). Large values can fill a 4 KB page before
+reaching the tree order, triggering page splits at the physical level. Entries are
+validated upfront: `key_len + val_len` must not exceed `MAX_ENTRY_PAYLOAD` (2038 bytes),
+guaranteeing that at least two entries always fit per page so splits produce valid halves.
 
 ### Where this design fits
 
@@ -334,17 +337,26 @@ large batches:
   speculative work.
 - **Large sequential bulk loads**: COW copies O(height) pages per insert; a bulk-load
   path would amortise this.
-- **Very large values**: the fixed 4 KB page size means values must fit in a single
-  page. Overflow pages or external value storage are not yet implemented.
+- **Values larger than ~2 KB**: entries must fit within `MAX_ENTRY_PAYLOAD` (2038 bytes).
+  Overflow pages or external value storage are not yet implemented.
+
+---
+
+## Gotchas
+
+- **Order-preserving keys:** if your codec doesn't preserve lexicographic order, scans will be wrong.
+- **Commit conflicts:** normal under load. `WriteTxn` retries automatically up to a budget.
+- **Entry size limit:** key + value must fit within 2038 bytes (`MAX_ENTRY_PAYLOAD`).
+  Entries exceeding this limit are rejected with `TreeError::EntryTooLarge`.
 
 ---
 
 ## Roadmap
 
-- Cursor-based range iterator (no sibling pointers; parent-stack traversal)
+- Prefix-compressed key block format (`PrefixRestarts`)
 - Sorted batch replay for write transactions
 - Bulk-load path for large initial imports
-- Overflow pages for large values
+- Overflow pages for values exceeding `MAX_ENTRY_PAYLOAD`
 - Fuzz testing (`cargo-fuzz`) for page layout and codec correctness
 - Configurable page size (currently hardcoded to 4 KB)
 - CI pipeline (build, test, lint, benchmarks)
