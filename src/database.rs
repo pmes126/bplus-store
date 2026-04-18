@@ -316,7 +316,8 @@ fn write_superblock<S: PageStorage>(storage: &S) -> Result<(), DatabaseError> {
         freelist_head: 0,
         crc32c: 0,
         _pad: 0,
-    };
+    }
+    .with_crc();
     let mut buf = [0u8; PAGE_SIZE];
     let sb_bytes = sb.as_bytes();
     buf[..sb_bytes.len()].copy_from_slice(sb_bytes);

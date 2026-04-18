@@ -9,9 +9,9 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-const TAG_CREATE_TREE: u8 = 1;
-const TAG_DELETE_TREE: u8 = 2;
-const TAG_RENAME_TREE: u8 = 3;
+pub(crate) const TAG_CREATE_TREE: u8 = 1;
+pub(crate) const TAG_DELETE_TREE: u8 = 2;
+pub(crate) const TAG_RENAME_TREE: u8 = 3;
 
 /// An append-only log record describing a change to the tree catalog.
 #[derive(Debug, Clone)]

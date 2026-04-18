@@ -29,15 +29,22 @@ impl ManifestWriter {
         })
     }
 
-    /// Assigns the next sequence number to `rec`, encodes it, and appends it to the log.
+    /// Assigns the next sequence number to `rec`, encodes it with a trailing
+    /// CRC-32C, and appends it to the log.
+    ///
+    /// On-disk layout per record: `[tag + len + payload][crc32c]`.
+    /// The CRC covers every byte before it (tag, length prefix, and payload).
     ///
     /// Returns the sequence number assigned to the record.
     pub fn append(&mut self, mut rec: ManifestRec) -> io::Result<u64> {
         self.seq += 1;
         set_seq(&mut rec, self.seq);
 
-        // TODO: add crc32c framing.
-        rec.encode(self.file.by_ref())?;
+        let mut buf = Vec::new();
+        rec.encode(&mut buf)?;
+        let crc = crc32fast::hash(&buf);
+        self.file.write_all(&buf)?;
+        self.file.write_all(&crc.to_le_bytes())?;
         self.file.flush()?;
         Ok(self.seq)
     }

@@ -2,6 +2,9 @@
 
 use crate::api::Db;
 use crate::database::{self, DatabaseError};
+use crate::database::manifest::reader::ManifestReader;
+use crate::database::manifest::writer::ManifestWriter;
+use crate::database::manifest::{ManifestRec, TAG_DELETE_TREE};
 use crate::storage::file_page_storage::FilePageStorage;
 use tempfile::TempDir;
 
@@ -427,4 +430,92 @@ fn lock_released_after_drop() {
     // Re-opening should succeed after the previous Database was dropped.
     let _db2 = database::open::<FilePageStorage, _>(dir.path())
         .expect("re-open after drop should succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Manifest CRC framing
+// ---------------------------------------------------------------------------
+
+#[test]
+fn manifest_roundtrip_with_crc() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("manifest.log");
+
+    // Write two records.
+    {
+        let mut w = ManifestWriter::open(&path, 0).unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 42 }).unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 99 }).unwrap();
+        w.fsync().unwrap();
+    }
+
+    // Read them back.
+    let mut r = ManifestReader::open(&path).unwrap();
+    let rec1 = r.read_next().unwrap().expect("should read first record");
+    let rec2 = r.read_next().unwrap().expect("should read second record");
+    assert!(r.read_next().unwrap().is_none(), "no more records");
+
+    match rec1 {
+        ManifestRec::DeleteTree { id, .. } => assert_eq!(id, 42),
+        other => panic!("unexpected record: {other:?}"),
+    }
+    match rec2 {
+        ManifestRec::DeleteTree { id, .. } => assert_eq!(id, 99),
+        other => panic!("unexpected record: {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_truncated_record_returns_none() {
+    use std::io::Write;
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("manifest.log");
+
+    // Write a valid record, then append a partial (truncated) one.
+    {
+        let mut w = ManifestWriter::open(&path, 0).unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 1 }).unwrap();
+        w.fsync().unwrap();
+    }
+    // Append a few garbage bytes to simulate a crash mid-write.
+    {
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(&[TAG_DELETE_TREE, 0x10, 0x00, 0x00, 0x00]).unwrap(); // tag + bogus length
+    }
+
+    let mut r = ManifestReader::open(&path).unwrap();
+    assert!(r.read_next().unwrap().is_some(), "first record should be valid");
+    // The truncated trailing record should be treated as end-of-valid-data.
+    assert!(r.read_next().unwrap().is_none(), "truncated record → None");
+}
+
+#[test]
+fn manifest_corrupted_crc_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("manifest.log");
+
+    // Write one valid record.
+    {
+        let mut w = ManifestWriter::open(&path, 0).unwrap();
+        w.append(ManifestRec::DeleteTree { seq: 0, id: 7 }).unwrap();
+        w.fsync().unwrap();
+    }
+
+    // Corrupt the last 4 bytes (the CRC) by flipping bits.
+    {
+        let data = std::fs::read(&path).unwrap();
+        let mut corrupted = data;
+        let len = corrupted.len();
+        corrupted[len - 1] ^= 0xFF;
+        std::fs::write(&path, &corrupted).unwrap();
+    }
+
+    let mut r = ManifestReader::open(&path).unwrap();
+    let err = r.read_next().expect_err("corrupted CRC should be an error");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        err.to_string().contains("CRC mismatch"),
+        "error message should mention CRC: {err}"
+    );
 }

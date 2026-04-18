@@ -117,6 +117,10 @@ pub struct FreeListSnaphotHeader {
     pub _pad2: u32,
 }
 
+/// Byte offset where the `crc32c` field begins in the superblock.
+/// All bytes before this offset are covered by the checksum.
+const CRC_OFFSET: usize = 40; // magic(4) + version(4) + gen_id(8) + page_size(8) + next_page_id(8) + freelist_head(8)
+
 impl Superblock {
     /// Interprets a fixed-size buffer as a [`Superblock`] reference.
     pub fn from_bytes(buf: &[u8; SUPERBLOCK_SIZE]) -> Result<&Self, std::io::Error> {
@@ -126,7 +130,21 @@ impl Superblock {
         ))
     }
 
-    /// Validates the magic number and version of this superblock.
+    /// Computes the CRC-32C over the superblock fields that precede the
+    /// checksum slot.
+    pub fn compute_crc(&self) -> u32 {
+        let bytes = self.as_bytes();
+        crc32fast::hash(&bytes[..CRC_OFFSET])
+    }
+
+    /// Returns a copy of this superblock with the `crc32c` field set to the
+    /// correct checksum.
+    pub fn with_crc(mut self) -> Self {
+        self.crc32c = self.compute_crc();
+        self
+    }
+
+    /// Validates the magic number, version, and CRC-32C of this superblock.
     pub fn validate(&self) -> Result<(), std::io::Error> {
         if self.magic != SUPERBLOCK_MAGIC {
             return Err(io::Error::new(
@@ -138,6 +156,16 @@ impl Superblock {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Unsupported manifest version",
+            ));
+        }
+        let expected = self.compute_crc();
+        if self.crc32c != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Superblock CRC mismatch: stored {:#010x}, computed {:#010x}",
+                    self.crc32c, expected
+                ),
             ));
         }
         Ok(())
