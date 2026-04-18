@@ -70,7 +70,7 @@ impl KeyCodec for u64 {
 }
 
 impl KeyCodec for i64 {
-    const ENCODING: KeyEncodingId = KeyEncodingId::ZigZagI64;
+    const ENCODING: KeyEncodingId = KeyEncodingId::BeI64;
     fn encode(&self) -> Vec<u8> { buf_encode_key::<i64, BeU64>(self) }
     fn decode(bytes: &[u8]) -> Result<Self, ApiError> { buf_decode_key::<i64, BeU64>(bytes) }
 }

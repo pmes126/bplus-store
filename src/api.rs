@@ -26,8 +26,8 @@ use crate::storage::StorageError;
 pub enum KeyEncodingId {
     /// Big-endian unsigned 64-bit integer.
     BeU64 = 0,
-    /// ZigZag-encoded signed 64-bit integer.
-    ZigZagI64 = 1,
+    /// Big-endian signed 64-bit integer (sign-bit flip for order preservation).
+    BeI64 = 1,
     /// UTF-8 string bytes.
     Utf8 = 2,
     /// Opaque raw byte slice with lexicographic ordering.
@@ -38,7 +38,7 @@ impl fmt::Display for KeyEncodingId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             KeyEncodingId::BeU64 => "be_u64",
-            KeyEncodingId::ZigZagI64 => "zigzag_i64",
+            KeyEncodingId::BeI64 => "be_i64",
             KeyEncodingId::Utf8 => "utf8",
             KeyEncodingId::RawBytes => "raw",
         })
@@ -50,7 +50,7 @@ impl FromStr for KeyEncodingId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "be_u64" => Ok(Self::BeU64),
-            "zigzag_i64" => Ok(Self::ZigZagI64),
+            "be_i64" => Ok(Self::BeI64),
             "utf8" => Ok(Self::Utf8),
             "raw" => Ok(Self::RawBytes),
             other => Err(format!("unknown key encoding: {other}")),
@@ -63,7 +63,7 @@ impl TryFrom<u64> for KeyEncodingId {
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::BeU64),
-            1 => Ok(Self::ZigZagI64),
+            1 => Ok(Self::BeI64),
             2 => Ok(Self::Utf8),
             3 => Ok(Self::RawBytes),
             other => Err(format!("unknown key encoding id: {other}")),

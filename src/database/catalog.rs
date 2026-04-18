@@ -10,7 +10,7 @@ pub struct TreeMeta {
     pub id: TreeId,
     /// Human-readable logical name (may change via rename).
     pub name: String,
-    /// Comparator / byte ordering (e.g. big-endian u64, zigzag i64, UTF-8).
+    /// Comparator / byte ordering (e.g. big-endian u64, big-endian i64, UTF-8).
     pub key_encoding: KeyEncodingId,
     /// On-page key layout (e.g. Raw, PrefixRestarts).
     pub keyfmt_id: KeyFormat,

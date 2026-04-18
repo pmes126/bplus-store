@@ -497,7 +497,7 @@ Planned:
 
 **Key codecs** (`KeyCodec` trait) encode typed keys into bytes:
 - `BeU64` — big-endian u64 (preserves numeric order)
-- `ZigZagI64` — zig-zag encoded i64 (preserves signed order)
+- `BeI64` — sign-bit-flip + big-endian i64 (preserves signed numeric order)
 - `Utf8` — raw UTF-8 bytes (preserves lexicographic order)
 - `RawBytes` — passthrough
 
