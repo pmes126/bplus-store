@@ -398,3 +398,7 @@ guaranteeing that at least two entries always fit per page so splits produce val
 ## License
 
 Dual-licensed under MIT or Apache-2.0. You may choose either license.
+
+## Contact
+
+Paris Mesidis — pmesidis@gmail.com

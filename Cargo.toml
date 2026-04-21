@@ -2,9 +2,10 @@
 name = "bplus_tree"
 version = "0.1.0"
 edition = "2024"
+authors = ["Paris Mesidis <pmesidis@gmail.com>"]
 rust-version = "1.85"
 description = "Copy-on-write B+ tree with page-aligned storage, split/merge, and crash-safety primitives."
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/pmes126/bplus-tree"
 readme = "README.md"
 keywords = ["bplus-tree", "b+tree", "datastructures", "storage", "database"]
