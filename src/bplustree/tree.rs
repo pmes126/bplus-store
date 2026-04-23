@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use crate::api::{KeyEncodingId, TreeId};
@@ -175,6 +176,20 @@ pub struct TreeConfig {
     pub target_fill_bytes: usize,
 }
 
+/// Wrapper around a raw `*mut Metadata` that is safe to send across threads.
+///
+/// These pointers are retired metadata boxes from successful CAS operations.
+/// They are kept alive (not freed) to prevent the ABA problem: if the allocator
+/// reuses the address of a freed `Box<Metadata>`, a stale writer's CAS could
+/// spuriously succeed. Instead, old pointers are parked here and freed only
+/// when the `BPlusTree` is dropped.
+struct RetiredPtr(*mut Metadata);
+
+// SAFETY: The pointer points to a heap-allocated Metadata that is no longer
+// accessed through the AtomicPtr. Only Drop reads it, and BPlusTree is not
+// Clone, so there is exactly one owner.
+unsafe impl Send for RetiredPtr {}
+
 /// B+ tree with generic storage backends for nodes and pages.
 ///
 /// # Memory ordering
@@ -216,6 +231,9 @@ where
     commit_count: AtomicUsize,
     txn_id: AtomicU64,
     committed: AtomicPtr<Metadata>,
+    /// Retired metadata pointers from successful CAS commits, kept alive to
+    /// prevent ABA on the `committed` AtomicPtr. Freed in `Drop`.
+    retired_meta: Mutex<Vec<RetiredPtr>>,
 }
 
 impl<S, P> Drop for BPlusTree<'_, S, P>
@@ -228,6 +246,12 @@ where
         if !ptr.is_null() {
             unsafe {
                 drop(Box::from_raw(ptr));
+            }
+        }
+        // Free all retired metadata pointers.
+        for rp in self.retired_meta.lock().unwrap().drain(..) {
+            unsafe {
+                drop(Box::from_raw(rp.0));
             }
         }
     }
@@ -351,6 +375,7 @@ where
         key: K,
         value: V,
     ) -> Result<WriteResult, TreeError> {
+        let _guard = self.inner.epoch_mgr.pin();
         let root_id = self.inner.get_root_id();
         self.put_with_root(key, value, root_id)
     }
@@ -554,6 +579,7 @@ where
             commit_count: AtomicUsize::new(0),
             txn_id: AtomicU64::new(init_txn_id),
             committed: AtomicPtr::new(Box::into_raw(md_ptr)),
+            retired_meta: Mutex::new(Vec::new()),
         })
     }
 
@@ -592,6 +618,7 @@ where
             commit_count: AtomicUsize::new(0),
             txn_id: AtomicU64::new(txn_id),
             committed: AtomicPtr::new(md_ptr),
+            retired_meta: Mutex::new(Vec::new()),
         }
     }
 
@@ -661,6 +688,7 @@ where
         value: V,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        let _guard = self.epoch_mgr.pin();
         let root_id = self.get_root_id();
         self.put_inner(key, value, root_id, track)
     }
@@ -686,7 +714,8 @@ where
             });
         }
 
-        let _guard = self.epoch_mgr.pin();
+        // Caller must hold an epoch guard — pinning here would nest with an
+        // outer guard and the inner Drop would remove the thread's epoch entry.
         let mut current_root = root_id;
 
         loop {
@@ -939,6 +968,7 @@ where
 
     /// Searches for a key and returns its value, or `None` if not found.
     pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, TreeError> {
+        let _guard = self.epoch_mgr.pin();
         let root_id = self.get_root_id();
         self.get_inner(key, root_id)
     }
@@ -949,7 +979,7 @@ where
         key: K,
         root_id: NodeId,
     ) -> Result<Option<Vec<u8>>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
+        // Caller must hold an epoch guard.
         let mut current_id = root_id;
 
         loop {
@@ -1009,6 +1039,7 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        let _guard = self.epoch_mgr.pin();
         let res = self.delete_inner(key, root_id, track)?;
         match res {
             DeleteResult::NotFound => Err(TreeError::NodeNotFound("key not found".to_string())),
@@ -1023,8 +1054,7 @@ where
         root_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<DeleteResult<NodeId>, TreeError> {
-        let _guard = self.epoch_mgr.pin();
-
+        // Caller must hold an epoch guard.
         let (mut path, found) = self.get_insertion_path(key, root_id)?;
         let (leaf_node_id, idx) = path
             .pop()
@@ -1588,9 +1618,10 @@ where
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
 
-                unsafe {
-                    drop(Box::from_raw(old_ptr));
-                }
+                // Retire the old pointer instead of freeing it to prevent ABA:
+                // the allocator could reuse the address for a future Box<Metadata>,
+                // causing a stale writer's CAS to spuriously succeed.
+                self.retired_meta.lock().unwrap().push(RetiredPtr(old_ptr));
 
                 Ok(())
             }
