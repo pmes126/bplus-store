@@ -6,7 +6,7 @@
 //!
 //! Run via: `just bench-metrics` or `cargo bench --bench bench_metrics`
 
-use bplustree::api::Db;
+use bplus_tree::api::Db;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
@@ -29,7 +29,7 @@ fn dir_size(path: &std::path::Path) -> u64 {
 }
 
 /// Populates a tree with N entries via unbatched puts (accurate metadata).
-fn populated_tree(dir: &TempDir) -> (Db, bplustree::api::db::Tree<u64, String>, u64) {
+fn populated_tree(dir: &TempDir) -> (Db, bplus_tree::api::db::Tree<u64, String>, u64) {
     let db = Db::open(dir.path()).unwrap();
     let tree = db.create_tree::<u64, String>("bench", 64).unwrap();
     let mut data_bytes = 0u64;

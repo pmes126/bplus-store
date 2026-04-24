@@ -1,5 +1,5 @@
 [package]
-name = "bplustree"
+name = "bplus_tree"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -31,7 +31,7 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 
-[dev-dependencies.bplustree]
+[dev-dependencies.bplus_tree]
 path = "."
 features = ["testing", "failpoints" ]
 
@@ -44,7 +44,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 [lib]
-name = "bplustree"
+name = "bplus_tree"
 path = "src/lib.rs"
 
 [[bench]]

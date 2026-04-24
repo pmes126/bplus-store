@@ -1,4 +1,4 @@
-use bplustree::api::Db;
+use bplus_tree::api::Db;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::PathBuf;
 use std::sync::Arc;
