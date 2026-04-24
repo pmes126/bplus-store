@@ -62,13 +62,25 @@ impl WriteMetrics {
         println!("=== {} ===", self.label);
         println!("  ops:              {}", self.ops);
         println!("  tree height:      {}", self.height);
-        println!("  disk size:        {:.1} KB", self.disk_bytes as f64 / 1024.0);
-        println!("  raw data:         {:.1} KB", self.data_bytes as f64 / 1024.0);
+        println!(
+            "  disk size:        {:.1} KB",
+            self.disk_bytes as f64 / 1024.0
+        );
+        println!(
+            "  raw data:         {:.1} KB",
+            self.data_bytes as f64 / 1024.0
+        );
         println!("  write amp:        {:.2}x", write_amp);
         println!("  bytes/entry:      {:.1}", bpe);
         println!("  space overhead:   {:.1}%", (write_amp - 1.0) * 100.0);
-        println!("  throughput:       {:.0} ops/sec", self.ops as f64 / self.elapsed.as_secs_f64());
-        println!("  elapsed:          {:.3} ms", self.elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "  throughput:       {:.0} ops/sec",
+            self.ops as f64 / self.elapsed.as_secs_f64()
+        );
+        println!(
+            "  elapsed:          {:.3} ms",
+            self.elapsed.as_secs_f64() * 1000.0
+        );
     }
 }
 
@@ -198,9 +210,18 @@ fn measure_point_get() {
     println!("=== point get (5k sequential lookups) ===");
     println!("  tree height:      {}", tree.height());
     println!("  entries:          {}", tree.len());
-    println!("  throughput:       {:.0} ops/sec", N as f64 / elapsed.as_secs_f64());
-    println!("  avg latency:      {:.0} ns/op", elapsed.as_nanos() as f64 / N as f64);
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  throughput:       {:.0} ops/sec",
+        N as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  avg latency:      {:.0} ns/op",
+        elapsed.as_nanos() as f64 / N as f64
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 fn measure_point_get_missing() {
@@ -216,9 +237,18 @@ fn measure_point_get_missing() {
     println!();
     println!("=== point get missing keys (5k lookups) ===");
     println!("  tree height:      {}", tree.height());
-    println!("  throughput:       {:.0} ops/sec", N as f64 / elapsed.as_secs_f64());
-    println!("  avg latency:      {:.0} ns/op", elapsed.as_nanos() as f64 / N as f64);
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  throughput:       {:.0} ops/sec",
+        N as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  avg latency:      {:.0} ns/op",
+        elapsed.as_nanos() as f64 / N as f64
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 fn measure_range_scan() {
@@ -236,9 +266,18 @@ fn measure_range_scan() {
     println!();
     println!("=== full range scan ({count} entries) ===");
     println!("  tree height:      {}", tree.height());
-    println!("  scan rate:        {:.0} entries/sec", count as f64 / elapsed.as_secs_f64());
-    println!("  avg latency:      {:.0} ns/entry", elapsed.as_nanos() as f64 / count as f64);
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  scan rate:        {:.0} entries/sec",
+        count as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  avg latency:      {:.0} ns/entry",
+        elapsed.as_nanos() as f64 / count as f64
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 fn measure_range_scan_slice() {
@@ -257,9 +296,18 @@ fn measure_range_scan_slice() {
     println!("=== range scan 1k-entry slice ===");
     println!("  tree height:      {}", tree.height());
     println!("  entries scanned:  {count}");
-    println!("  scan rate:        {:.0} entries/sec", count as f64 / elapsed.as_secs_f64());
-    println!("  avg latency:      {:.0} ns/entry", elapsed.as_nanos() as f64 / count as f64);
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  scan rate:        {:.0} entries/sec",
+        count as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  avg latency:      {:.0} ns/entry",
+        elapsed.as_nanos() as f64 / count as f64
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -288,9 +336,18 @@ fn measure_delete() {
     println!("  entries after:    {}", tree.len());
     println!("  disk before:      {:.1} KB", disk_before as f64 / 1024.0);
     println!("  disk after:       {:.1} KB", disk_after as f64 / 1024.0);
-    println!("  disk delta:       {:.1} KB", (disk_after as i64 - disk_before as i64) as f64 / 1024.0);
-    println!("  throughput:       {:.0} ops/sec", N as f64 / elapsed.as_secs_f64());
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  disk delta:       {:.1} KB",
+        (disk_after as i64 - disk_before as i64) as f64 / 1024.0
+    );
+    println!(
+        "  throughput:       {:.0} ops/sec",
+        N as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +384,14 @@ fn measure_concurrent_insert() {
     println!("=== concurrent insert ({num_threads} threads, {N} total) ===");
     println!("  tree height:      {}", tree.height());
     println!("  entries:          {}", tree.len());
-    println!("  throughput:       {:.0} ops/sec", N as f64 / elapsed.as_secs_f64());
-    println!("  elapsed:          {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "  throughput:       {:.0} ops/sec",
+        N as f64 / elapsed.as_secs_f64()
+    );
+    println!(
+        "  elapsed:          {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }
 
 // ---------------------------------------------------------------------------

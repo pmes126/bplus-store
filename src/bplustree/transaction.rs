@@ -1,6 +1,8 @@
 //! Write transaction for the B+ tree with optimistic concurrency control.
 
-use crate::bplustree::tree::{BaseVersion, SharedBPlusTree, StagedMetadata, TransactionTracker, TreeError};
+use crate::bplustree::tree::{
+    BaseVersion, SharedBPlusTree, StagedMetadata, TransactionTracker, TreeError,
+};
 use crate::storage::{HasEpoch, NodeStorage, PageStorage};
 
 /// A single buffered write operation.
@@ -78,7 +80,8 @@ impl WriteTransaction {
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
         let k = key.as_ref().to_vec();
         let pos = self.changes.partition_point(|op| op.key() <= k.as_slice());
-        self.changes.insert(pos, WriteOp::Insert(k, value.as_ref().to_vec()));
+        self.changes
+            .insert(pos, WriteOp::Insert(k, value.as_ref().to_vec()));
     }
 
     /// Buffers a delete of the given key, maintaining sorted key order.
@@ -112,8 +115,12 @@ impl WriteTransaction {
                 for op in &self.changes {
                     match op {
                         WriteOp::Insert(k, v) => {
-                            let wr =
-                                tree.put_with_root_tracked(k.clone(), v.clone(), current_root, &mut tracker)?;
+                            let wr = tree.put_with_root_tracked(
+                                k.clone(),
+                                v.clone(),
+                                current_root,
+                                &mut tracker,
+                            )?;
                             reclaimed_nodes_local.extend(wr.reclaimed_nodes);
                             staged_nodes.extend(wr.staged_nodes);
                             current_root = wr.new_root_id;
@@ -124,7 +131,8 @@ impl WriteTransaction {
                             });
                         }
                         WriteOp::Delete(k) => {
-                            let wr = tree.delete_with_root_tracked(k, current_root, &mut tracker)?;
+                            let wr =
+                                tree.delete_with_root_tracked(k, current_root, &mut tracker)?;
                             reclaimed_nodes_local.extend(wr.reclaimed_nodes);
                             staged_nodes.extend(wr.staged_nodes);
                             current_root = wr.new_root_id;

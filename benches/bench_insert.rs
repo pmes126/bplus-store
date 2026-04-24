@@ -22,7 +22,9 @@ fn bench_tempdir() -> TempDir {
 fn populated_db() -> (tempfile::TempDir, Db) {
     let dir = bench_tempdir();
     let db = Db::open(dir.path()).expect("open db");
-    let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
+    let tree = db
+        .create_tree::<u64, String>("bench", 64)
+        .expect("create tree");
     let mut txn = tree.txn();
     for i in 0..N {
         txn.insert(&i, &format!("val_{i}"));
@@ -40,7 +42,9 @@ fn benchmark_insert(c: &mut Criterion) {
         b.iter(|| {
             let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
-            let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
+            let tree = db
+                .create_tree::<u64, String>("bench", 64)
+                .expect("create tree");
 
             for i in 0..N {
                 tree.put(&i, &format!("val_{i}")).unwrap();
@@ -54,7 +58,9 @@ fn benchmark_insert_txn(c: &mut Criterion) {
         b.iter(|| {
             let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
-            let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
+            let tree = db
+                .create_tree::<u64, String>("bench", 64)
+                .expect("create tree");
 
             let mut txn = tree.txn();
             for i in 0..N {
@@ -179,7 +185,9 @@ fn benchmark_large_values(c: &mut Criterion) {
         b.iter(|| {
             let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
-            let tree = db.create_tree::<u64, String>("bench", 64).expect("create tree");
+            let tree = db
+                .create_tree::<u64, String>("bench", 64)
+                .expect("create tree");
 
             let mut txn = tree.txn();
             for i in 0..1_000u64 {
@@ -199,7 +207,9 @@ fn benchmark_string_keys(c: &mut Criterion) {
         b.iter(|| {
             let dir = bench_tempdir();
             let db = Db::open(dir.path()).expect("open db");
-            let tree = db.create_tree::<String, String>("bench", 64).expect("create tree");
+            let tree = db
+                .create_tree::<String, String>("bench", 64)
+                .expect("create tree");
 
             let mut txn = tree.txn();
             for i in 0..N {
@@ -213,7 +223,9 @@ fn benchmark_string_keys(c: &mut Criterion) {
 fn benchmark_string_keys_get(c: &mut Criterion) {
     let dir = bench_tempdir();
     let db = Db::open(dir.path()).expect("open db");
-    let tree = db.create_tree::<String, String>("bench", 64).expect("create tree");
+    let tree = db
+        .create_tree::<String, String>("bench", 64)
+        .expect("create tree");
 
     let mut txn = tree.txn();
     for i in 0..N {
@@ -243,7 +255,8 @@ fn benchmark_concurrent_writers(c: &mut Criterion) {
             let dir = bench_tempdir();
             let db = Arc::new(Db::open(dir.path()).expect("open db"));
             let tree = Arc::new(
-                db.create_tree::<u64, String>("bench", 64).expect("create tree"),
+                db.create_tree::<u64, String>("bench", 64)
+                    .expect("create tree"),
             );
 
             let handles: Vec<_> = (0..num_threads)
