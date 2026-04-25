@@ -60,13 +60,13 @@ where
         VC: crate::codec::ValueCodec<V>,
     {
         match node_view {
-            NodeView::Internal { page } => {
+            NodeView::Internal { page, .. } => {
                 let page_raw = page
                     .to_bytes()
                     .map_err(|e| crate::codec::CodecError::EncodeFailure { msg: e.to_string() })?;
                 <DefaultNodeCodec<KC, VC> as NodeCodec<K, V>>::decode(page_raw)
             }
-            NodeView::Leaf { page } => {
+            NodeView::Leaf { page, .. } => {
                 let page_raw = page
                     .to_bytes()
                     .map_err(|e| crate::codec::CodecError::EncodeFailure { msg: e.to_string() })?;
