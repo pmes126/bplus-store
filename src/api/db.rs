@@ -102,21 +102,45 @@ impl Db {
         }
     }
 
-    /// Reclaims the leaked [`Database`] allocation.
+    /// Persists the freelist snapshot and reclaims the leaked [`Database`]
+    /// allocation, returning any I/O error from the checkpoint step.
+    ///
+    /// Prefer this over simply dropping the `Db` when you need to verify
+    /// that the freelist was persisted successfully.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that **no** [`Tree`], [`WriteTxn`], or
-    /// [`RangeIter`] handles derived from this `Db` are still alive.
-    /// Using a tree handle after `close` is undefined behaviour.
-    pub unsafe fn close(self) {
-        // Persist freelist so freed pages survive restart.
-        if let Err(e) = self.database.checkpoint_freelist() {
-            eprintln!("warning: failed to checkpoint freelist: {e}");
-        }
+    /// All [`Tree`], [`WriteTxn`], and [`RangeIter`] handles derived from
+    /// this `Db` **must** be dropped before calling `close`. Using a handle
+    /// after the `Db` is closed is undefined behaviour.
+    pub unsafe fn close(self) -> Result<(), ApiError> {
+        let result = self
+            .database
+            .checkpoint_freelist()
+            .map_err(|e| ApiError::Internal(e.to_string()));
         let ptr =
             self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
+        // Prevent Drop from running (we're handling cleanup here).
+        std::mem::forget(self);
         drop(unsafe { Box::from_raw(ptr) });
+        result
+    }
+}
+
+impl Drop for Db {
+    fn drop(&mut self) {
+        // Best-effort freelist checkpoint; nothing useful to do with the error
+        // since Drop can't propagate it. Use `Db::close()` for error handling.
+        if let Err(e) = self.database.checkpoint_freelist() {
+            eprintln!("warning: failed to checkpoint freelist on drop: {e}");
+        }
+        // SAFETY: The pointer was created via `Box::leak` in `Db::open` and is
+        // guaranteed to be valid and uniquely owned by this `Db`. The caller
+        // must ensure all `Tree` / `WriteTxn` / `RangeIter` handles have been
+        // dropped before the `Db` itself is dropped.
+        let ptr =
+            self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
+        unsafe { drop(Box::from_raw(ptr)) };
     }
 }
 
@@ -157,6 +181,12 @@ where
             Some(bytes) => Ok(Some(V::decode(&bytes)?)),
             None => Ok(None),
         }
+    }
+
+    /// Returns `true` if `key` exists in the tree, without decoding the value.
+    pub fn contains_key(&self, key: &K) -> Result<bool, ApiError> {
+        let kb = key.encode();
+        Ok(self.inner.contains_key(kb)?)
     }
 
     /// Deletes the value for `key`. Returns an error if the key is not found.

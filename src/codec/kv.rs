@@ -133,3 +133,12 @@ impl ValueCodec for u64 {
         buf_decode_value::<u64, BeU64>(bytes)
     }
 }
+
+impl ValueCodec for i64 {
+    fn encode(&self) -> Vec<u8> {
+        buf_encode_value::<i64, BeU64>(self)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self, ApiError> {
+        buf_decode_value::<i64, BeU64>(bytes)
+    }
+}

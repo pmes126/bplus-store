@@ -1,15 +1,15 @@
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use crate::api::{KeyEncodingId, TreeId};
 use crate::bplustree::NodeView;
 use crate::bplustree::node_view::NodeViewError;
-use crate::database::catalog::TreeMeta;
 use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
-use crate::page::{LeafPage, PageError};
+use crate::page::PageError;
 use crate::storage::epoch::COMMIT_COUNT;
 use crate::storage::epoch::EpochManager;
 use crate::storage::metadata_manager::{MetadataError, MetadataManager};
@@ -23,14 +23,6 @@ use zerocopy::AsBytes;
 pub type NodeId = u64;
 /// A node on the traversal path, represented as (node ID, index in parent).
 pub type PathNode = (NodeId, usize);
-
-/// Result of inserting into a B+ tree node.
-pub enum InsertResult<N> {
-    /// Node was updated in-place.
-    Updated(N),
-    /// Node was inserted.
-    Inserted(N),
-}
 
 /// Result of deleting from a B+ tree node
 #[derive(Debug, Error)]
@@ -134,6 +126,11 @@ pub trait TxnTracker {
     fn staged_size(&self) -> Option<u64>;
     /// Returns the staged tree height, or `None` if no height has been staged yet.
     fn staged_height(&self) -> Option<u64>;
+    /// Returns `true` if `node_id` was allocated during this transaction
+    /// (i.e. it is dirty and can be mutated in place).
+    fn is_dirty(&self, node_id: NodeId) -> bool;
+    /// Marks `node_id` as dirty (allocated in this transaction).
+    fn mark_dirty(&mut self, node_id: NodeId);
 }
 
 /// A point-in-time snapshot of committed tree metadata.
@@ -145,10 +142,6 @@ pub struct MetadataSnapshot {
     pub height: u64,
     /// Approximate number of entries at snapshot time.
     pub size: u64,
-    /// Transaction ID of the snapshot.
-    pub txn_id: u64,
-    /// B+ tree order (maximum number of children per internal node).
-    pub order: u64,
 }
 
 /// Staged (not yet committed) metadata produced by a write transaction.
@@ -166,18 +159,6 @@ pub struct StagedMetadata {
 pub struct BaseVersion {
     /// Raw pointer to the committed [`Metadata`] at transaction start.
     pub committed_ptr: *const Metadata,
-}
-
-/// Runtime configuration for a B+ tree instance.
-pub struct TreeConfig {
-    /// Page size in bytes (4096 by default).
-    pub page_size: usize,
-    /// Key-format identifier: 0 = Raw, 1 = Raw+Restarts, 2 = Prefix+Restarts.
-    pub key_format_id: u8,
-    /// Restart interval used by prefix formats; ignored by raw formats.
-    pub restart_interval: u16,
-    /// Target page fill in bytes; splits and merges are triggered by byte budget, not key count.
-    pub target_fill_bytes: usize,
 }
 
 /// Wrapper around a raw `*mut Metadata` that is safe to send across threads.
@@ -233,7 +214,6 @@ where
     min_internal_keys: usize,
     min_leaf_keys: usize,
     commit_count: AtomicUsize,
-    txn_id: AtomicU64,
     committed: AtomicPtr<Metadata>,
     /// Retired metadata pointers from successful CAS commits, kept alive to
     /// prevent ABA on the `committed` AtomicPtr. Freed in `Drop`.
@@ -272,6 +252,10 @@ pub struct TransactionTracker {
     pub staged_height: Option<u64>,
     /// Staged entry count, if updated.
     pub staged_size: Option<u64>,
+    /// Pages allocated during this transaction (dirty set). Lookups are the
+    /// hot path — every traversed node checks "is this dirty?" to decide
+    /// COW-clone vs mutate-in-place — so a HashSet gives O(1) checks.
+    pub dirty_pages: HashSet<NodeId>,
 }
 
 impl TransactionTracker {
@@ -282,7 +266,18 @@ impl TransactionTracker {
             added: Vec::new(),
             staged_height: None,
             staged_size: None,
+            dirty_pages: HashSet::new(),
         }
+    }
+
+    /// Returns `true` if `node_id` was allocated during this transaction.
+    pub fn is_dirty(&self, node_id: NodeId) -> bool {
+        self.dirty_pages.contains(&node_id)
+    }
+
+    /// Marks `node_id` as dirty (allocated in this transaction).
+    pub fn mark_dirty(&mut self, node_id: NodeId) {
+        self.dirty_pages.insert(node_id);
     }
 }
 
@@ -304,6 +299,12 @@ impl TxnTracker for TransactionTracker {
     }
     fn staged_height(&self) -> Option<u64> {
         self.staged_height
+    }
+    fn is_dirty(&self, node_id: NodeId) -> bool {
+        self.dirty_pages.contains(&node_id)
+    }
+    fn mark_dirty(&mut self, node_id: NodeId) {
+        self.dirty_pages.insert(node_id);
     }
 }
 
@@ -355,22 +356,6 @@ where
         }
     }
 
-    /// Creates a shared handle from an existing [`Arc`].
-    pub fn from_arc(tree: Arc<BPlusTree<'s, S, P>>) -> Self {
-        Self { inner: tree }
-    }
-
-    /// Inserts a key-value pair starting from the given root node ID.
-    pub fn put_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: V,
-        root_id: NodeId,
-    ) -> Result<WriteResult, TreeError> {
-        let mut collector = TransactionTracker::new();
-        self.put_with_root_tracked(key, value, root_id, &mut collector)
-    }
-
     /// Inserts a key-value pair starting from `root_id`, using a caller-owned
     /// tracker so that staged size/height accumulate across multiple calls.
     pub fn put_with_root_tracked<K: AsRef<[u8]>, V: AsRef<[u8]>>(
@@ -389,27 +374,6 @@ where
             new_size: collector.staged_size.unwrap_or(self.inner.get_size()),
         };
         Ok(write_res)
-    }
-
-    /// Inserts a key-value pair using the current committed root.
-    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<WriteResult, TreeError> {
-        let _guard = self.inner.epoch_mgr.pin();
-        let root_id = self.inner.get_root_id();
-        self.put_with_root(key, value, root_id)
-    }
-
-    /// Deletes a key starting from the given root node ID.
-    pub fn delete_with_root<K: AsRef<[u8]>>(
-        &self,
-        key: &K,
-        root_id: NodeId,
-    ) -> Result<WriteResult, TreeError> {
-        let mut collector = TransactionTracker::new();
-        self.delete_with_root_tracked(key, root_id, &mut collector)
     }
 
     /// Deletes a key starting from `root_id`, using a caller-owned tracker.
@@ -440,13 +404,9 @@ where
         self.inner.get(key)
     }
 
-    /// Searches for a key starting from the given root node ID.
-    pub fn search_with_root<K: AsRef<[u8]>>(
-        &self,
-        key: &K,
-        root_id: NodeId,
-    ) -> Result<Option<Vec<u8>>, TreeError> {
-        self.inner.get_inner(key, root_id)
+    /// Returns `true` if the key exists, without copying the value.
+    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool, TreeError> {
+        self.inner.contains_key(key)
     }
 
     /// Returns the current committed root node ID.
@@ -462,17 +422,6 @@ where
     /// Returns the current approximate entry count.
     pub fn get_size(&self) -> u64 {
         self.inner.get_size()
-    }
-
-    /// Returns the current committed transaction ID.
-    pub fn get_txn_id(&self) -> NodeId {
-        self.inner.txn_id.load(Ordering::SeqCst)
-    }
-
-    /// Flushes pending node storage writes to disk.
-    pub fn flush(&mut self) -> Result<(), TreeError> {
-        self.inner.storage.flush()?;
-        Ok(())
     }
 
     /// Returns a snapshot of the current committed metadata.
@@ -494,22 +443,53 @@ where
         self.inner.committed.load(Ordering::SeqCst)
     }
 
-    /// Returns a reference to the committed metadata.
-    pub fn get_metadata(&self) -> &Metadata {
-        unsafe { &*self.inner.committed.load(Ordering::Acquire) }
-    }
-
-    /// Returns a clone of the inner [`Arc`].
-    pub fn arc(&self) -> Arc<BPlusTree<'_, S, P>> {
-        Arc::clone(&self.inner)
-    }
-
     #[allow(clippy::should_implement_trait)]
     /// Returns a new shared handle pointing to the same tree.
     pub fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
         }
+    }
+
+    /// Searches for a key starting from the given root node ID.
+    pub fn search_with_root<K: AsRef<[u8]>>(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<Option<Vec<u8>>, TreeError> {
+        self.inner.get_inner(key, root_id)
+    }
+
+    /// Inserts a key-value pair starting from the given root node ID.
+    pub fn put_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+        root_id: NodeId,
+    ) -> Result<WriteResult, TreeError> {
+        let mut collector = TransactionTracker::new();
+        self.put_with_root_tracked(key, value, root_id, &mut collector)
+    }
+
+    /// Inserts a key-value pair using the current committed root.
+    pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<WriteResult, TreeError> {
+        let _guard = self.inner.epoch_mgr.pin();
+        let root_id = self.inner.get_root_id();
+        self.put_with_root(key, value, root_id)
+    }
+
+    /// Deletes a key starting from the given root node ID.
+    pub fn delete_with_root<K: AsRef<[u8]>>(
+        &self,
+        key: &K,
+        root_id: NodeId,
+    ) -> Result<WriteResult, TreeError> {
+        let mut collector = TransactionTracker::new();
+        self.delete_with_root_tracked(key, root_id, &mut collector)
     }
 
     /// Alias for [`put_with_root`] using the conventional `insert` vocabulary.
@@ -529,6 +509,11 @@ where
         value: V,
     ) -> Result<WriteResult, TreeError> {
         self.put(key, value)
+    }
+
+    /// Returns a reference to the committed metadata.
+    pub fn get_metadata(&self) -> &Metadata {
+        unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
 
     /// Returns a forward range iterator scanning `[start, end)`.
@@ -554,9 +539,15 @@ where
         Arc::clone(&self.inner.epoch_mgr)
     }
 
-    /// Reclaims a node by registering it for deferred freeing.
-    pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
-        self.inner.reclaim_node(node_id)
+    /// Runs a reclamation pass, freeing any deferred pages that are safe to
+    /// reclaim (no reader is pinned at or before their epoch).
+    pub fn reclaim_deferred(&self) -> Result<(), TreeError> {
+        let safe_epoch = self.inner.epoch_mgr.oldest_active();
+        let reclaimed = self.inner.epoch_mgr.reclaim(safe_epoch);
+        for pid in reclaimed {
+            self.inner.storage.free_node(pid)?;
+        }
+        Ok(())
     }
 }
 
@@ -565,56 +556,6 @@ where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
-    /// Creates a new [`BPlusTree`] from its storage backends and catalog metadata.
-    ///
-    /// Writes an initial empty leaf node and sets up the committed metadata pointer.
-    pub fn new(
-        storage: &'s S,
-        page_storage: &'s P,
-        meta: &TreeMeta,
-        epoch_mgr: Arc<EpochManager>,
-    ) -> Result<BPlusTree<'s, S, P>, TreeError> {
-        let keyfmt = meta.keyfmt_id;
-        let root_node = NodeView::Leaf {
-            page: LeafPage::new(keyfmt),
-        };
-        let init_id = storage.write_node_view(&root_node)?;
-        storage.write_node_view_at_offset(&root_node, meta.root_id)?;
-
-        let init_txn_id = 1;
-
-        let md1 = Metadata {
-            root_node_id: init_id,
-            txn_id: init_txn_id,
-            height: 1,
-            checksum: 0,
-            size: 0,
-            order: meta.order,
-            id: meta.id,
-        };
-
-        let md_ptr = Box::new(md1);
-
-        Ok(Self {
-            id: meta.id,
-            storage,
-            page_storage,
-            epoch_mgr,
-            key_encoding: meta.key_encoding,
-            key_format: meta.keyfmt_id,
-            encoding_version: meta.format_version,
-            meta_a: meta.meta_a,
-            meta_b: meta.meta_b,
-            max_keys: meta.order as usize - 1,
-            min_internal_keys: (meta.order as usize).div_ceil(2) - 1,
-            min_leaf_keys: (meta.order as usize - 1).div_ceil(2),
-            commit_count: AtomicUsize::new(0),
-            txn_id: AtomicU64::new(init_txn_id),
-            committed: AtomicPtr::new(Box::into_raw(md_ptr)),
-            retired_meta: Mutex::new(Vec::new()),
-        })
-    }
-
     /// Opens a [`BPlusTree`] over existing on-disk data without writing any nodes or metadata.
     ///
     /// Unlike [`new`], `open` does not initialise a root node, making it safe to call when
@@ -631,7 +572,6 @@ where
         epoch_mgr: Arc<EpochManager>,
     ) -> BPlusTree<'s, S, P> {
         let id = meta.id;
-        let txn_id = meta.txn_id;
         let order = meta.order;
         let md_ptr = Box::into_raw(Box::new(meta));
         Self {
@@ -648,7 +588,6 @@ where
             min_internal_keys: (order as usize).div_ceil(2) - 1,
             min_leaf_keys: (order as usize - 1).div_ceil(2),
             commit_count: AtomicUsize::new(0),
-            txn_id: AtomicU64::new(txn_id),
             committed: AtomicPtr::new(md_ptr),
             retired_meta: Mutex::new(Vec::new()),
         }
@@ -668,6 +607,7 @@ where
     ) -> Result<u64, TreeError> {
         let new_id = self.storage.write_node_view(node)?;
         tracker.add_new(new_id);
+        tracker.mark_dirty(new_id);
         Ok(new_id)
     }
 
@@ -869,12 +809,26 @@ where
     }
 
     /// Writes a node and propagates the new ID up the parent path.
+    ///
+    /// If the node's `page_id` is in the dirty set, it is rewritten in place
+    /// (no new page allocation) and propagation is skipped entirely since
+    /// the page ID is unchanged.
     fn write_and_propagate(
         &self,
         path: Vec<(u64, usize)>,
         node: &NodeView,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        if let Some(pid) = node.page_id() {
+            if track.is_dirty(pid) {
+                // Node was allocated in this transaction — rewrite in place.
+                // Page ID is unchanged so no parent update is needed.
+                self.storage.write_node_view_at_offset(node, pid)?;
+                // Return the root (first element of path), or this node's ID if it is the root.
+                let root_id = path.first().map(|(id, _)| *id).unwrap_or(pid);
+                return Ok(root_id);
+            }
+        }
         let new_node_id = self.write_node_view(node, track)?;
         if path.is_empty() {
             Ok(new_node_id)
@@ -885,12 +839,19 @@ where
     }
 
     /// Propagates a node update up the parent path, rewriting each ancestor.
+    ///
+    /// When a parent is in the dirty set (allocated during this transaction),
+    /// it is rewritten in place — the page ID doesn't change, so no further
+    /// propagation is needed and the loop breaks early.
     fn propagate_node_update(
         &self,
         mut path: Vec<(NodeId, usize)>,
         mut updated_child_id: NodeId,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
+        // Remember the root so we can return it even if we break early.
+        let root_id = path.first().map(|(id, _)| *id).unwrap_or(updated_child_id);
+
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self.storage.read_node_view(parent_id)?.ok_or_else(|| {
                 TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
@@ -909,6 +870,15 @@ where
             // Reclaim the original child and replace its pointer.
             track.reclaim(parent_node.child_ptr_at(insert_pos)?);
             parent_node.replace_child_at(insert_pos, updated_child_id)?;
+
+            if track.is_dirty(parent_id) {
+                // Parent was allocated in this transaction — mutate in place.
+                // Page ID is unchanged so no ancestors need updating.
+                self.storage
+                    .write_node_view_at_offset(&parent_node, parent_id)?;
+                return Ok(root_id);
+            }
+
             updated_child_id = self.write_node_view(&parent_node, track)?;
         }
         Ok(updated_child_id)
@@ -1010,6 +980,42 @@ where
         self.get_inner(key, root_id)
     }
 
+    /// Returns `true` if the key exists in the tree, without copying the value.
+    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool, TreeError> {
+        let _guard = self.epoch_mgr.pin();
+        let root_id = self.get_root_id();
+        self.contains_key_inner(key, root_id)
+    }
+
+    /// Returns `true` if the key exists starting from `root_id`, without copying the value.
+    pub fn contains_key_inner<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        root_id: NodeId,
+    ) -> Result<bool, TreeError> {
+        let mut current_id = root_id;
+
+        loop {
+            match self.storage.read_node_view(current_id)? {
+                Some(node) => match &node {
+                    NodeView::Leaf { .. } => {
+                        return Ok(node.lower_bound(key.as_ref()).is_ok());
+                    }
+                    NodeView::Internal { .. } => {
+                        let i = match node.lower_bound(key.as_ref()) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        };
+                        current_id = node.child_ptr_at(i)?;
+                    }
+                },
+                None => {
+                    return Err(TreeError::Invariant("node not found during search"));
+                }
+            }
+        }
+    }
+
     /// Searches for a key starting from `root_id` and returns its value, or `None` if not found.
     pub fn get_inner<K: AsRef<[u8]>>(
         &self,
@@ -1047,27 +1053,6 @@ where
             }
         }
     }
-
-    /*
-        // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
-        // pairs.
-        //<K: AsRef<[u8]>, V: AsRef<[u8]>>
-        pub fn search_range<'a, K: AsRef<[u8]>>(
-            &'a self,
-            root_id: NodeId,
-            start: K,
-            end: K,
-        ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-            let _guard = self.storage.epoch_mgr().pin();
-            Ok(Some(BPlusTreeIter::new(
-                &self.storage,
-                root_id,
-                self.storage.epoch_mgr().clone(),
-                start,
-                end,
-            )))
-        }
-    */
 
     /// Deletes a key from the tree, returning an error if the key is not found.
     pub fn delete<K: AsRef<[u8]>>(
@@ -1529,8 +1514,6 @@ where
             root_id: meta.root_node_id,
             height: meta.height,
             size: meta.size,
-            txn_id: meta.txn_id,
-            order: meta.order,
         }
     }
 
@@ -1541,7 +1524,8 @@ where
     /// prevent accidental use in production code.
     #[cfg(test)]
     pub fn commit(&self, new_root_id: NodeId, _height: u64, _size: u64) -> Result<(), TreeError> {
-        let new_txn_id = self.txn_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let current_meta = unsafe { &*self.committed.load(Ordering::Acquire) };
+        let new_txn_id = current_meta.txn_id + 1;
         // Write to whichever of the two metadata slots this transaction maps to.
         let target_slot = if new_txn_id % 2 == 0 {
             self.meta_a
@@ -1699,46 +1683,6 @@ where
             txn_id: meta.txn_id,
             order: meta.order,
         }
-    }
-
-    //pub fn traverse(&self) -> Result<Vec<(&[u8], &[u8])>, TreeError> {
-    //    let mut result = Vec::new();
-    //    let root_id = self.get_root_id();
-    //    if root_id == 0 {
-    //        return Ok(result); // Empty tree
-    //    }
-    //    let _guard = self.epoch_mgr.pin();
-    //    self.traverse_inner(root_id, &mut result)?;
-    //    Ok(result)
-    //}
-
-    // Recursive implementation of traversal.
-    //pub fn traverse_inner(
-    //    &self,
-    //    node_id: NodeId,
-    //    result: &mut Vec<(&[u8], &[u8])>,
-    //) -> Result<(), TreeError> {
-    //    match self.read_node(node_id)? {
-    //        Some(Node::Internal { keys, children }) => {
-    //            for (i, child_id) in children.iter().enumerate() {
-    //                if i <= keys.len() {
-    //                    self.traverse_inner(*child_id, result)?;
-    //                }
-    //            }
-    //        }
-    //        Some(Node::Leaf { keys, values, .. }) => {
-    //            for (key, value) in keys.iter().zip(values.iter()) {
-    //                result.push((key.clone(), value.clone()));
-    //            }
-    //        }
-    //        None => return Err(TreeError::NodeNotFound("Node not found".to_string())),
-    //    }
-    //    Ok(())
-    //}
-
-    /// Returns the current committed transaction ID.
-    pub fn get_txn_id(&self) -> u64 {
-        self.txn_id.load(Ordering::Relaxed)
     }
 
     /// Returns the current committed root node ID.

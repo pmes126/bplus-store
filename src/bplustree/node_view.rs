@@ -1,5 +1,5 @@
-use crate::codec::{KeyCodec, ValueCodec};
-use crate::keyfmt::KeyFormat;
+use crate::codec::KeyCodec;
+use crate::keyfmt::{KeyFormat, ScratchBuf};
 use crate::page::{InternalPage, LeafPage, PageError};
 
 use std::fmt;
@@ -21,10 +21,20 @@ pub enum NodeViewError {
     UnknownKeyFormat(u8),
 }
 
-/// A view of a B+ tree node stored in a page
+/// A view of a B+ tree node stored in a page.
+///
+/// `page_id` tracks the on-disk page ID this node was read from (or written
+/// to). It is `None` for freshly constructed nodes that have not yet been
+/// persisted.
 pub enum NodeView {
-    Internal { page: InternalPage },
-    Leaf { page: LeafPage },
+    Internal {
+        page: InternalPage,
+        page_id: Option<NodeId>,
+    },
+    Leaf {
+        page: LeafPage,
+        page_id: Option<NodeId>,
+    },
 }
 
 impl NodeView {
@@ -33,6 +43,7 @@ impl NodeView {
     pub fn new_internal(format_id: KeyFormat) -> Self {
         NodeView::Internal {
             page: InternalPage::new(format_id),
+            page_id: None,
         }
     }
 
@@ -40,6 +51,25 @@ impl NodeView {
     pub fn new_leaf(format_id: KeyFormat) -> Self {
         NodeView::Leaf {
             page: LeafPage::new(format_id),
+            page_id: None,
+        }
+    }
+
+    /// Returns the on-disk page ID, if this node has been read from or written to storage.
+    #[inline]
+    pub fn page_id(&self) -> Option<NodeId> {
+        match self {
+            NodeView::Internal { page_id, .. } | NodeView::Leaf { page_id, .. } => *page_id,
+        }
+    }
+
+    /// Sets the on-disk page ID for this node.
+    #[inline]
+    pub fn set_page_id(&mut self, id: NodeId) {
+        match self {
+            NodeView::Internal { page_id, .. } | NodeView::Leaf { page_id, .. } => {
+                *page_id = Some(id);
+            }
         }
     }
 
@@ -56,28 +86,28 @@ impl NodeView {
     // --- Safe downcasting ---
     pub fn as_leaf(&self) -> Option<&LeafPage> {
         match self {
-            NodeView::Leaf { page } => Some(page),
+            NodeView::Leaf { page, .. } => Some(page),
             _ => None,
         }
     }
 
     pub fn as_leaf_mut(&mut self) -> Option<&mut LeafPage> {
         match self {
-            NodeView::Leaf { page } => Some(page),
+            NodeView::Leaf { page, .. } => Some(page),
             _ => None,
         }
     }
 
     pub fn as_internal(&self) -> Option<&InternalPage> {
         match self {
-            NodeView::Internal { page } => Some(page),
+            NodeView::Internal { page, .. } => Some(page),
             _ => None,
         }
     }
 
     pub fn as_internal_mut(&mut self) -> Option<&mut InternalPage> {
         match self {
-            NodeView::Internal { page } => Some(page),
+            NodeView::Internal { page, .. } => Some(page),
             _ => None,
         }
     }
@@ -87,8 +117,8 @@ impl NodeView {
     #[inline]
     pub fn keys_len(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.key_count() as usize,
-            NodeView::Leaf { page } => page.key_count() as usize,
+            NodeView::Internal { page, .. } => page.key_count() as usize,
+            NodeView::Leaf { page, .. } => page.key_count() as usize,
         }
     }
 
@@ -96,7 +126,7 @@ impl NodeView {
     pub fn value_bytes_at(&self, i: usize) -> Result<&[u8], NodeViewError> {
         match self {
             NodeView::Internal { .. } => Err(NodeViewError::WrongKind),
-            NodeView::Leaf { page } => Ok(page.read_value_at(i)?),
+            NodeView::Leaf { page, .. } => Ok(page.read_value_at(i)?),
         }
     }
 
@@ -104,7 +134,7 @@ impl NodeView {
     #[inline]
     pub fn child_ptr_at(&self, idx: usize) -> Result<u64, NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.read_child_at(idx)?),
+            NodeView::Internal { page, .. } => Ok(page.read_child_at(idx)?),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
@@ -114,27 +144,27 @@ impl NodeView {
     pub fn value_at(&self, i: usize) -> Result<Vec<u8>, NodeViewError> {
         match self {
             NodeView::Internal { .. } => Err(NodeViewError::WrongKind),
-            NodeView::Leaf { page } => Ok(page.read_value_at(i)?.to_vec()),
+            NodeView::Leaf { page, .. } => Ok(page.read_value_at(i)?.to_vec()),
         }
     }
 
     /// Returns the key at index `i` as an owned vector.
     #[inline]
     pub fn key_at(&self, i: usize) -> Result<Vec<u8>, NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
-            NodeView::Internal { page } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
-            NodeView::Leaf { page } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
+            NodeView::Internal { page, .. } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
+            NodeView::Leaf { page, .. } => Ok(page.get_key_at(i, &mut scratch)?.to_vec()),
         }
     }
 
     /// Returns the key bytes at index `i` without copying.
     #[inline]
     pub fn key_bytes_at(&self, i: usize) -> Result<&[u8], NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
-            NodeView::Internal { page } => Ok(page.get_key_at(i, &mut scratch)?),
-            NodeView::Leaf { page } => Ok(page.get_key_at(i, &mut scratch)?),
+            NodeView::Internal { page, .. } => Ok(page.get_key_at(i, &mut scratch)?),
+            NodeView::Leaf { page, .. } => Ok(page.get_key_at(i, &mut scratch)?),
         }
     }
 
@@ -147,12 +177,12 @@ impl NodeView {
     /// Find the insertion index for a given key. This is using a comparator from the key format
     pub fn lower_bound(&self, probe: &[u8]) -> Result<usize, usize> {
         match self {
-            NodeView::Internal { page } => {
-                let mut scratch = Vec::new();
+            NodeView::Internal { page, .. } => {
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound(probe, &mut scratch)
             }
-            NodeView::Leaf { page } => {
-                let mut scratch = Vec::new();
+            NodeView::Leaf { page, .. } => {
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound(probe, &mut scratch)
             }
         }
@@ -165,12 +195,12 @@ impl NodeView {
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
         match self {
-            NodeView::Internal { page } => {
-                let mut scratch = Vec::new();
+            NodeView::Internal { page, .. } => {
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound_cmp(probe, &mut scratch, cmp)
             }
-            NodeView::Leaf { page } => {
-                let mut scratch = Vec::new();
+            NodeView::Leaf { page, .. } => {
+                let mut scratch = ScratchBuf::new();
                 page.lower_bound_cmp(probe, &mut scratch, cmp)
             }
         }
@@ -184,11 +214,11 @@ impl NodeView {
         child_ptr: Option<u64>,
     ) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => match child_ptr {
+            NodeView::Internal { page, .. } => match child_ptr {
                 Some(ptr) => Ok(page.insert_encoded(key, ptr)?),
                 None => Err(NodeViewError::WrongKind),
             },
-            NodeView::Leaf { page } => match value {
+            NodeView::Leaf { page, .. } => match value {
                 Some(val) => Ok(page.insert_encoded(key, val)?),
                 None => Err(NodeViewError::WrongKind),
             },
@@ -200,7 +230,7 @@ impl NodeView {
     pub fn insert_at(&mut self, idx: usize, key: &[u8], value: &[u8]) -> Result<(), NodeViewError> {
         match self {
             NodeView::Internal { .. } => Err(NodeViewError::WrongKind),
-            NodeView::Leaf { page } => Ok(page.insert_at(idx, key, value)?),
+            NodeView::Leaf { page, .. } => Ok(page.insert_at(idx, key, value)?),
         }
     }
 
@@ -214,7 +244,7 @@ impl NodeView {
     ) -> Result<(), NodeViewError> {
         match self {
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
-            NodeView::Internal { page } => Ok(page.insert_separator(idx, key, child_ptr)?),
+            NodeView::Internal { page, .. } => Ok(page.insert_separator(idx, key, child_ptr)?),
         }
     }
 
@@ -223,7 +253,7 @@ impl NodeView {
     pub fn replace_at(&mut self, idx: usize, value: &[u8]) -> Result<(), NodeViewError> {
         match self {
             NodeView::Internal { .. } => Err(NodeViewError::WrongKind),
-            NodeView::Leaf { page } => Ok(page.overwrite_value_at(idx, value)?),
+            NodeView::Leaf { page, .. } => Ok(page.overwrite_value_at(idx, value)?),
         }
     }
 
@@ -231,8 +261,8 @@ impl NodeView {
     #[inline]
     pub fn delete_at(&mut self, idx: usize) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.delete_separator(idx)?),
-            NodeView::Leaf { page } => Ok(page.delete_at(idx)?),
+            NodeView::Internal { page, .. } => Ok(page.delete_separator(idx)?),
+            NodeView::Leaf { page, .. } => Ok(page.delete_at(idx)?),
         }
     }
 
@@ -240,8 +270,8 @@ impl NodeView {
     #[inline]
     pub fn entry_count(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.key_count() as usize,
-            NodeView::Leaf { page } => page.key_count() as usize,
+            NodeView::Internal { page, .. } => page.key_count() as usize,
+            NodeView::Leaf { page, .. } => page.key_count() as usize,
         }
     }
 
@@ -249,8 +279,8 @@ impl NodeView {
     #[inline]
     pub fn used_bytes(&self) -> usize {
         match self {
-            NodeView::Internal { page } => page.used_bytes(),
-            NodeView::Leaf { page } => page.used_bytes(),
+            NodeView::Internal { page, .. } => page.used_bytes(),
+            NodeView::Leaf { page, .. } => page.used_bytes(),
         }
     }
 
@@ -267,19 +297,25 @@ impl NodeView {
     /// Splits the node at `idx`, returning the new right half.
     pub fn split_off(&mut self, idx: usize) -> Result<NodeView, NodeViewError> {
         match self {
-            NodeView::Internal { page } => {
+            NodeView::Internal { page, .. } => {
                 let keyfmt_id = KeyFormat::from_id(page.keyfmt_id())
                     .ok_or(NodeViewError::UnknownKeyFormat(page.keyfmt_id()))?;
                 let mut new_page = InternalPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)?;
-                Ok(NodeView::Internal { page: new_page })
+                Ok(NodeView::Internal {
+                    page: new_page,
+                    page_id: None,
+                })
             }
-            NodeView::Leaf { page } => {
+            NodeView::Leaf { page, .. } => {
                 let keyfmt_id = KeyFormat::from_id(page.keyfmt_id())
                     .ok_or(NodeViewError::UnknownKeyFormat(page.keyfmt_id()))?;
                 let mut new_page = LeafPage::new(keyfmt_id);
                 page.split_off_into(idx, &mut new_page)?;
-                Ok(NodeView::Leaf { page: new_page })
+                Ok(NodeView::Leaf {
+                    page: new_page,
+                    page_id: None,
+                })
             }
         }
     }
@@ -287,7 +323,7 @@ impl NodeView {
     /// Replaces the child pointer at `idx` in an internal node.
     pub fn replace_child_at(&mut self, idx: usize, child_ptr: u64) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.replace_child_at(idx, child_ptr)?),
+            NodeView::Internal { page, .. } => Ok(page.replace_child_at(idx, child_ptr)?),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
@@ -295,11 +331,11 @@ impl NodeView {
     /// Pops the last key from an internal node (used during splits).
     pub fn pop_key(&mut self) -> Result<Option<Vec<u8>>, NodeViewError> {
         match self {
-            NodeView::Internal { page } => {
+            NodeView::Internal { page, .. } => {
                 if page.key_count() == 0 {
                     return Ok(None);
                 }
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 Ok(Some(page.pop_last_key(&mut scratch)?))
             }
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
@@ -309,15 +345,15 @@ impl NodeView {
     /// Replaces the key at `idx`.
     pub fn replace_key_at(&mut self, idx: usize, new_key: &[u8]) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.replace_key_at(idx, new_key)?),
-            NodeView::Leaf { page } => Ok(page.replace_key_at(idx, new_key)?),
+            NodeView::Internal { page, .. } => Ok(page.replace_key_at(idx, new_key)?),
+            NodeView::Leaf { page, .. } => Ok(page.replace_key_at(idx, new_key)?),
         }
     }
 
     /// Writes the leftmost child pointer of an internal node.
     pub fn write_leftmost_child(&mut self, ptr: u64) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.write_leftmost_child(ptr)?),
+            NodeView::Internal { page, .. } => Ok(page.write_leftmost_child(ptr)?),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
@@ -325,7 +361,7 @@ impl NodeView {
     /// Returns the number of child pointers in an internal node.
     pub fn children_len(&self) -> Result<usize, NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.key_count() as usize + 1),
+            NodeView::Internal { page, .. } => Ok(page.key_count() as usize + 1),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
@@ -333,32 +369,32 @@ impl NodeView {
     /// Prepends a key and child pointer to an internal node.
     pub fn push_front(&mut self, key: &[u8], child_ptr: u64) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.push_front(key, child_ptr)?),
+            NodeView::Internal { page, .. } => Ok(page.push_front(key, child_ptr)?),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
 
     /// Removes and returns the key at `idx`.
     pub fn delete_key_at(&mut self, idx: usize) -> Result<Vec<u8>, NodeViewError> {
-        let mut scratch = Vec::new();
+        let mut scratch = ScratchBuf::new();
         match self {
-            NodeView::Internal { page } => Ok(page.delete_key_at(idx, &mut scratch)?),
-            NodeView::Leaf { page } => Ok(page.delete_key_at(idx, &mut scratch)?),
+            NodeView::Internal { page, .. } => Ok(page.delete_key_at(idx, &mut scratch)?),
+            NodeView::Leaf { page, .. } => Ok(page.delete_key_at(idx, &mut scratch)?),
         }
     }
 
     /// Inserts a key at `idx` without touching child pointers or values.
     pub fn insert_key_at(&mut self, idx: usize, key: &[u8]) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.insert_key_at(idx, key)?),
-            NodeView::Leaf { page } => Ok(page.insert_key_at(idx, key)?),
+            NodeView::Internal { page, .. } => Ok(page.insert_key_at(idx, key)?),
+            NodeView::Leaf { page, .. } => Ok(page.insert_key_at(idx, key)?),
         }
     }
 
     /// Removes the child pointer at `idx` from an internal node.
     pub fn delete_child_at(&mut self, idx: usize) -> Result<(), NodeViewError> {
         match self {
-            NodeView::Internal { page } => Ok(page.delete_child_at(idx)?),
+            NodeView::Internal { page, .. } => Ok(page.delete_child_at(idx)?),
             NodeView::Leaf { .. } => Err(NodeViewError::WrongKind),
         }
     }
@@ -366,9 +402,16 @@ impl NodeView {
     /// Merges `other` into `self`. Both nodes must be the same kind.
     pub fn merge_into(&mut self, other: &mut NodeView) -> Result<(), NodeViewError> {
         match (self, other) {
-            (NodeView::Internal { page: self_page }, NodeView::Internal { page: other_page }) => {
+            (
+                NodeView::Internal {
+                    page: self_page, ..
+                },
+                NodeView::Internal {
+                    page: other_page, ..
+                },
+            ) => {
                 let other_key_count = other_page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
                     let key = other_page.get_key_at(i as usize, &mut scratch)?;
                     let child_ptr = other_page.read_child_at(i as usize + 1)?;
@@ -376,9 +419,16 @@ impl NodeView {
                 }
                 Ok(())
             }
-            (NodeView::Leaf { page: self_page }, NodeView::Leaf { page: other_page }) => {
+            (
+                NodeView::Leaf {
+                    page: self_page, ..
+                },
+                NodeView::Leaf {
+                    page: other_page, ..
+                },
+            ) => {
                 let other_key_count = other_page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
                     let (k, v) = other_page.get_kv_at(i as usize, &mut scratch)?;
                     self_page.append(k, v)?;
@@ -390,17 +440,15 @@ impl NodeView {
     }
 
     /// Prints the contents of the node for debugging.
-    pub fn view_content<KC, VC, K, V>(&self) -> Result<(), NodeViewError>
+    pub fn view_content<KC, K>(&self) -> Result<(), NodeViewError>
     where
         K: std::fmt::Debug,
-        V: std::fmt::Debug,
         KC: KeyCodec<K>,
-        VC: ValueCodec<V>,
     {
         match self {
-            NodeView::Internal { page } => {
+            NodeView::Internal { page, .. } => {
                 let key_count = page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..key_count as usize {
                     let key = page.get_key_at(i, &mut scratch)?;
                     let key = KC::decode_key(key);
@@ -409,9 +457,9 @@ impl NodeView {
                 }
                 Ok(())
             }
-            NodeView::Leaf { page } => {
+            NodeView::Leaf { page, .. } => {
                 let key_count = page.key_count();
-                let mut scratch = Vec::new();
+                let mut scratch = ScratchBuf::new();
                 for i in 0..key_count as usize {
                     let (k, v) = page.get_kv_at(i, &mut scratch)?;
                     println!("Key {}: {:?}, Value: {:?}", i, k, v);
@@ -425,8 +473,8 @@ impl NodeView {
 impl fmt::Debug for NodeView {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NodeView::Leaf { page } => page.fmt(f),
-            NodeView::Internal { page } => page.fmt(f),
+            NodeView::Leaf { page, .. } => page.fmt(f),
+            NodeView::Internal { page, .. } => page.fmt(f),
         }
     }
 }

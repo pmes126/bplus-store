@@ -364,7 +364,7 @@ fn freelist_persists_across_close_and_reopen() {
         }
 
         // Close checkpoints the freelist.
-        unsafe { db.close() };
+        unsafe { db.close() }.unwrap();
     }
 
     // The snapshot file should exist.
@@ -400,7 +400,7 @@ fn freelist_persists_across_close_and_reopen() {
             );
         }
 
-        unsafe { db.close() };
+        unsafe { db.close() }.unwrap();
     }
 }
 

@@ -61,7 +61,10 @@ impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S>
     fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, StorageError> {
         let mut buf = [0u8; PAGE_SIZE];
         self.store.read_page(page_id, &mut buf)?;
-        NoopNodeViewCodec::decode(&buf).map(|view| Ok(Some(view)))?
+        NoopNodeViewCodec::decode(&buf).map(|mut view| {
+            view.set_page_id(page_id);
+            Ok(Some(view))
+        })?
     }
 
     fn write_node_view(&self, node_view: &NodeView) -> Result<u64, StorageError> {

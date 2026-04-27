@@ -101,6 +101,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         // Write an initial empty root leaf via the node storage.
         let root_view = NodeView::Leaf {
             page: LeafPage::new(key_format),
+            page_id: None,
         };
         let root_id = self.node_storage.write_node_view(&root_view)?;
 

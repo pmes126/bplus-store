@@ -33,10 +33,9 @@ pub const MAX_COMMIT_RETRIES: usize = 10;
 
 /// Buffers a set of writes and commits them atomically via optimistic CAS.
 pub struct WriteTransaction {
-    /// Speculative metadata staged during this transaction.
-    staged_update: Option<StagedMetadata>,
     /// Committed metadata pointer captured at transaction start.
     tree_base_version: BaseVersion,
+    /// Buffered write operations, sorted by key for efficient replay during commit.
     changes: Vec<WriteOp<Vec<u8>, Vec<u8>>>,
     /// Node IDs pending reclamation after a successful commit.
     reclaimed_nodes: Vec<u64>,
@@ -52,15 +51,6 @@ impl WriteTransaction {
         P: PageStorage + Send + Sync + 'static,
     {
         Self {
-            staged_update: {
-                // No staged update initially
-                let res = tree.get_snapshot();
-                Some(StagedMetadata {
-                    root_id: res.root_id,
-                    height: res.height,
-                    size: res.size,
-                })
-            },
             tree_base_version: BaseVersion {
                 committed_ptr: tree.get_metadata_ptr(),
             },
@@ -69,13 +59,6 @@ impl WriteTransaction {
             reclaimed_nodes: Vec::new(),
         }
     }
-    /// Returns the root ID of the staged tree, or the initial root if no writes have been staged.
-    pub fn get_root_id(&self) -> u64 {
-        self.staged_update
-            .as_ref()
-            .map_or(self.initial_root_id, |res| res.root_id)
-    }
-
     /// Buffers an insert of the given key-value pair, maintaining sorted key order.
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
         let k = key.as_ref().to_vec();
@@ -163,13 +146,16 @@ impl WriteTransaction {
             let res = tree.try_commit(&self.tree_base_version, staged_update);
             if res.is_ok() {
                 // Register reclaimed (old) pages for deferred freeing at the
-                // current epoch.  Readers pinned at an earlier epoch may still
-                // be walking the old tree, so these pages must not be freed
-                // until all such readers have unpinned.
+                // current epoch, then run a second reclamation pass so they
+                // can be freed immediately (instead of waiting for the next
+                // commit).  This eliminates the one-commit reclamation lag
+                // that causes space amplification to grow during sequential
+                // writes.
                 let epoch = tree.epoch_mgr().current();
                 for id in reclaimed_nodes_local.drain(..) {
                     tree.epoch_mgr().add_reclaim_candidate(epoch, id);
                 }
+                tree.reclaim_deferred()?;
                 self.reclaimed_nodes.clear();
                 self.changes.clear();
                 return Ok(TxnStatus::Committed);
