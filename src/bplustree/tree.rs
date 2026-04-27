@@ -404,6 +404,11 @@ where
         self.inner.get(key)
     }
 
+    /// Returns `true` if the key exists, without copying the value.
+    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool, TreeError> {
+        self.inner.contains_key(key)
+    }
+
     /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
         self.inner.get_root_id()
@@ -975,6 +980,42 @@ where
         self.get_inner(key, root_id)
     }
 
+    /// Returns `true` if the key exists in the tree, without copying the value.
+    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> Result<bool, TreeError> {
+        let _guard = self.epoch_mgr.pin();
+        let root_id = self.get_root_id();
+        self.contains_key_inner(key, root_id)
+    }
+
+    /// Returns `true` if the key exists starting from `root_id`, without copying the value.
+    pub fn contains_key_inner<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        root_id: NodeId,
+    ) -> Result<bool, TreeError> {
+        let mut current_id = root_id;
+
+        loop {
+            match self.storage.read_node_view(current_id)? {
+                Some(node) => match &node {
+                    NodeView::Leaf { .. } => {
+                        return Ok(node.lower_bound(key.as_ref()).is_ok());
+                    }
+                    NodeView::Internal { .. } => {
+                        let i = match node.lower_bound(key.as_ref()) {
+                            Ok(i) => i + 1,
+                            Err(i) => i,
+                        };
+                        current_id = node.child_ptr_at(i)?;
+                    }
+                },
+                None => {
+                    return Err(TreeError::Invariant("node not found during search"));
+                }
+            }
+        }
+    }
+
     /// Searches for a key starting from `root_id` and returns its value, or `None` if not found.
     pub fn get_inner<K: AsRef<[u8]>>(
         &self,
@@ -1012,27 +1053,6 @@ where
             }
         }
     }
-
-    /*
-        // Searches for a range of keys in the B+ tree and returns an iterator over the key-value
-        // pairs.
-        //<K: AsRef<[u8]>, V: AsRef<[u8]>>
-        pub fn search_range<'a, K: AsRef<[u8]>>(
-            &'a self,
-            root_id: NodeId,
-            start: K,
-            end: K,
-        ) -> Result<Option<BPlusTreeIter<'a, S>>, TreeError> {
-            let _guard = self.storage.epoch_mgr().pin();
-            Ok(Some(BPlusTreeIter::new(
-                &self.storage,
-                root_id,
-                self.storage.epoch_mgr().clone(),
-                start,
-                end,
-            )))
-        }
-    */
 
     /// Deletes a key from the tree, returning an error if the key is not found.
     pub fn delete<K: AsRef<[u8]>>(

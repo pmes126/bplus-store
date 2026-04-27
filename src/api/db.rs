@@ -183,6 +183,12 @@ where
         }
     }
 
+    /// Returns `true` if `key` exists in the tree, without decoding the value.
+    pub fn contains_key(&self, key: &K) -> Result<bool, ApiError> {
+        let kb = key.encode();
+        Ok(self.inner.contains_key(kb)?)
+    }
+
     /// Deletes the value for `key`. Returns an error if the key is not found.
     pub fn delete(&self, key: &K) -> Result<(), ApiError> {
         let mut txn = WriteTransaction::new(self.inner.clone());
