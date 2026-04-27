@@ -1,11 +1,38 @@
 //! [ u16_le klen | k bytes ] repeated
 
+use smallvec::SmallVec;
+
 use super::{KeyBlockFormat, ScratchBuf};
 
 #[derive(Debug, Copy, Clone)]
 pub struct RawFormat;
 
 const LEN_SIZE: usize = 2; // u16_le
+
+/// Max keys that can fit in a 4KB page (minimum entry = 2-byte len + 1-byte key).
+const MAX_KEYS_PER_PAGE: usize = 512;
+
+/// Offset table: byte offset of each entry in the key block.
+/// Built once, used for O(1) random access during binary search.
+type OffsetTable = SmallVec<[u16; MAX_KEYS_PER_PAGE]>;
+
+/// Scans the key block once, recording the byte offset of each entry.
+/// Returns the populated offset table (length = entry count).
+#[inline]
+fn build_offset_table(block: &[u8]) -> OffsetTable {
+    let mut offsets = OffsetTable::new();
+    let mut off = 0usize;
+    while off + LEN_SIZE <= block.len() {
+        let len = u16::from_le_bytes([block[off], block[off + 1]]) as usize;
+        let need = LEN_SIZE + len;
+        if off + need > block.len() {
+            break;
+        }
+        offsets.push(off as u16);
+        off += need;
+    }
+    offsets
+}
 
 impl RawFormat {
     #[inline]
@@ -59,13 +86,13 @@ impl KeyBlockFormat for RawFormat {
 
     /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
     /// found with the insertion index. Bytewise comparison by default.
-    fn seek(&self, block: &[u8], needle: &[u8], scratch: &mut ScratchBuf) -> Result<usize, usize> {
-        // classic binary search over entries
+    fn seek(&self, block: &[u8], needle: &[u8], _scratch: &mut ScratchBuf) -> Result<usize, usize> {
+        let offsets = build_offset_table(block);
         let mut lo = 0usize;
-        let mut hi = count_entries(block);
+        let mut hi = offsets.len();
         while lo < hi {
-            let mid = (lo + hi) / LEN_SIZE;
-            let k = self.decode_at(block, mid, scratch);
+            let mid = (lo + hi) / 2;
+            let k = key_at_offset(block, offsets[mid] as usize);
             match k.cmp(needle) {
                 core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
@@ -76,20 +103,20 @@ impl KeyBlockFormat for RawFormat {
     }
 
     /// Seek for `needle` in the `block`, returning `Ok(idx)` if found, or `Err(insert_idx)` if not
-    /// found with the insertion index. Bytewise comparison by default.
+    /// found with the insertion index. Uses the provided comparator.
     fn seek_with_cmp(
         &self,
         block: &[u8],
         needle: &[u8],
-        scratch: &mut ScratchBuf,
+        _scratch: &mut ScratchBuf,
         cmp: fn(&[u8], &[u8]) -> core::cmp::Ordering,
     ) -> Result<usize, usize> {
-        // classic binary search over entries
+        let offsets = build_offset_table(block);
         let mut lo = 0usize;
-        let mut hi = count_entries(block);
+        let mut hi = offsets.len();
         while lo < hi {
-            let mid = (lo + hi) / LEN_SIZE;
-            let k = self.decode_at(block, mid, scratch);
+            let mid = (lo + hi) / 2;
+            let k = key_at_offset(block, offsets[mid] as usize);
             match cmp(k, needle) {
                 core::cmp::Ordering::Less => lo = mid + 1,
                 core::cmp::Ordering::Greater => hi = mid,
@@ -214,16 +241,10 @@ impl KeyBlockFormat for RawFormat {
 }
 
 // helpers
-fn count_entries(mut p: &[u8]) -> usize {
-    let mut n = 0;
-    while p.len() >= LEN_SIZE {
-        let len = u16::from_le_bytes([p[0], p[1]]) as usize;
-        let need = LEN_SIZE + len;
-        if p.len() < need {
-            break;
-        }
-        n += 1;
-        p = &p[need..];
-    }
-    n
+
+/// Decode the key bytes at a known byte offset (no scanning).
+#[inline]
+fn key_at_offset(block: &[u8], off: usize) -> &[u8] {
+    let len = u16::from_le_bytes([block[off], block[off + 1]]) as usize;
+    &block[off + LEN_SIZE..off + LEN_SIZE + len]
 }
