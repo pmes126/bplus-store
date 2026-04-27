@@ -18,16 +18,6 @@ pub const FREELIST_SNAPSHOT_VERSION: u16 = 1;
 /// Size in bytes of a [`FreeListSnaphotHeader`].
 pub const FREELIST_SNAPSHOT_HEADER_SIZE: usize = std::mem::size_of::<FreeListSnaphotHeader>();
 
-/// Reads the superblock from `pages.data` at the given byte offset.
-pub fn read_superblock(path: &std::path::Path, offset: u64) -> Result<Superblock, std::io::Error> {
-    let page_path = path.join("pages.data");
-    let file = std::fs::OpenOptions::new().read(true).open(page_path)?;
-    let mut buf = [0u8; size_of::<Superblock>()];
-    file.read_exact_at(&mut buf, offset)?;
-    let sb = Superblock::from_bytes(&buf)?;
-    Ok(*sb)
-}
-
 /// Writes the current freelist to a snapshot file.
 ///
 /// TODO: implement as a linked list of pages — after a long operation the freed pages may not

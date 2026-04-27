@@ -102,6 +102,45 @@ impl Db {
         }
     }
 
+    /// Renames an existing tree from `old_name` to `new_name`.
+    ///
+    /// The change is recorded durably in the manifest log. After this call,
+    /// [`open_tree`](Self::open_tree) with `old_name` will fail and `new_name`
+    /// must be used instead.
+    pub fn rename_tree(&self, old_name: &str, new_name: &str) -> Result<(), ApiError> {
+        let meta = self
+            .database
+            .describe_tree(old_name)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        self.database
+            .rename_tree(&meta.id, new_name)
+            .map_err(|e| ApiError::Internal(e.to_string()))
+    }
+
+    /// Removes a tree from the catalog.
+    ///
+    /// The deletion is recorded durably in the manifest log. After this call,
+    /// [`open_tree`](Self::open_tree) with `name` will fail.
+    pub fn drop_tree(&self, name: &str) -> Result<(), ApiError> {
+        let meta = self
+            .database
+            .describe_tree(name)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        self.database
+            .drop_tree(&meta.id)
+            .map_err(|e| ApiError::Internal(e.to_string()))
+    }
+
+    /// Returns the names of all trees currently in the catalog.
+    pub fn list_trees(&self) -> Vec<String> {
+        self.database.list_trees()
+    }
+
+    /// Returns the on-disk format version read from the superblock.
+    pub fn format_version(&self) -> u32 {
+        self.database.format_version()
+    }
+
     /// Persists the freelist snapshot and reclaims the leaked `Database`
     /// allocation, returning any I/O error from the checkpoint step.
     ///

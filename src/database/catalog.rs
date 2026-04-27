@@ -97,13 +97,13 @@ impl Catalog {
                         name: name.clone(),
                         key_encoding,
                         keyfmt_id: key_format,
+                        format_version: encoding_version,
                         meta_a,
                         meta_b,
-                        format_version: encoding_version,
-                        order,
                         root_id,
                         height,
                         size,
+                        order,
                         last_seq: seq,
                     },
                 );
@@ -124,9 +124,6 @@ impl Catalog {
                     self.by_name.remove(&m.name);
                     self.next_seq = self.next_seq.max(seq + 1);
                 }
-            }
-            Checkpoint { seq } => {
-                self.next_seq = self.next_seq.max(seq + 1);
             }
         }
     }

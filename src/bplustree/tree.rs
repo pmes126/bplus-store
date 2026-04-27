@@ -270,15 +270,6 @@ impl TransactionTracker {
         }
     }
 
-    /// Returns `true` if `node_id` was allocated during this transaction.
-    pub fn is_dirty(&self, node_id: NodeId) -> bool {
-        self.dirty_pages.contains(&node_id)
-    }
-
-    /// Marks `node_id` as dirty (allocated in this transaction).
-    pub fn mark_dirty(&mut self, node_id: NodeId) {
-        self.dirty_pages.insert(node_id);
-    }
 }
 
 impl TxnTracker for TransactionTracker {
@@ -451,7 +442,9 @@ where
         }
     }
 
-    /// Searches for a key starting from the given root node ID.
+    // --- Test-only convenience methods (not used by the library itself) ---
+
+    #[cfg(test)]
     pub fn search_with_root<K: AsRef<[u8]>>(
         &self,
         key: &K,
@@ -460,7 +453,7 @@ where
         self.inner.get_inner(key, root_id)
     }
 
-    /// Inserts a key-value pair starting from the given root node ID.
+    #[cfg(test)]
     pub fn put_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -471,7 +464,7 @@ where
         self.put_with_root_tracked(key, value, root_id, &mut collector)
     }
 
-    /// Inserts a key-value pair using the current committed root.
+    #[cfg(test)]
     pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -482,7 +475,7 @@ where
         self.put_with_root(key, value, root_id)
     }
 
-    /// Deletes a key starting from the given root node ID.
+    #[cfg(test)]
     pub fn delete_with_root<K: AsRef<[u8]>>(
         &self,
         key: &K,
@@ -492,7 +485,7 @@ where
         self.delete_with_root_tracked(key, root_id, &mut collector)
     }
 
-    /// Alias for [`put_with_root`] using the conventional `insert` vocabulary.
+    #[cfg(test)]
     pub fn insert_with_root<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -502,7 +495,7 @@ where
         self.put_with_root(key, value, root_id)
     }
 
-    /// Alias for [`put`] using the conventional `insert` vocabulary.
+    #[cfg(test)]
     pub fn insert<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -511,7 +504,7 @@ where
         self.put(key, value)
     }
 
-    /// Returns a reference to the committed metadata.
+    #[cfg(test)]
     pub fn get_metadata(&self) -> &Metadata {
         unsafe { &*self.inner.committed.load(Ordering::Acquire) }
     }
@@ -653,7 +646,7 @@ where
         }
     }
 
-    /// Inserts a key-value pair using the current committed root.
+    #[cfg(test)]
     pub fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(
         &self,
         key: K,
@@ -1054,7 +1047,7 @@ where
         }
     }
 
-    /// Deletes a key from the tree, returning an error if the key is not found.
+    #[cfg(test)]
     pub fn delete<K: AsRef<[u8]>>(
         &mut self,
         key: K,
@@ -1494,29 +1487,6 @@ where
         }
     }
 
-    /// Registers a node for deferred reclamation after the current epoch retires.
-    pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
-        let epoch = self
-            .epoch_mgr
-            .get_current_thread_epoch()
-            .ok_or(TreeError::Invariant(
-                "failed to get epoch for current thread",
-            ))?;
-        self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
-        Ok(())
-    }
-
-    /// Returns a snapshot of the current committed tree state.
-    pub fn get_snapshot(&self) -> MetadataSnapshot {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-        MetadataSnapshot {
-            root_id: meta.root_node_id,
-            height: meta.height,
-            size: meta.size,
-        }
-    }
-
     /// Commits new metadata in a single-threaded context; intended for testing only.
     ///
     /// This method mutates through a shared pointer without CAS and is
@@ -1685,6 +1655,17 @@ where
         }
     }
 
+    /// Returns a snapshot of the current committed tree state.
+    pub fn get_snapshot(&self) -> MetadataSnapshot {
+        let ptr = self.committed.load(Ordering::Acquire);
+        let meta = unsafe { &*ptr };
+        MetadataSnapshot {
+            root_id: meta.root_node_id,
+            height: meta.height,
+            size: meta.size,
+        }
+    }
+
     /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
         let ptr = self.committed.load(Ordering::Acquire);
@@ -1711,6 +1692,18 @@ where
         let ptr = self.committed.load(Ordering::Acquire);
         let meta = unsafe { &*ptr };
         meta.order
+    }
+
+    /// Registers a node for deferred reclamation after the current epoch retires.
+    pub fn reclaim_node(&self, node_id: NodeId) -> Result<(), TreeError> {
+        let epoch = self
+            .epoch_mgr
+            .get_current_thread_epoch()
+            .ok_or(TreeError::Invariant(
+                "failed to get epoch for current thread",
+            ))?;
+        self.epoch_mgr.add_reclaim_candidate(epoch, node_id);
+        Ok(())
     }
 
     #[cfg(any(test, feature = "testing"))]

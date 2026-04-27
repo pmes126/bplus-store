@@ -165,20 +165,20 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
             .ok_or_else(|| DatabaseError::NotFound("tree not found after create".into()))
     }
 
-    /// Looks up a tree by name and returns its catalog metadata.
-    pub fn describe_tree(&self, name: &str) -> Result<TreeMeta, DatabaseError> {
-        let cat = self.catalog.read().unwrap();
-        cat.get_by_name(name)
-            .cloned()
-            .ok_or_else(|| DatabaseError::NotFound(format!("tree {name:?} not found")))
-    }
-
     /// Looks up a tree by ID and returns its catalog metadata.
     pub fn open_tree(&self, id: &TreeId) -> Result<TreeMeta, DatabaseError> {
         let cat = self.catalog.read().unwrap();
         cat.get_by_id(id)
             .cloned()
             .ok_or_else(|| DatabaseError::NotFound("tree not found".into()))
+    }
+
+    /// Looks up a tree by name and returns its catalog metadata.
+    pub fn describe_tree(&self, name: &str) -> Result<TreeMeta, DatabaseError> {
+        let cat = self.catalog.read().unwrap();
+        cat.get_by_name(name)
+            .cloned()
+            .ok_or_else(|| DatabaseError::NotFound(format!("tree {name:?} not found")))
     }
 
     /// Builds a [`SharedBPlusTree`] backed by this database's storage.
@@ -210,11 +210,6 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         Ok(SharedBPlusTree::new(bpt))
     }
 
-    /// Returns the on-disk format version read from the superblock.
-    pub fn format_version(&self) -> u32 {
-        self.format_version
-    }
-
     /// Writes the current freelist and next-page-id to a snapshot file.
     ///
     /// Called during graceful shutdown so that freed pages are restored on
@@ -225,6 +220,11 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         let next_pid = self.meta_storage.as_ref().get_next_page_id();
         write_freepages_snapshot(&freelist_path, FREELIST_SNAPSHOT_VERSION, next_pid, &freed)?;
         Ok(())
+    }
+
+    /// Returns the on-disk format version read from the superblock.
+    pub fn format_version(&self) -> u32 {
+        self.format_version
     }
 
     // -----------------------------------------------------------------
@@ -273,6 +273,12 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         let mut cat = self.catalog.write().unwrap();
         cat.replay_record(&ManifestRec::DeleteTree { seq, id: *id });
         Ok(())
+    }
+
+    /// Returns the names of all trees currently in the catalog.
+    pub fn list_trees(&self) -> Vec<String> {
+        let cat = self.catalog.read().unwrap();
+        cat.by_name.keys().cloned().collect()
     }
 
     // -----------------------------------------------------------------
@@ -463,6 +469,5 @@ fn seq_of(rec: &ManifestRec) -> u64 {
         ManifestRec::CreateTree { seq, .. } => *seq,
         ManifestRec::RenameTree { seq, .. } => *seq,
         ManifestRec::DeleteTree { seq, .. } => *seq,
-        ManifestRec::Checkpoint { seq } => *seq,
     }
 }
