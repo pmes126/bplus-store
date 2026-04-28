@@ -1,7 +1,7 @@
 //! Typed embedded API example: `u64` keys and `String` values, with a batched
 //! write transaction.
 
-use bplus_tree::api::Db;
+use bplus_store::api::Db;
 
 fn main() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;

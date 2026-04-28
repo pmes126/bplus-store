@@ -1,5 +1,5 @@
 [package]
-name = "bplus_tree"
+name = "bplus_store"
 version = "0.1.0"
 edition = "2024"
 authors = ["Paris Mesidis <pmesidis@gmail.com>"]
@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["bplus-tree", "b+tree", "datastructures", "storage", "database"]
 categories = ["data-structures", "algorithms"]
 homepage = "https://github.com/pmes126/bplus-tree"
-documentation = "https://docs.rs/bplus_tree"
+documentation = "https://docs.rs/bplus_store"
 
 [features]
 testing = ["dep:fail"]   # testing feature pulls in fail
@@ -33,7 +33,7 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 
-[dev-dependencies.bplus_tree]
+[dev-dependencies.bplus_store]
 path = "."
 features = ["testing", "failpoints" ]
 
@@ -46,7 +46,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 [lib]
-name = "bplus_tree"
+name = "bplus_store"
 path = "src/lib.rs"
 
 [[bench]]
