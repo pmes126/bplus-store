@@ -364,7 +364,7 @@ fn freelist_persists_across_close_and_reopen() {
         }
 
         // Close checkpoints the freelist.
-        unsafe { db.close() }.unwrap();
+        db.close().unwrap();
     }
 
     // The snapshot file should exist.
@@ -400,7 +400,7 @@ fn freelist_persists_across_close_and_reopen() {
             );
         }
 
-        unsafe { db.close() }.unwrap();
+        db.close().unwrap();
     }
 }
 
@@ -640,7 +640,7 @@ fn rename_tree_persists_across_reopen() {
             .put(&1, &"one".to_string())
             .unwrap();
         db.rename_tree("alpha", "beta").unwrap();
-        unsafe { db.close() }.unwrap();
+        db.close().unwrap();
     }
 
     {
@@ -711,7 +711,7 @@ fn drop_tree_persists_across_reopen() {
         let db = Db::open(dir.path()).unwrap();
         db.create_tree::<u64, String>("temp", 64).unwrap();
         db.drop_tree("temp").unwrap();
-        unsafe { db.close() }.unwrap();
+        db.close().unwrap();
     }
 
     {

@@ -6,6 +6,7 @@
 
 use std::marker::PhantomData;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::api::ApiError;
 use crate::bplustree::iterator::BPlusTreeIter;
@@ -18,21 +19,15 @@ use crate::keyfmt::raw::RawFormat;
 use crate::storage::file_page_storage::FilePageStorage;
 use crate::storage::paged_node_storage::PagedNodeStorage;
 
-type InnerTree = SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>;
+type InnerTree = SharedBPlusTree<PagedNodeStorage<FilePageStorage>, FilePageStorage>;
 
 /// Embedded database handle.
 ///
-/// The inner `Database` is intentionally leaked (`Box::leak`) so that trees
-/// can hold `&'static` references to storage. Call [`Db::close`] to reclaim
-/// the allocation when the database is no longer needed.
+/// Storage is shared via `Arc`, so [`Tree`] handles derived from this `Db` are
+/// independently owned and can be freely sent across threads.
 pub struct Db {
-    database: &'static Database<FilePageStorage>,
+    database: Arc<Database<FilePageStorage>>,
 }
-
-// SAFETY: Database<FilePageStorage> is Send+Sync (FilePageStorage uses Arc<File> + atomics).
-// The &'static ref is just a leaked Box, safe to share.
-unsafe impl Send for Db {}
-unsafe impl Sync for Db {}
 
 impl Db {
     /// Opens (or creates) the database rooted at `dir`.
@@ -42,8 +37,9 @@ impl Db {
     pub fn open<P: AsRef<Path>>(dir: P) -> Result<Self, ApiError> {
         let db = database::open::<FilePageStorage, _>(dir)
             .map_err(|e| ApiError::Internal(e.to_string()))?;
-        let database: &'static Database<FilePageStorage> = Box::leak(Box::new(db));
-        Ok(Self { database })
+        Ok(Self {
+            database: Arc::new(db),
+        })
     }
 
     /// Creates a new named tree and returns a typed handle.
@@ -141,28 +137,16 @@ impl Db {
         self.database.format_version()
     }
 
-    /// Persists the freelist snapshot and reclaims the leaked `Database`
-    /// allocation, returning any I/O error from the checkpoint step.
+    /// Persists the freelist snapshot, returning any I/O error from the
+    /// checkpoint step.
     ///
-    /// Prefer this over simply dropping the `Db` when you need to verify
-    /// that the freelist was persisted successfully.
-    ///
-    /// # Safety
-    ///
-    /// All [`Tree`], [`WriteTxn`], and [`RangeIter`] handles derived from
-    /// this `Db` **must** be dropped before calling `close`. Using a handle
-    /// after the `Db` is closed is undefined behaviour.
-    pub unsafe fn close(self) -> Result<(), ApiError> {
-        let result = self
-            .database
+    /// After this call the `Db` is consumed. The underlying `Database` is
+    /// dropped when the last `Arc` reference (including any live [`Tree`]
+    /// handles) goes away.
+    pub fn close(self) -> Result<(), ApiError> {
+        self.database
             .checkpoint_freelist()
-            .map_err(|e| ApiError::Internal(e.to_string()));
-        let ptr =
-            self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
-        // Prevent Drop from running (we're handling cleanup here).
-        std::mem::forget(self);
-        drop(unsafe { Box::from_raw(ptr) });
-        result
+            .map_err(|e| ApiError::Internal(e.to_string()))
     }
 }
 
@@ -173,13 +157,6 @@ impl Drop for Db {
         if let Err(e) = self.database.checkpoint_freelist() {
             eprintln!("warning: failed to checkpoint freelist on drop: {e}");
         }
-        // SAFETY: The pointer was created via `Box::leak` in `Db::open` and is
-        // guaranteed to be valid and uniquely owned by this `Db`. The caller
-        // must ensure all `Tree` / `WriteTxn` / `RangeIter` handles have been
-        // dropped before the `Db` itself is dropped.
-        let ptr =
-            self.database as *const Database<FilePageStorage> as *mut Database<FilePageStorage>;
-        unsafe { drop(Box::from_raw(ptr)) };
     }
 }
 

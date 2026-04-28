@@ -25,7 +25,6 @@ fn populate_and_commit(
     order: u64,
     n: u64,
 ) -> crate::bplustree::tree::SharedBPlusTree<
-    'static,
     crate::storage::paged_node_storage::PagedNodeStorage<
         crate::storage::file_page_storage::FilePageStorage,
     >,

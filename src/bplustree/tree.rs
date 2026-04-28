@@ -194,14 +194,14 @@ unsafe impl Send for RetiredPtr {}
 /// - **`txn_id`** (`AtomicU64`): only used by the single-threaded debug `commit()`
 ///   path.  The production path (`try_commit`) reads the transaction ID from the
 ///   `Metadata` struct behind the atomic pointer instead.
-pub struct BPlusTree<'s, S, P>
+pub struct BPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
     id: TreeId,
-    storage: &'s S,
-    page_storage: &'s P,
+    storage: Arc<S>,
+    page_storage: Arc<P>,
     epoch_mgr: Arc<EpochManager>,
     #[allow(dead_code)]
     key_encoding: KeyEncodingId,
@@ -220,7 +220,7 @@ where
     retired_meta: Mutex<Vec<RetiredPtr>>,
 }
 
-impl<S, P> Drop for BPlusTree<'_, S, P>
+impl<S, P> Drop for BPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
@@ -314,15 +314,15 @@ pub struct WriteResult {
 }
 
 /// A cheaply clonable, shared handle to a [`BPlusTree`].
-pub struct SharedBPlusTree<'s, S, P>
+pub struct SharedBPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
-    inner: Arc<BPlusTree<'s, S, P>>,
+    inner: Arc<BPlusTree<S, P>>,
 }
 
-impl<'s, S, P> Clone for SharedBPlusTree<'s, S, P>
+impl<S, P> Clone for SharedBPlusTree<S, P>
 where
     S: NodeStorage + HasEpoch + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
@@ -334,13 +334,13 @@ where
     }
 }
 
-impl<'s, S, P> SharedBPlusTree<'s, S, P>
+impl<S, P> SharedBPlusTree<S, P>
 where
     S: NodeStorage + HasEpoch + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
     /// Creates a new shared handle by wrapping `tree` in an [`Arc`].
-    pub fn new(tree: BPlusTree<'s, S, P>) -> Self {
+    pub fn new(tree: BPlusTree<S, P>) -> Self {
         Self {
             inner: Arc::new(tree),
         }
@@ -518,7 +518,7 @@ where
     ) -> Result<super::iterator::BPlusTreeIter<'_, S>, TreeError> {
         let root_id = self.inner.get_root_id();
         super::iterator::BPlusTreeIter::new(
-            self.inner.storage,
+            &self.inner.storage,
             root_id,
             &self.inner.epoch_mgr,
             start,
@@ -543,7 +543,7 @@ where
     }
 }
 
-impl<'s, S, P> BPlusTree<'s, S, P>
+impl<S, P> BPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
@@ -554,15 +554,15 @@ where
     /// reopening a previously persisted tree after a crash or restart.
     #[allow(clippy::too_many_arguments)]
     pub fn open(
-        storage: &'s S,
-        page_storage: &'s P,
+        storage: Arc<S>,
+        page_storage: Arc<P>,
         meta: Metadata,
         meta_a: u64,
         meta_b: u64,
         key_format: KeyFormat,
         key_encoding: KeyEncodingId,
         epoch_mgr: Arc<EpochManager>,
-    ) -> BPlusTree<'s, S, P> {
+    ) -> BPlusTree<S, P> {
         let id = meta.id;
         let order = meta.order;
         let md_ptr = Box::into_raw(Box::new(meta));
@@ -1460,11 +1460,11 @@ where
     }
 
     /// Merges `right_node` into `left_node` and returns the combined node.
-    pub fn merge_nodes_view(
-        &'s self,
-        left_node: &'s mut NodeView,
-        right_node: &'s mut NodeView,
-    ) -> Result<&'s NodeView, TreeError> {
+    pub fn merge_nodes_view<'a>(
+        &'a self,
+        left_node: &'a mut NodeView,
+        right_node: &'a mut NodeView,
+    ) -> Result<&'a NodeView, TreeError> {
         match (&mut *left_node, &mut *right_node) {
             (NodeView::Leaf { .. }, NodeView::Leaf { .. }) => {
                 if left_node.keys_len() + right_node.keys_len() > self.max_keys {
@@ -1503,7 +1503,7 @@ where
         };
 
         MetadataManager::commit_metadata(
-            self.page_storage,
+            &*self.page_storage,
             target_slot,
             new_txn_id,
             self.id,
@@ -1586,7 +1586,7 @@ where
                 };
 
                 let res = MetadataManager::commit_metadata_with_object(
-                    self.page_storage,
+                    &*self.page_storage,
                     slot,
                     &metadata,
                 );

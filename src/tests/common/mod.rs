@@ -39,35 +39,31 @@ const TEST_TREE_ID: u64 = 1;
 
 /// Holds a [`BPlusTree`] together with a reference to its underlying storage
 /// so tests can inspect storage state (flush counts, freed pages, commits).
-///
-/// Both `tree` and `storage` point into the same leaked allocation.
 pub struct TestHarness<S, P>
 where
     S: NodeStorage + HasEpoch + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
 {
-    /// Arc-wrapped tree backed by `'static` storage references.
-    pub tree: Arc<BPlusTree<'static, S, P>>,
-    /// Reference to the node-storage instance used by `tree`.
-    pub storage: &'static S,
+    /// Arc-wrapped tree backed by shared storage.
+    pub tree: Arc<BPlusTree<S, P>>,
+    /// Shared reference to the node-storage instance used by `tree`.
+    pub storage: Arc<S>,
 }
 
 /// Creates an in-memory [`TestHarness`] using `storage` for both node and page I/O.
 ///
 /// `S` must implement both [`NodeStorage`] and [`PageStorage`] (e.g. [`TestStorage`]).
-/// The storage is leaked onto the heap to satisfy the `'static` lifetime required by
-/// [`BPlusTree`].  This is intentional: tests run in short-lived processes.
 #[cfg(any(test, feature = "testing"))]
 pub fn test_tree<S>(storage: S, order: u64) -> TestHarness<S, S>
 where
     S: NodeStorage + PageStorage + HasEpoch + Send + Sync + 'static,
 {
-    let node_ref: &'static S = Box::leak(Box::new(storage));
-    let epoch_mgr = node_ref.epoch_mgr().clone();
+    let storage = Arc::new(storage);
+    let epoch_mgr = storage.epoch_mgr().clone();
     let meta = fake_metadata(order);
     let tree = BPlusTree::open(
-        node_ref,
-        node_ref,
+        Arc::clone(&storage),
+        Arc::clone(&storage),
         meta,
         TEST_META_A,
         TEST_META_B,
@@ -77,7 +73,7 @@ where
     );
     TestHarness {
         tree: Arc::new(tree),
-        storage: node_ref,
+        storage,
     }
 }
 
@@ -93,11 +89,11 @@ pub fn test_tree_with_epoch<S>(
 where
     S: NodeStorage + PageStorage + HasEpoch + Send + Sync + 'static,
 {
-    let node_ref: &'static S = Box::leak(Box::new(storage));
+    let storage = Arc::new(storage);
     let meta = fake_metadata(order);
     let tree = BPlusTree::open(
-        node_ref,
-        node_ref,
+        Arc::clone(&storage),
+        Arc::clone(&storage),
         meta,
         TEST_META_A,
         TEST_META_B,
@@ -107,13 +103,13 @@ where
     );
     TestHarness {
         tree: Arc::new(tree),
-        storage: node_ref,
+        storage,
     }
 }
 
 /// Creates a [`WriteTransaction`] rooted at the current committed state of `tree`.
 #[cfg(any(test, feature = "testing"))]
-pub fn test_trx<'s, S, P>(tree: SharedBPlusTree<'s, S, P>) -> WriteTransaction
+pub fn test_trx<S, P>(tree: SharedBPlusTree<S, P>) -> WriteTransaction
 where
     S: NodeStorage + HasEpoch + Send + Sync + 'static,
     P: PageStorage + Send + Sync + 'static,
@@ -133,13 +129,13 @@ where
 pub fn make_tree(
     dir: &TempDir,
     order: u64,
-) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
+) -> anyhow::Result<SharedBPlusTree<PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
     let data_path = dir.path().join("data.db");
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
 
-    let node_storage = PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?;
-    let page_storage = FilePageStorage::open(&meta_path)?;
+    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?);
+    let page_storage = Arc::new(FilePageStorage::open(&meta_path)?);
 
     // Write an initial blank root leaf node.
     let key_format = KeyFormat::Raw(RawFormat);
@@ -161,17 +157,13 @@ pub fn make_tree(
         size: 0,
         checksum: 0,
     };
-    MetadataManager::commit_metadata_with_object(&page_storage, TEST_META_A, &init_meta)?;
-    MetadataManager::commit_metadata_with_object(&page_storage, TEST_META_B, &init_meta)?;
+    MetadataManager::commit_metadata_with_object(&*page_storage, TEST_META_A, &init_meta)?;
+    MetadataManager::commit_metadata_with_object(&*page_storage, TEST_META_B, &init_meta)?;
 
-    // Leak both storages to obtain 'static references.
-    let node_ref: &'static PagedNodeStorage<FilePageStorage> = Box::leak(Box::new(node_storage));
-    let page_ref: &'static FilePageStorage = Box::leak(Box::new(page_storage));
-
-    let epoch_mgr = node_ref.epoch_mgr().clone();
+    let epoch_mgr = node_storage.epoch_mgr().clone();
     let tree = BPlusTree::open(
-        node_ref,
-        page_ref,
+        node_storage,
+        page_storage,
         init_meta,
         TEST_META_A,
         TEST_META_B,
@@ -188,24 +180,21 @@ pub fn make_tree(
 #[cfg(any(test, feature = "testing"))]
 pub fn load_tree(
     dir: &TempDir,
-) -> anyhow::Result<SharedBPlusTree<'static, PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
+) -> anyhow::Result<SharedBPlusTree<PagedNodeStorage<FilePageStorage>, FilePageStorage>> {
     let data_path = dir.path().join("data.db");
     let manifest_path = dir.path().join("data.manifest");
     let meta_path = dir.path().join("meta.db");
 
-    let node_storage = PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?;
-    let page_storage = FilePageStorage::open(&meta_path)?;
+    let node_storage = Arc::new(PagedNodeStorage::<FilePageStorage>::new(&data_path, &manifest_path)?);
+    let page_storage = Arc::new(FilePageStorage::open(&meta_path)?);
 
     // Recover committed state from the double-buffered metadata slots.
-    let meta = MetadataManager::read_active_meta(&page_storage, TEST_META_A, TEST_META_B)?;
+    let meta = MetadataManager::read_active_meta(&*page_storage, TEST_META_A, TEST_META_B)?;
 
-    let node_ref: &'static PagedNodeStorage<FilePageStorage> = Box::leak(Box::new(node_storage));
-    let page_ref: &'static FilePageStorage = Box::leak(Box::new(page_storage));
-
-    let epoch_mgr = node_ref.epoch_mgr().clone();
+    let epoch_mgr = node_storage.epoch_mgr().clone();
     let tree = BPlusTree::open(
-        node_ref,
-        page_ref,
+        node_storage,
+        page_storage,
         meta,
         TEST_META_A,
         TEST_META_B,

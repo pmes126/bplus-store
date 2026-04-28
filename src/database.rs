@@ -64,7 +64,7 @@ const SUPERBLOCK_PAGE: u64 = 0;
 /// (pluggable node encoding) and `meta_storage` (raw metadata / superblock I/O),
 /// keeping page-allocation counters in sync.
 pub struct Database<S: PageStorage + Send + Sync + 'static> {
-    node_storage: PagedNodeStorage<S>,
+    node_storage: Arc<PagedNodeStorage<S>>,
     meta_storage: Arc<S>,
     epoch_mgr: Arc<EpochManager>,
     manifest: Mutex<ManifestWriter>,
@@ -183,12 +183,12 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
 
     /// Builds a [`SharedBPlusTree`] backed by this database's storage.
     ///
-    /// The returned tree borrows from `&self`; when `self` is `&'static`
-    /// (i.e. leaked), the tree is `'static` too.
-    pub fn bind_tree<'s>(
-        &'s self,
+    /// Storage is shared via `Arc`, so the returned tree is independently owned
+    /// and can outlive the borrow on `&self`.
+    pub fn bind_tree(
+        &self,
         tree_meta: &TreeMeta,
-    ) -> Result<SharedBPlusTree<'s, PagedNodeStorage<S>, S>, DatabaseError> {
+    ) -> Result<SharedBPlusTree<PagedNodeStorage<S>, S>, DatabaseError> {
         let meta = MetadataManager::read_active_meta(
             self.meta_storage.as_ref(),
             tree_meta.meta_a,
@@ -197,8 +197,8 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
 
         let bpt = BPlusTree::open(
-            &self.node_storage,
-            self.meta_storage.as_ref(),
+            Arc::clone(&self.node_storage),
+            Arc::clone(&self.meta_storage),
             meta,
             tree_meta.meta_a,
             tree_meta.meta_b,
@@ -394,7 +394,7 @@ where
 
     let storage = Arc::new(S::open(&data_path)?);
     let epoch_mgr = Arc::new(EpochManager::new());
-    let node_storage = PagedNodeStorage::from_parts(Arc::clone(&storage), Arc::clone(&epoch_mgr));
+    let node_storage = Arc::new(PagedNodeStorage::from_parts(Arc::clone(&storage), Arc::clone(&epoch_mgr)));
 
     let format_version = if is_fresh {
         write_superblock(storage.as_ref())?;
