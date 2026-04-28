@@ -700,10 +700,7 @@ fn recreate_after_drop() {
     db.drop_tree("ephemeral").unwrap();
 
     let tree2 = db.create_tree::<u64, String>("ephemeral", 64).unwrap();
-    assert!(
-        tree2.is_empty(),
-        "recreated tree should start empty"
-    );
+    assert!(tree2.is_empty(), "recreated tree should start empty");
 }
 
 #[test]
