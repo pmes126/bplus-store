@@ -394,7 +394,11 @@ where
 
     let storage = Arc::new(S::open(&data_path)?);
     let epoch_mgr = Arc::new(EpochManager::new());
-    let node_storage = Arc::new(PagedNodeStorage::from_parts(Arc::clone(&storage), Arc::clone(&epoch_mgr)));
+    let node_storage = Arc::new(PagedNodeStorage::from_parts(
+        Arc::clone(&storage),
+        Arc::clone(&epoch_mgr),
+    ));
+
 
     let format_version = if is_fresh {
         write_superblock(storage.as_ref())?;
