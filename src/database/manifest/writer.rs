@@ -61,6 +61,5 @@ fn set_seq(rec: &mut ManifestRec, seq: u64) {
         ManifestRec::CreateTree { seq: s, .. } => *s = seq,
         ManifestRec::RenameTree { seq: s, .. } => *s = seq,
         ManifestRec::DeleteTree { seq: s, .. } => *s = seq,
-        ManifestRec::Checkpoint { seq: s } => *s = seq,
     }
 }

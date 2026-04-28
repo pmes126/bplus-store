@@ -1,9 +1,7 @@
 //! B+ Tree library crate
 #![allow(elided_lifetimes_in_paths)]
 
-#[allow(dead_code)]
 pub mod api;
-#[allow(dead_code)]
 pub mod codec;
 
 #[allow(dead_code)]

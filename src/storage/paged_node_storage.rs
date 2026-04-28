@@ -55,6 +55,7 @@ impl<S: PageStorage + Send + Sync + 'static> PagedNodeStorage<S> {
     /// Use this when the caller already owns the storage and epoch manager
     /// (e.g. [`Database`][crate::database::Database]) and wants to provide a
     /// pluggable [`NodeStorage`] over the same page file.
+    /// Wraps a shared [`PageStorage`] with a shared epoch manager.
     pub fn from_parts(store: Arc<S>, epoch_mgr: Arc<EpochManager>) -> Self {
         Self {
             store,

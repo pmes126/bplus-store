@@ -600,3 +600,179 @@ fn contains_key_with_many_entries() {
         assert!(!tree.contains_key(&i).unwrap(), "key {i} should not exist");
     }
 }
+
+// ---------------------------------------------------------------------------
+// rename_tree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rename_tree_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let tree = db.create_tree::<u64, String>("old_name", 64).unwrap();
+    tree.put(&1, &"val".to_string()).unwrap();
+
+    db.rename_tree("old_name", "new_name").unwrap();
+
+    // Old name is gone.
+    assert!(db.open_tree::<u64, String>("old_name").is_err());
+
+    // New name works and data is intact.
+    let reopened = db.open_tree::<u64, String>("new_name").unwrap();
+    assert_eq!(reopened.get(&1).unwrap().as_deref(), Some("val"));
+}
+
+#[test]
+fn rename_tree_missing_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    assert!(db.rename_tree("nonexistent", "whatever").is_err());
+}
+
+#[test]
+fn rename_tree_persists_across_reopen() {
+    let dir = TempDir::new().unwrap();
+
+    {
+        let db = Db::open(dir.path()).unwrap();
+        db.create_tree::<u64, String>("alpha", 64)
+            .unwrap()
+            .put(&1, &"one".to_string())
+            .unwrap();
+        db.rename_tree("alpha", "beta").unwrap();
+        unsafe { db.close() }.unwrap();
+    }
+
+    {
+        let db = Db::open(dir.path()).unwrap();
+        assert!(db.open_tree::<u64, String>("alpha").is_err());
+        let tree = db.open_tree::<u64, String>("beta").unwrap();
+        assert_eq!(tree.get(&1).unwrap().as_deref(), Some("one"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// drop_tree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn drop_tree_removes_from_catalog() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    db.create_tree::<u64, String>("doomed", 64).unwrap();
+
+    db.drop_tree("doomed").unwrap();
+    assert!(
+        db.open_tree::<u64, String>("doomed").is_err(),
+        "dropped tree should not be openable"
+    );
+}
+
+#[test]
+fn drop_tree_missing_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    assert!(db.drop_tree("nonexistent").is_err());
+}
+
+#[test]
+fn drop_tree_does_not_affect_other_trees() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let keep = db.create_tree::<u64, String>("keep", 64).unwrap();
+    db.create_tree::<u64, String>("remove", 64).unwrap();
+
+    keep.put(&1, &"safe".to_string()).unwrap();
+    db.drop_tree("remove").unwrap();
+
+    assert_eq!(keep.get(&1).unwrap().as_deref(), Some("safe"));
+}
+
+#[test]
+fn recreate_after_drop() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+
+    let tree = db.create_tree::<u64, String>("ephemeral", 64).unwrap();
+    tree.put(&1, &"first".to_string()).unwrap();
+    drop(tree);
+
+    db.drop_tree("ephemeral").unwrap();
+
+    let tree2 = db.create_tree::<u64, String>("ephemeral", 64).unwrap();
+    assert!(
+        tree2.is_empty(),
+        "recreated tree should start empty"
+    );
+}
+
+#[test]
+fn drop_tree_persists_across_reopen() {
+    let dir = TempDir::new().unwrap();
+
+    {
+        let db = Db::open(dir.path()).unwrap();
+        db.create_tree::<u64, String>("temp", 64).unwrap();
+        db.drop_tree("temp").unwrap();
+        unsafe { db.close() }.unwrap();
+    }
+
+    {
+        let db = Db::open(dir.path()).unwrap();
+        assert!(
+            db.open_tree::<u64, String>("temp").is_err(),
+            "dropped tree should not survive reopen"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_trees
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_trees_empty_database() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    assert!(db.list_trees().is_empty());
+}
+
+#[test]
+fn list_trees_returns_created_trees() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    db.create_tree::<u64, String>("aaa", 64).unwrap();
+    db.create_tree::<u64, String>("bbb", 64).unwrap();
+    db.create_tree::<u64, String>("ccc", 64).unwrap();
+
+    let mut names = db.list_trees();
+    names.sort();
+    assert_eq!(names, vec!["aaa", "bbb", "ccc"]);
+}
+
+#[test]
+fn list_trees_reflects_rename_and_drop() {
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    db.create_tree::<u64, String>("one", 64).unwrap();
+    db.create_tree::<u64, String>("two", 64).unwrap();
+
+    db.rename_tree("one", "uno").unwrap();
+    db.drop_tree("two").unwrap();
+
+    let names = db.list_trees();
+    assert_eq!(names, vec!["uno"]);
+}
+
+// ---------------------------------------------------------------------------
+// format_version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn format_version_returns_superblock_version() {
+    use crate::database::superblock::SUPERBLOCK_VERSION;
+
+    let dir = TempDir::new().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    assert_eq!(db.format_version(), SUPERBLOCK_VERSION);
+}

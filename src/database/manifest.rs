@@ -5,9 +5,7 @@ pub mod writer;
 
 use crate::api::{KeyEncodingId, KeyLimits, TreeId};
 use crate::keyfmt::KeyFormat;
-use std::fs::File;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
 
 pub(crate) const TAG_CREATE_TREE: u8 = 1;
 pub(crate) const TAG_DELETE_TREE: u8 = 2;
@@ -61,25 +59,6 @@ pub enum ManifestRec {
         /// ID of the tree being deleted.
         id: TreeId,
     },
-    /// A durable checkpoint was written (no catalog change).
-    Checkpoint {
-        /// Manifest sequence number.
-        seq: u64,
-    },
-}
-
-/// An in-memory collection of manifest records.
-pub struct ManifestLog {
-    /// Ordered list of manifest records.
-    pub recs: Vec<ManifestRec>,
-}
-
-/// An open handle to a manifest file on disk.
-pub struct ManifestFile {
-    /// Path to the manifest file.
-    pub path: PathBuf,
-    /// Open file handle.
-    pub file: File,
 }
 
 impl ManifestRec {
@@ -142,11 +121,6 @@ impl ManifestRec {
                 payload.extend_from_slice(&id.to_le_bytes());
                 write_string(&mut payload, new_name)?;
 
-                write_len_prefixed_payload(&mut w, &payload)
-            }
-            ManifestRec::Checkpoint { seq } => {
-                w.write_all(&[0])?; // 0 = checkpoint tag
-                let payload = seq.to_le_bytes();
                 write_len_prefixed_payload(&mut w, &payload)
             }
         }
