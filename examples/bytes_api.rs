@@ -2,7 +2,7 @@
 //!
 //! Opens a database, creates a raw-bytes tree, inserts entries, reads them back.
 
-use bplus_tree::api::Db;
+use bplus_store::api::Db;
 
 fn main() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;

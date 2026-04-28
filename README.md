@@ -1,4 +1,4 @@
-# cow-bptree
+# bplus_store
 
 > Status: **alpha** — APIs may change.
 > License: **MIT OR Apache-2.0**
@@ -41,7 +41,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-cow-bptree = "0.1"
+bplus_store = "0.1"
 ```
 
 ### Build & test
@@ -57,7 +57,7 @@ cargo bench
 ### Bytes-level API
 
 ```rust
-use bplus_tree::api::Db;
+use bplus_store::api::Db;
 
 let dir = tempfile::tempdir()?;
 let db = Db::open(dir.path())?;
@@ -75,7 +75,7 @@ tree.delete(&b"alpha".to_vec())?;
 ### Typed API
 
 ```rust
-use bplus_tree::api::Db;
+use bplus_store::api::Db;
 
 let dir = tempfile::tempdir()?;
 let db = Db::open(dir.path())?;

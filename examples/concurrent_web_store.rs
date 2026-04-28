@@ -7,7 +7,7 @@
 //! cargo run --example concurrent_web_store
 //! ```
 
-use bplus_tree::api::Db;
+use bplus_store::api::Db;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 // Tree<K,V> is not Clone, so we wrap it in Arc for sharing across threads.
-type SharedTree = Arc<bplus_tree::api::Tree<String, Vec<u8>>>;
+type SharedTree = Arc<bplus_store::api::Tree<String, Vec<u8>>>;
 
 /// URLs to fetch. Each writer thread picks URLs round-robin.
 const URLS: &[&str] = &[
