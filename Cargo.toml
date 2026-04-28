@@ -6,11 +6,11 @@ authors = ["Paris Mesidis <pmesidis@gmail.com>"]
 rust-version = "1.85"
 description = "Copy-on-write B+ tree with page-aligned storage, split/merge, and crash-safety primitives."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/pmes126/bplus-tree"
+repository = "https://github.com/pmes126/bplus-store"
 readme = "README.md"
 keywords = ["bplus-tree", "b+tree", "datastructures", "storage", "database"]
 categories = ["data-structures", "algorithms"]
-homepage = "https://github.com/pmes126/bplus-tree"
+homepage = "https://github.com/pmes126/bplus-store"
 documentation = "https://docs.rs/bplus_store"
 
 [features]

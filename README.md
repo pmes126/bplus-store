@@ -1,4 +1,4 @@
-# cow-bptree
+# bplus_store
 
 > Status: **alpha** — APIs may change.
 > License: **MIT OR Apache-2.0**
@@ -41,7 +41,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-cow-bptree = "0.1"
+bplus_store = "0.1"
 ```
 
 ### Build & test
