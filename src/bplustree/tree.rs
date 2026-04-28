@@ -269,7 +269,6 @@ impl TransactionTracker {
             dirty_pages: HashSet::new(),
         }
     }
-
 }
 
 impl TxnTracker for TransactionTracker {
