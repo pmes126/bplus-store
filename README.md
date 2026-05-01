@@ -4,19 +4,53 @@
 > License: **MIT OR Apache-2.0**
 
 Embedded, copy-on-write **B+-tree** key-value store in Rust.
-Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
+Concurrent readers without mmap, for **resource-constrained environments**.
+**Multi-writer** with optimistic commits (CAS).
 **Snapshot** readers via epoch-based reclamation.
 
 ---
 
 ## Why
 
-- **Multi-writer:** concurrent writers proceed in parallel; losers retry via OCC.
-- **Crash-safe:** COW + atomic metadata publish; no WAL, no fsck.
-- **Predictable perf:** slotted pages, bounded fanout, no heap storms.
-- **Epoch snapshots:** readers pin an epoch and never block writers.
-- **Embedded-first:** link as a library, call `put`/`get`/`delete`.
-- **Pluggable encoding:** `NodeStorage` is a swappable node encoding strategy on top of raw `PageStorage`.
+Most embedded COW B-tree implementations (LMDB, BoltDB) rely on memory-mapped
+I/O for concurrent read access. mmap is fast but trades away control: the OS
+decides which pages stay resident, page faults cause unpredictable latency, and
+the database's memory footprint is bounded only by virtual address space — not
+by anything the application can configure.
+
+bplus_store takes a different approach:
+
+- **No mmap.** All I/O uses positional `pread`/`pwrite` syscalls. The
+  application controls exactly how much memory the engine uses.
+- **Page cache.** An in-memory read cache of decoded nodes keeps hot pages
+  (root, upper internal nodes) resident. Cache size is bounded by the live
+  page set, not by the OS resident set.
+- **Lock-free readers.** COW + epoch-based reclamation gives readers snapshot
+  isolation without locks, the same concurrency guarantee as LMDB.
+- **Multi-writer.** Concurrent writers proceed in parallel; losers retry via
+  optimistic concurrency control (CAS on the metadata pointer).
+- **Crash-safe.** COW + atomic metadata publish; WAL for crash gap recovery
+  and group commit.
+- **Predictable performance.** Slotted pages, bounded fanout, no heap storms,
+  no kernel page fault surprises.
+- **Embedded-first.** Link as a library, call `put`/`get`/`delete`.
+
+### Target environments
+
+- Containers and microservices with hard memory limits (cgroups)
+- Edge nodes and IoT devices with limited RAM
+- Multi-tenant systems where one database must not starve another
+- WASM and sandboxed runtimes where mmap is unavailable
+- Applications that need concurrent reads with predictable latency
+
+### How it compares
+
+| Engine | Concurrent readers | I/O model | Memory control | WAL required |
+|--------|-------------------|-----------|----------------|-------------|
+| SQLite | Readers block writers (WAL mode: concurrent) | pread/pwrite | Application-controlled | Yes |
+| LMDB | Lock-free (COW + mmap) | mmap | OS-controlled | No |
+| RocksDB | Lock-free (MVCC + LSM) | pread/pwrite + mmap | Mixed | Yes |
+| **bplus_store** | **Lock-free (COW + epoch)** | **pread/pwrite** | **Application-controlled** | **No (optional WAL for group commit)** |
 
 ---
 
@@ -24,12 +58,15 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 - Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
 - Multiple concurrent writers (optimistic concurrency; CAS on metadata)
+- `Arc`-based thread-safe tree handles — no `unsafe`, no `Box::leak`
+- In-memory page cache for decoded nodes (COW-correct: immutable pages never go stale)
 - Batched write transactions (stage &rarr; commit &rarr; reclaim)
 - Cursor-based range iteration (parent-stack traversal, no sibling pointers)
 - Physical fullness handling: large values trigger page splits before reaching max keys
 - Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
 - Multi-tree support: one database directory, many named trees
 - Manifest-based crash recovery with CRC-framed catalog log
+- WAL scaffolding with group commit support (`WalGroupCommitter`)
 - Superblock and metadata page CRC validation
 - Exclusive file locking to prevent multi-process corruption
 - Built-in order-preserving codecs for `u64`, `i64`, `String`, `Vec<u8>`
@@ -41,7 +78,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-bplus_store = "0.1"
+bplus_store = "0.2"
 ```
 
 ### Build & test
@@ -106,6 +143,7 @@ txn.commit()?;  // atomic CAS; retries internally on conflict
 - `db.create_tree::<K, V>(name, order)` — creates a named tree
 - `db.open_tree::<K, V>(name)` — opens an existing tree
 - `db.tree::<K, V>(name, order)` — open-or-create
+- `db.close()` — checkpoint freelist and close (safe, non-unsafe)
 
 ### `Tree<K, V>`
 
@@ -156,10 +194,10 @@ Each commit follows a strict sequence:
 
 ### Crash safety
 
-The **A/B metadata slot alternation** provides atomic commit semantics without a WAL.
-Each commit writes to `slot = txn_id % 2`, leaving the previous slot untouched. On
-recovery, `MetadataManager::read_active_meta` reads both slots and picks the one with
-the highest `txn_id` and a valid CRC32 checksum.
+The **A/B metadata slot alternation** provides atomic commit semantics. Each commit writes
+to `slot = txn_id % 2`, leaving the previous slot untouched. On recovery,
+`MetadataManager::read_active_meta` reads both slots and picks the one with the highest
+`txn_id` and a valid CRC32 checksum.
 
 - **Crash before `fdatasync()`** — the new metadata page may not be on disk. Recovery
   reads the old slot, which is still valid. The tree rolls back to the prior commit.
@@ -175,6 +213,47 @@ commit also flushes speculative COW pages written by other concurrent writers th
 not yet committed. Those pages are harmless (orphaned if the writer never commits) but
 represent minor wasted I/O under concurrent write workloads. This is inherent to the
 single-file, shared page pool design and is not a correctness issue.
+
+### I/O model: visibility vs durability
+
+The storage layer uses positional I/O via `write_all_at` (Rust's `FileExt` trait, which
+maps to the `pwrite(2)` syscall). `pwrite` copies data to the kernel page cache and
+returns immediately — the page is **visible** to any `pread` on the same file descriptor
+but **not durable** until `fdatasync(2)` flushes the kernel's dirty pages to physical
+storage.
+
+This separation is a key architectural property: COW pages written during a transaction
+are immediately readable by concurrent `pread` calls, so the metadata pointer can be
+swapped before the data file is fsynced. Durability is ensured by a subsequent
+`sync_data()` call (or, with WAL group commit, by the WAL fsync).
+
+### Write-ahead log (WAL) and group commit
+
+A WAL (`wal.log`) is scaffolded in `database/wal/` to address two concerns:
+
+1. **Crash gap recovery.** If the process crashes after the CAS but before `fdatasync`,
+   COW pages are allocated but unreachable from any root (leaked). The WAL records a
+   `CommitIntent` with the list of allocated pages before the commit, and a
+   `CommitComplete` after metadata fsync. On recovery, unmatched intents identify leaked
+   pages to return to the freelist.
+
+2. **Group commit.** Because `pwrite` makes pages visible without fsyncing, the only
+   operation on the critical durability path is the WAL fsync — a sequential append to a
+   single file. Multiple concurrent writers can batch their WAL entries into one
+   `write_all` + `fsync`, amortising the disk flush across all writers in the batch. The
+   data file's `fdatasync` is deferred to a background timer, since the WAL provides the
+   durability guarantee. This effectively swaps one fsync for another (WAL replaces
+   data.db) rather than adding one — so a single writer pays roughly the same latency as
+   the current no-WAL path, while gaining crash recovery for free. Under concurrency, N
+   writers share 1 fsync instead of N.
+
+   `WalGroupCommitter` (`database/wal/writer.rs`) implements this: a background thread
+   drains a shared channel (opportunistic batching — single writers proceed immediately,
+   concurrent writers batch naturally), fsyncs once, and notifies waiting writers via
+   condvar.
+
+The WAL is complementary to COW — it does not replace it. COW provides lock-free readers
+and snapshot isolation. The WAL provides crash gap recovery and enables batched durability.
 
 ---
 
@@ -199,7 +278,8 @@ that epoch have unpinned. No blocking, no use-after-free.
 <dir>/
   data.db            # all pages: superblock, tree nodes, metadata slots
   manifest.log       # append-only CRC-framed catalog log
-  freelist.snapshot   # optional; written on graceful shutdown
+  wal.log            # write-ahead log for commit intents (scaffolded, not yet wired in)
+  freelist.snapshot   # written on graceful shutdown; restored on open
   db.lock            # exclusive flock held while the database is open
 ```
 
@@ -209,18 +289,25 @@ that epoch have unpinned. No blocking, no use-after-free.
 (page 0, including CRC-32C), replays the CRC-framed manifest to rebuild the in-memory
 catalog, then reconciles each tree's catalog entry against its on-disk A/B metadata pages
 (source of truth for `root_id`, `height`, `size` after a crash). If a freelist snapshot
-exists, freed page IDs are restored so they can be reused.
+exists, freed page IDs are restored so they can be reused. Once WAL integration is
+complete, unmatched `CommitIntent` records will be replayed to reclaim leaked pages.
 
 ### Key components
 
 - **Superblock** (page 0): magic number, format version, generation counter, CRC-32C.
-- **Manifest**: append-only log of `CreateTree`, `RenameTree`, `DeleteTree`,
-  `Checkpoint` records. Each record is CRC-framed; truncated trailing records (crash
-  mid-write) are silently skipped, CRC mismatches are reported as corruption.
+- **Manifest**: append-only log of `CreateTree`, `RenameTree`, `DeleteTree` records. Each
+  record is CRC-framed; truncated trailing records (crash mid-write) are silently skipped,
+  CRC mismatches are reported as corruption.
+- **WAL**: append-only log of `CommitIntent` and `CommitComplete` records. Same CRC
+  framing as the manifest. Separate file because the WAL is written on every commit (high
+  frequency) while the manifest is written only on tree creation/deletion (rare).
 - **Catalog**: in-memory map of `TreeId -> TreeMeta`, rebuilt by replaying the manifest.
 - **Per-tree metadata**: A/B alternating pages storing `(root_node_id, height, size, txn_id)`.
   Commit writes to the inactive slot; readers always see a consistent pair.
   Each page is CRC32-validated on read.
+- **Page cache**: in-memory `RwLock<HashMap<u64, NodeView>>` in `PagedNodeStorage`. COW
+  semantics guarantee correctness — a page ID's content is immutable once written.
+  Entries are evicted only when the page is freed by epoch-based GC.
 - **File lock**: exclusive `flock` on `db.lock` prevents concurrent access from multiple
   processes.
 
@@ -235,18 +322,22 @@ For a detailed description of the architecture, design decisions, and trade-offs
 src/
   api.rs, api/                  # Db, Tree<K,V>, WriteTxn, ApiError
   codec.rs, codec/              # KeyCodec/ValueCodec traits, bincode codecs, kv (API codecs)
-  database.rs, database/        # Database, catalog, manifest, metadata, superblock
+  database.rs, database/        # Database, catalog, manifest, metadata, superblock, WAL
+    manifest/                   # CRC-framed manifest reader/writer
+    wal/                        # WAL record types, CRC-framed reader/writer, group committer
   bplustree/                    # BPlusTree core: search, insert, delete, commit, transaction
-  storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage, EpochManager
+  storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage,
+                                # EpochManager, MetadataManager, page cache
   page.rs, page/                # Slotted page layouts (leaf, internal)
   keyfmt.rs, keyfmt/            # Key encoding formats (raw, prefix-compressed)
   layout.rs                     # PAGE_SIZE constant
 examples/
   bytes_api.rs                  # Vec<u8> key/value CRUD
   typed_api.rs                  # u64/String with batched transaction
-  example.rs                    # async HTTP fetch + store
+  concurrent_web_store.rs       # Multi-threaded HTTP fetch + concurrent tree writes
 benches/
-  bench_insert.rs               # Criterion benchmarks
+  bench_insert.rs               # Criterion insert benchmarks
+  bench_metrics.rs              # Space amplification measurements
 ```
 
 ### Layer overview (bottom to top)
@@ -257,20 +348,22 @@ pages store `(key, right_child)` with `leftmost_child` in the header.
 
 **Storage layer** (`storage.rs`, `storage/`): `PageStorage` trait for raw page I/O;
 `NodeStorage` trait for encoded node I/O (pluggable encoding strategy).
-`FilePageStorage` is the concrete file-backed `PageStorage`.
-`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage`.
+`FilePageStorage` is the concrete file-backed `PageStorage` using `pread`/`pwrite`.
+`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage` with an in-memory
+page cache.
 
-**Database layer** (`database.rs`, `database/`): `Database<S>` owns a
-`PagedNodeStorage<S>` for node encoding and an `Arc<S>` for raw metadata I/O (both
+**Database layer** (`database.rs`, `database/`): `Database<S>` owns an
+`Arc<PagedNodeStorage<S>>` for node encoding and an `Arc<S>` for raw metadata I/O (both
 share the same underlying storage instance). Manages the superblock, manifest, catalog,
-and tree lifecycle.
+WAL, and tree lifecycle.
 
 **B+ tree core** (`bplustree/`): `BPlusTree` / `SharedBPlusTree` — search, insert,
 delete, commit with CAS. `WriteTransaction` buffers operations for batched atomic
-commits.
+commits. Storage is held via `Arc` for safe cross-thread sharing.
 
-**API layer** (`api.rs`, `api/`): `Db` opens a `Database`, leaks it for `'static`
-lifetime, and hands out typed `Tree<K, V>` handles. Purely synchronous.
+**API layer** (`api.rs`, `api/`): `Db` wraps `Database` in an `Arc` and hands out typed
+`Tree<K, V>` handles. Thread-safe without `unsafe` — all sharing uses `Arc`. Purely
+synchronous.
 
 ---
 
@@ -283,6 +376,19 @@ pages it touches (leaf + ancestors), then atomically publishes a new root via CA
 metadata pointer. Readers never block writers because they see a consistent snapshot
 pinned at their epoch. This is the same approach used by LMDB, BoltDB, and redb in
 production.
+
+### Why not mmap?
+
+mmap provides zero-copy reads and lets the OS manage page residency. But it trades away
+application control: virtual address space is consumed proportional to database size,
+page faults cause unpredictable latency spikes, and the kernel can evict pages under
+memory pressure without the application's knowledge. In containers, embedded devices, or
+multi-tenant systems, this is unacceptable.
+
+bplus_store uses `pread`/`pwrite` (via Rust's `FileExt` trait) with an explicit page
+cache. The application decides how much memory the engine uses. Hot pages stay in cache;
+cold pages are read on demand with predictable syscall cost. See the Design motivation
+section in [ARCHITECTURE.md](ARCHITECTURE.md) for a full comparison.
 
 ### Sibling pointers and range iteration
 
@@ -323,12 +429,14 @@ guaranteeing that at least two entries always fit per page so splits produce val
 
 ### Where this design fits
 
+- **Resource-constrained environments** where mmap's unbounded memory footprint is
+  unacceptable: containers, edge nodes, IoT, WASM.
 - **Embedded databases** (the LMDB/redb/BoltDB niche) where the store is linked as a
   library, not accessed over a network.
 - **Read-heavy workloads** where readers must never block and always see consistent
   snapshots.
-- **Crash safety without a WAL**: COW gives atomic commits for free since old pages
-  survive until the new root is published.
+- **Crash safety**: COW gives atomic commits; the WAL closes the crash gap between
+  CAS and fdatasync and enables group commit for write throughput.
 - **Low-to-moderate write contention**: OCC retries are cheap when conflicts are rare.
 
 ### Where it struggles
@@ -339,6 +447,8 @@ guaranteeing that at least two entries always fit per page so splits produce val
   path would amortise this.
 - **Values larger than ~2 KB**: entries must fit within `MAX_ENTRY_PAYLOAD` (2038 bytes).
   Overflow pages or external value storage are not yet implemented.
+- **Workloads with poor locality**: full-database scans will pay a pread syscall per
+  uncached page. mmap-based engines handle sequential scans faster via readahead.
 
 ---
 
@@ -352,6 +462,14 @@ guaranteeing that at least two entries always fit per page so splits produce val
 ---
 
 ## Roadmap
+
+- **WAL integration into the commit path** — The WAL scaffolding (`database/wal/`) is
+  implemented with record types, CRC-framed reader/writer, and group commit support
+  (`WalGroupCommitter`). The next step is wiring it into `try_commit`: log a
+  `CommitIntent` before writing COW pages, log `CommitComplete` after metadata fsync,
+  and replay unmatched intents during `Database::open` to reclaim leaked pages. Once
+  integrated, the data file `fdatasync` can be deferred and batched, with the WAL fsync
+  as the critical durability path.
 
 - **Prefix-compressed key block format (`PrefixRestarts`)** — Keys are currently stored
   verbatim in each slot. When keys share long common prefixes, this wastes significant

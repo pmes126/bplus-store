@@ -143,7 +143,12 @@ impl WriteTransaction {
                 }
             };
 
-            let res = tree.try_commit(&self.tree_base_version, staged_update);
+            let res = tree.try_commit(
+                &self.tree_base_version,
+                staged_update,
+                &staged_nodes,
+                &reclaimed_nodes_local,
+            );
             if res.is_ok() {
                 // Register reclaimed (old) pages for deferred freeing at the
                 // current epoch, then run a second reclamation pass so they
@@ -218,6 +223,8 @@ mod tests {
                 height: 3,
                 size: 6,
             },
+            &[],
+            &[],
         );
         assert!(matches!(err, Err(CommitError::RebaseRequired)));
 
@@ -245,6 +252,8 @@ mod tests {
                     height: 2,
                     size: 2,
                 },
+                &[],
+                &[],
             )
             .unwrap_err();
         assert!(matches!(err, CommitError::Metadata(_)));
@@ -273,6 +282,8 @@ mod tests {
                     height: 4,
                     size: 11,
                 },
+                &[],
+                &[],
             )
             .unwrap_err();
         assert!(matches!(err, CommitError::Storage(_)));
@@ -302,6 +313,8 @@ mod tests {
                     height: 3,
                     size: 9,
                 },
+                &[],
+                &[],
             )
             .unwrap();
 
@@ -323,6 +336,8 @@ mod tests {
                     height: 9,
                     size: 123,
                 },
+                &[],
+                &[],
             )
             .unwrap();
 

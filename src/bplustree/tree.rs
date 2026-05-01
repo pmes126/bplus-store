@@ -8,6 +8,8 @@ use crate::api::{KeyEncodingId, TreeId};
 use crate::bplustree::NodeView;
 use crate::bplustree::node_view::NodeViewError;
 use crate::database::metadata::Metadata;
+use crate::database::wal::writer::WalWriter;
+use crate::database::wal::record::WalRecord;
 use crate::keyfmt::KeyFormat;
 use crate::page::PageError;
 use crate::storage::epoch::COMMIT_COUNT;
@@ -218,6 +220,8 @@ where
     /// Retired metadata pointers from successful CAS commits, kept alive to
     /// prevent ABA on the `committed` AtomicPtr. Freed in `Drop`.
     retired_meta: Mutex<Vec<RetiredPtr>>,
+    /// Optional WAL writer for crash-safe commits. `None` in test harnesses.
+    wal: Option<Arc<Mutex<WalWriter>>>,
 }
 
 impl<S, P> Drop for BPlusTree<S, P>
@@ -424,8 +428,11 @@ where
         &self,
         version: &BaseVersion,
         new_metadata: StagedMetadata,
+        allocated_pages: &[u64],
+        retired_pages: &[u64],
     ) -> Result<(), CommitError> {
-        self.inner.try_commit(version, new_metadata)
+        self.inner
+            .try_commit(version, new_metadata, allocated_pages, retired_pages)
     }
 
     /// Returns a raw pointer to the committed metadata.
@@ -563,6 +570,32 @@ where
         key_encoding: KeyEncodingId,
         epoch_mgr: Arc<EpochManager>,
     ) -> BPlusTree<S, P> {
+        Self::open_with_wal(
+            storage,
+            page_storage,
+            meta,
+            meta_a,
+            meta_b,
+            key_format,
+            key_encoding,
+            epoch_mgr,
+            None,
+        )
+    }
+
+    /// Opens a [`BPlusTree`] with an optional WAL writer for crash-safe commits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_wal(
+        storage: Arc<S>,
+        page_storage: Arc<P>,
+        meta: Metadata,
+        meta_a: u64,
+        meta_b: u64,
+        key_format: KeyFormat,
+        key_encoding: KeyEncodingId,
+        epoch_mgr: Arc<EpochManager>,
+        wal: Option<Arc<Mutex<WalWriter>>>,
+    ) -> BPlusTree<S, P> {
         let id = meta.id;
         let order = meta.order;
         let md_ptr = Box::into_raw(Box::new(meta));
@@ -582,6 +615,7 @@ where
             commit_count: AtomicUsize::new(0),
             committed: AtomicPtr::new(md_ptr),
             retired_meta: Mutex::new(Vec::new()),
+            wal,
         }
     }
 
@@ -1537,10 +1571,15 @@ where
     }
 
     /// Attempts to commit staged metadata via a lock-free compare-and-exchange.
+    ///
+    /// `allocated_pages` and `retired_pages` are recorded in the WAL (if present)
+    /// so that recovery can free leaked pages from incomplete commits.
     pub fn try_commit(
         &self,
         base_version: &BaseVersion,
         new_meta: StagedMetadata,
+        allocated_pages: &[u64],
+        retired_pages: &[u64],
     ) -> Result<(), CommitError> {
         #[cfg(any(test, feature = "testing"))]
         {
@@ -1579,6 +1618,35 @@ where
         match result {
             // CAS succeeded; write metadata to the double-buffered slot.
             Ok(old_ptr) => {
+                // Log the commit intent to the WAL before writing metadata,
+                // so recovery can free allocated pages if the commit doesn't
+                // complete (crash between here and CommitComplete).
+                let intent_seq = if let Some(wal) = &self.wal {
+                    let intent = WalRecord::CommitIntent {
+                        seq: 0,
+                        tree_id: self.id,
+                        txn_id: new_txn_id,
+                        new_root_id: new_meta.root_id,
+                        allocated_pages: allocated_pages.to_vec(),
+                        retired_pages: retired_pages.to_vec(),
+                    };
+                    let mut w = wal.lock().unwrap();
+                    let seq = w.append(intent).map_err(|e| {
+                        // WAL write failed; restore the previous pointer.
+                        unsafe { drop(Box::from_raw(new_ptr)); }
+                        self.committed.store(current_ptr, Ordering::Release);
+                        CommitError::Storage(StorageError::Io(e))
+                    })?;
+                    w.fsync().map_err(|e| {
+                        unsafe { drop(Box::from_raw(new_ptr)); }
+                        self.committed.store(current_ptr, Ordering::Release);
+                        CommitError::Storage(StorageError::Io(e))
+                    })?;
+                    Some(seq)
+                } else {
+                    None
+                };
+
                 let slot = if new_txn_id % 2 == 0 {
                     self.meta_a
                 } else {
@@ -1599,6 +1667,20 @@ where
                     return Err(CommitError::Metadata(e));
                 }
                 self.storage.flush()?;
+
+                // Log commit complete — the metadata is now durable.
+                if let (Some(wal), Some(iseq)) = (&self.wal, intent_seq) {
+                    let complete = WalRecord::CommitComplete {
+                        seq: 0,
+                        intent_seq: iseq,
+                    };
+                    let mut w = wal.lock().unwrap();
+                    let _ = w.append(complete);
+                    // Best-effort fsync for the complete marker; losing it
+                    // only means recovery does a harmless metadata check.
+                    let _ = w.fsync();
+                }
+
                 // Reclamation of old nodes is deferred until after the new metadata is durable and
                 // visible.
                 self.epoch_mgr.advance();
@@ -1745,7 +1827,7 @@ mod tests {
             size: 10,
         };
 
-        let res = tree.try_commit(&base, staged);
+        let res = tree.try_commit(&base, staged, &[], &[]);
 
         assert!(res.is_ok(), "Commit should succeed");
 
@@ -1768,7 +1850,7 @@ mod tests {
             height: 3,
             size: 10,
         };
-        h.tree.try_commit(&base, staged).expect("commit ok");
+        h.tree.try_commit(&base, staged, &[], &[]).expect("commit ok");
 
         let m = h.tree.metadata();
         assert_eq!(m.root_node_id, 42);
@@ -1803,7 +1885,7 @@ mod tests {
             size: 10,
         };
 
-        let result = tree.try_commit(&base, staged);
+        let result = tree.try_commit(&base, staged, &[], &[]);
         println!("Commit result: {:?}", result);
         assert!(result.is_err());
     }
@@ -1828,6 +1910,8 @@ mod tests {
                             height: 3,
                             size: i,
                         },
+                        &[],
+                        &[],
                     )
                     .is_ok()
                 {
@@ -1857,6 +1941,8 @@ mod tests {
                         height: 3,
                         size: i,
                     },
+                    &[],
+                    &[],
                 )
                 .unwrap();
             let (slot, txn, ..) = h.storage.last_commit().unwrap();
@@ -1882,7 +1968,7 @@ mod tests {
         };
 
         let md_before = tree.metadata(); // Ensure metadata is still valid
-        let result = tree.try_commit(&base, staged);
+        let result = tree.try_commit(&base, staged, &[], &[]);
         assert!(result.is_err(), "Commit should fail due to storage failure");
         let md_after = tree.metadata(); // Ensure metadata is still valid
         assert_eq!(
@@ -1909,7 +1995,7 @@ mod tests {
         };
 
         let md_before = tree.metadata(); // Ensure metadata is still valid
-        let result = tree.try_commit(&base, staged);
+        let result = tree.try_commit(&base, staged, &[], &[]);
         assert!(result.is_err(), "Commit should fail due to flush failure");
         let md_after = tree.metadata(); // Ensure metadata is still valid
         assert_ne!(

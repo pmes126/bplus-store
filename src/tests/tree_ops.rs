@@ -43,7 +43,7 @@ fn commit_persists_and_survives_reopen() {
         height: 3,
         size: 10,
     };
-    tree.try_commit(&base, staged).expect("commit ok");
+    tree.try_commit(&base, staged, &[], &[]).expect("commit ok");
 
     let m = tree.get_metadata();
     assert_eq!(m.root_node_id, 42);
@@ -86,6 +86,8 @@ fn commit_and_load_tree() -> Result<()> {
             height,
             size,
         },
+                &[],
+                &[],
     )?;
 
     for i in 0..iterations {
@@ -129,6 +131,8 @@ fn write_and_read_value() -> Result<(), anyhow::Error> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
     let res = tree.search(k(1))?;
     assert!(res.is_some(), "Value should be found after commit");
@@ -212,6 +216,8 @@ fn write_and_read_string_as_key() -> Result<(), anyhow::Error> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
     let res = tree.search(key.as_bytes())?;
     assert!(res.is_some(), "Value should be found after commit");
@@ -317,6 +323,8 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
             height: tree.get_height(),
             size,
         },
+        &[],
+        &[],
     )?;
 
     for i in 0..order * multiplier {
@@ -375,6 +383,8 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
                 height: res.new_height,
                 size: res.new_size,
             },
+            &[],
+            &[],
         )?;
     }
     root_id = tree.get_root_id();
@@ -398,6 +408,8 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
                 height: res.new_height,
                 size: res.new_size,
             },
+            &[],
+            &[],
         )?;
     }
     assert_eq!(
@@ -420,6 +432,8 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
                 height: res.new_height,
                 size: res.new_size,
             },
+            &[],
+            &[],
         )?;
     }
     for i in 0..iterations {
@@ -434,6 +448,8 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
                 height: res.new_height,
                 size: res.new_size,
             },
+            &[],
+            &[],
         )?;
     }
     assert_eq!(
@@ -467,6 +483,8 @@ fn insert_duplicate_keys_should_overwrite_value() {
             height: res.new_height,
             size: res.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -502,6 +520,8 @@ fn range_search_test() {
             height: tree.get_height(),
             size: n,
         },
+        &[],
+        &[],
     )
     .unwrap();
 
@@ -562,7 +582,7 @@ fn commits_toggle_metadata_slots_and_increment_txn() {
                 height: 3,
                 size: i,
             };
-            match tree.try_commit(&base, staged) {
+            match tree.try_commit(&base, staged, &[], &[]) {
                 Ok(()) => break,
                 Err(CommitError::RebaseRequired) => continue,
                 Err(e) => panic!("unexpected error: {e:?}"),
@@ -610,7 +630,7 @@ fn concurrent_writers_retry_until_success() {
                         let base = BaseVersion {
                             committed_ptr: t.get_metadata_ptr(),
                         };
-                        match t.try_commit(&base, staged.clone()) {
+                        match t.try_commit(&base, staged.clone(), &[], &[]) {
                             Ok(()) => {
                                 ok += 1;
                                 break;
@@ -659,6 +679,8 @@ fn contains_key_hit_and_miss() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     // Hits.
@@ -695,6 +717,8 @@ fn contains_key_after_delete() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     // Delete every other key.
@@ -713,6 +737,8 @@ fn contains_key_after_delete() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     for i in 0..10 {
@@ -757,6 +783,8 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     // Verify all keys are present via committed root.
@@ -783,6 +811,8 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     // Run reclamation to free old pages (and evict them from cache).
@@ -805,6 +835,8 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     // Verify we get the new values, not stale cached ones.
@@ -852,6 +884,8 @@ fn cache_concurrent_read_write() -> Result<()> {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )?;
 
     let done = Arc::new(AtomicBool::new(false));
@@ -903,6 +937,8 @@ fn cache_concurrent_read_write() -> Result<()> {
                 height: tree.get_height(),
                 size: tree.get_size(),
             },
+            &[],
+            &[],
         )?;
     }
 

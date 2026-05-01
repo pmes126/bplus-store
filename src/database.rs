@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod manifest;
 pub mod metadata;
 pub mod superblock;
+pub mod wal;
 
 use crate::api::{KeyEncodingId, KeyLimits, TreeId};
 use crate::bplustree::NodeView;
@@ -23,6 +24,8 @@ use crate::database::superblock::{
     FREELIST_SNAPSHOT_VERSION, SUPERBLOCK_MAGIC, SUPERBLOCK_VERSION, Superblock,
     read_freepages_snapshot, write_freepages_snapshot,
 };
+use crate::database::wal::reader::WalReader;
+use crate::database::wal::writer::WalWriter;
 use crate::keyfmt::KeyFormat;
 use crate::layout::PAGE_SIZE;
 use crate::page::LeafPage;
@@ -69,6 +72,9 @@ pub struct Database<S: PageStorage + Send + Sync + 'static> {
     epoch_mgr: Arc<EpochManager>,
     manifest: Mutex<ManifestWriter>,
     catalog: RwLock<Catalog>,
+    /// Shared WAL writer, passed to each tree via `bind_tree()` so that
+    /// `try_commit` can log intent/complete records.
+    wal: Arc<Mutex<WalWriter>>,
     format_version: u32,
     base_path: std::path::PathBuf,
     /// Exclusive lock file handle. Held for the lifetime of the database to
@@ -196,7 +202,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
         )
         .map_err(|e| DatabaseError::Metadata(e.to_string()))?;
 
-        let bpt = BPlusTree::open(
+        let bpt = BPlusTree::open_with_wal(
             Arc::clone(&self.node_storage),
             Arc::clone(&self.meta_storage),
             meta,
@@ -205,6 +211,7 @@ impl<S: PageStorage + Send + Sync + 'static> Database<S> {
             tree_meta.keyfmt_id,
             tree_meta.key_encoding,
             Arc::clone(&self.epoch_mgr),
+            Some(Arc::clone(&self.wal)),
         );
 
         Ok(SharedBPlusTree::new(bpt))
@@ -444,12 +451,79 @@ where
         }
     }
 
+    // WAL recovery: replay incomplete commits and reclaim leaked pages.
+    let wal_path = base.join("wal.log");
+    let wal_start_seq = 0u64;
+    if wal_path.exists() {
+        match WalReader::open(&wal_path) {
+            Ok(reader) => {
+                match reader.find_incomplete_commits() {
+                    Ok(incomplete) => {
+                        for intent in &incomplete {
+                            if let crate::database::wal::record::WalRecord::CommitIntent {
+                                tree_id,
+                                new_root_id,
+                                allocated_pages,
+                                ..
+                            } = intent
+                            {
+                                // Check if the commit actually succeeded by reading
+                                // the tree's active metadata.
+                                let committed = catalog.metas.get(tree_id).is_some_and(
+                                    |tm| {
+                                        MetadataManager::read_active_meta(
+                                            storage.as_ref(),
+                                            tm.meta_a,
+                                            tm.meta_b,
+                                        )
+                                        .is_ok_and(|m| m.root_node_id == *new_root_id)
+                                    },
+                                );
+
+                                if !committed {
+                                    // Commit did not complete — free leaked pages.
+                                    for &pid in allocated_pages {
+                                        if let Err(e) = storage.as_ref().free_page(pid) {
+                                            eprintln!(
+                                                "warning: WAL recovery: failed to free page {pid}: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !incomplete.is_empty() {
+                            eprintln!(
+                                "WAL recovery: processed {} incomplete commit(s)",
+                                incomplete.len()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("warning: WAL recovery failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: failed to open WAL for recovery: {e}");
+            }
+        }
+    }
+
+    // Open the WAL writer and truncate any recovered records so they
+    // don't replay on the next startup.
+    let mut wal_writer = WalWriter::open(&wal_path, wal_start_seq)?;
+    if !is_fresh && wal_path.exists() {
+        let _ = wal_writer.truncate();
+    }
+
     Ok(Database {
         node_storage,
         meta_storage: storage,
         epoch_mgr,
         manifest: Mutex::new(manifest),
         catalog: RwLock::new(catalog),
+        wal: Arc::new(Mutex::new(wal_writer)),
         format_version,
         base_path: base.to_path_buf(),
         _lock_file: lock_file,

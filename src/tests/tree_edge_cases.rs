@@ -69,6 +69,8 @@ fn insert_duplicate_key_overwrites_value() {
             height: r2.new_height,
             size: r2.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -141,6 +143,8 @@ fn insert_and_search_min_max_u64_keys() {
             height: r2.new_height,
             size: r2.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -169,6 +173,8 @@ fn range_scan_includes_min_key_excludes_max_key() {
             height: tree.get_height(),
             size: 10,
         },
+        &[],
+        &[],
     )
     .unwrap();
 
@@ -210,6 +216,8 @@ fn keys_remain_sorted_after_many_splits() {
             height: tree.get_height(),
             size: 100,
         },
+        &[],
+        &[],
     )
     .unwrap();
 
@@ -257,6 +265,8 @@ fn keys_remain_sorted_after_inserts_and_deletes() {
             height: tree.get_height(),
             size: tree.get_size(),
         },
+        &[],
+        &[],
     )
     .unwrap();
 
@@ -302,6 +312,8 @@ fn single_key_insert_search_delete() {
             height: r.new_height,
             size: r.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -318,6 +330,8 @@ fn single_key_insert_search_delete() {
             height: d.new_height,
             size: d.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -366,6 +380,8 @@ fn entry_at_max_payload_is_accepted() {
             height: wr.new_height,
             size: wr.new_size,
         },
+                &[],
+                &[],
     )
     .unwrap();
 
@@ -408,6 +424,8 @@ fn large_values_trigger_physical_split_before_max_keys() {
             height: tree.get_height(),
             size: num_entries,
         },
+        &[],
+        &[],
     )
     .unwrap();
 

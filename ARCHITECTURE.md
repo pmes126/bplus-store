@@ -1090,18 +1090,171 @@ This works but has a gap: if the process crashes after the CAS but before the
 metadata fsync, speculative pages are leaked (allocated but unreachable from
 any root).
 
-A WAL would close this gap by recording intended mutations before they are
-applied. On recovery, the WAL is replayed to redo or undo incomplete
-operations, ensuring no pages are leaked and every committed transaction is
-fully durable. The WAL also enables:
+#### Why a separate WAL file
 
-- **Group commit:** multiple concurrent transactions can batch their WAL
-  entries into a single fsync, amortizing the cost of durable writes.
-- **Undo/redo recovery:** a crash at any point in the write path can be
-  cleanly resolved without a full tree scan.
-- **Hybrid COW+WAL:** small mutations could be logged to the WAL and applied
-  to pages lazily, reducing write amplification for single-key updates while
-  preserving COW's snapshot isolation for readers.
+The manifest log (`manifest.log`) is structurally similar to a WAL — it is
+append-only, CRC-framed, and replayed on recovery. However, it records
+**catalog mutations** (create/delete/rename tree), not data commits. Mixing
+WAL records into the manifest would couple two systems with very different
+write frequencies and lifecycle semantics:
+
+- The manifest is written rarely (once per tree creation/deletion). The WAL
+  is written on every commit — orders of magnitude more frequently.
+- Compaction policies differ: the manifest can be collapsed into a single
+  checkpoint record; the WAL should be truncated after all intents are
+  confirmed complete.
+- Recovery complexity increases: interleaved catalog and commit records
+  require tracking which intents reference which trees, including trees
+  that may have been deleted after the intent was written.
+
+A dedicated `wal.log` file keeps both systems simple and independently
+manageable.
+
+#### I/O model: visibility vs durability
+
+The current storage layer already separates page visibility from page
+durability. `FilePageStorage::write_page` calls `write_all_at` (which maps
+to the `pwrite(2)` syscall via Rust's `std::os::unix::fs::FileExt` trait).
+`pwrite` copies data into the kernel page cache and returns immediately —
+the page is **visible** to any subsequent `pread` call on the same file
+descriptor, but it is **not durable** until an explicit `fdatasync` /
+`sync_data()` flushes the kernel's dirty pages to disk.
+
+```
+write_all_at(data, offset)   → pwrite(2): data → kernel page cache (visible, not durable)
+sync_data()                  → fdatasync(2): kernel page cache → disk (durable)
+```
+
+This distinction is what makes WAL-based group commit possible. The commit
+path becomes:
+
+```
+1. pwrite COW pages to data.db     — visible to readers immediately
+2. append CommitIntent to wal.log   — can be batched across writers
+3. fsync wal.log                    — single fsync for the entire batch
+4. CAS metadata pointer             — commit becomes visible
+5. append CommitComplete to wal.log
+6. data.db fdatasync                — deferred, batched on a timer
+```
+
+If the process crashes after step 3 but before step 6, the COW pages may be
+lost from `data.db` (they were in the kernel page cache, not yet flushed).
+But the WAL is durable (step 3 fsynced it), so recovery replays the WAL and
+rewrites the pages. The data file's `fdatasync` can be amortised — batched
+every N commits or every M milliseconds — because the WAL provides the
+durability guarantee.
+
+#### Group commit
+
+`fdatasync` is the expensive operation in the commit path (~1-10ms on SSD).
+Without a WAL, every writer must `fdatasync` its own data file pages before
+the commit is durable. With a WAL, durability comes from the sequential WAL
+fsync, which can be shared:
+
+```
+Writer A: pwrite pages → append WAL intent ──┐
+Writer B: pwrite pages → append WAL intent ──┼→ single WAL fsync → notify all
+Writer C: pwrite pages → append WAL intent ──┘
+```
+
+N concurrent writers share 1 fsync instead of N. The WAL converts random
+page writes (scattered across `data.db`) into sequential appends (to a
+single log file), and sequential appends are trivially batchable. This is
+the standard approach used by InnoDB, PostgreSQL, and most production
+databases to achieve high concurrent write throughput.
+
+The scaffolding for this is implemented in `database/wal/writer.rs`:
+`WalGroupCommitter` spawns a background thread that drains a shared channel,
+writes all queued records in a single `write_all`, fsyncs once, and notifies
+waiting writers via condvar.
+
+#### Why group commit rather than a direct WAL writer
+
+A direct WAL writer (append + fsync per commit) would add crash recovery
+but **double the fsync count**: every commit pays `fdatasync(wal.log)` plus
+`fdatasync(data.db)`. Since each fsync is ~5-10ms, commit latency roughly
+doubles with no throughput benefit.
+
+The group committer avoids this by **swapping one fsync for another** rather
+than adding one. With the WAL fsync as the durability guarantee, the
+`data.db` fdatasync can be deferred to a background timer (every N commits
+or every M milliseconds). The per-commit cost becomes:
+
+```
+No WAL (current):
+  pwrite pages → CAS → fdatasync(data.db)                    ~5-10ms
+
+Direct WAL writer:
+  pwrite pages → append WAL → fdatasync(wal) → CAS → fdatasync(data.db)   ~10-20ms
+
+Group committer with deferred data.db flush:
+  pwrite pages → submit to channel → fdatasync(wal) → CAS    ~5-10ms + μs overhead
+                                      data.db fdatasync deferred to background
+```
+
+For a single writer, the group committer path is roughly the same latency
+as the current no-WAL path — the WAL fsync replaces the data.db fsync, plus
+a few microseconds of channel and condvar overhead. But now crash recovery
+is included for free.
+
+Under concurrency the group committer is strictly faster:
+
+```
+Current (3 writers):   3 × fdatasync(data.db) = ~15-30ms total
+Group WAL (3 writers): 1 × fdatasync(wal.log) = ~5-10ms total, data.db deferred
+```
+
+The batching is opportunistic, not mandatory. `WalGroupCommitter` blocks on
+`recv()` until the first entry arrives, then non-blocking drains whatever
+else is queued via `try_recv()`. A single writer's batch is size 1 and
+gets written + fsynced immediately — it does not wait for companions.
+Multiple writers only batch when they happen to submit during the same
+drain window.
+
+Writers block on a condvar until the batch containing their record is
+durable. This is necessary — if a writer proceeded before the WAL fsync,
+it could CAS the metadata pointer for a commit that isn't durable yet. A
+crash would lose the record, and the commit would appear to have succeeded
+when it hadn't.
+
+#### When the WAL is not worth it
+
+For an embedded database with a single writer and no replication, the
+simplest approach to the leaked page problem is a **startup reachability
+scan**: on `Database::open`, walk the tree from the current root, mark all
+reachable pages, and free everything else. This is `O(live_pages)` — a few
+milliseconds for typical database sizes — with zero runtime cost.
+
+The WAL justifies its complexity when:
+
+1. **Multiple concurrent writers** — group commit amortises fsync cost.
+2. **Replication** — the WAL becomes the replication log that followers
+   consume. The fsync cost is unavoidable (followers need durable, ordered
+   records), so group commit and crash recovery come for free on top.
+3. **Both** — which is the natural path as bplus_store grows from an
+   embedded library toward a distributed storage primitive.
+
+#### Recovery
+
+On `Database::open`, after manifest replay, the WAL is replayed:
+
+1. Read all complete WAL records (truncated trailing record = crash, skip).
+2. For each `CommitIntent` without a matching `CommitComplete`:
+   - The commit was in flight when the process crashed.
+   - The `allocated_pages` listed in the intent are leaked — return them to
+     the freelist.
+3. Truncate the WAL file (all durable state is in the metadata pages).
+
+#### WAL record types
+
+- **`CommitIntent`**: tree ID, txn ID, new root page, list of allocated
+  pages, list of retired pages. Logged before pages are written.
+- **`CommitComplete`**: references the intent's sequence number. Logged
+  after the metadata page fsync succeeds.
+
+A `CommitIntent` without a matching `CommitComplete` means an incomplete
+commit — its allocated pages are garbage. A `CommitComplete` without an
+intent is impossible (the intent is always written first).
 
 ### Compaction and space reclamation
 

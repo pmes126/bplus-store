@@ -50,6 +50,8 @@ fn populate_and_commit(
             height: tree.get_height(),
             size: n,
         },
+        &[],
+        &[],
     )
     .expect("commit");
 
@@ -278,6 +280,8 @@ fn range_string_keys() {
             height: tree.get_height(),
             size: 50,
         },
+        &[],
+        &[],
     )
     .expect("commit");
 
@@ -321,6 +325,8 @@ fn range_yields_correct_order_after_inserts_and_deletes() {
             height: tree.get_height(),
             size: 50,
         },
+        &[],
+        &[],
     )
     .expect("commit");
 
@@ -371,6 +377,8 @@ fn range_iter_respects_snapshot_isolation() {
             height: tree.get_height(),
             size: 60,
         },
+        &[],
+        &[],
     )
     .expect("commit");
 
