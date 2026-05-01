@@ -25,15 +25,17 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 - Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
 - Multiple concurrent writers (optimistic concurrency; CAS on metadata)
 - Batched write transactions (stage &rarr; commit &rarr; reclaim)
+- In-memory page cache in `PagedNodeStorage` (COW-coherent, eviction via epoch GC)
 - Cursor-based range iteration (parent-stack traversal, no sibling pointers)
 - Physical fullness handling: large values trigger page splits before reaching max keys
 - Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
-- Multi-tree support: one database directory, many named trees
+- Multi-tree support: one database directory, many named trees (create, rename, drop, list)
 - Manifest-based crash recovery with CRC-framed catalog log
 - Superblock and metadata page CRC validation
 - Exclusive file locking to prevent multi-process corruption
 - Built-in order-preserving codecs for `u64`, `i64`, `String`, `Vec<u8>`
 - Typed `Tree<K, V>` API with `KeyCodec` / `ValueCodec` traits
+- Thread-safe handles via `Arc`-based storage ownership (no `unsafe` in the public API)
 
 ---
 
@@ -41,7 +43,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-bplus_store = "0.1"
+bplus_store = "0.2"
 ```
 
 ### Build & test
@@ -106,16 +108,23 @@ txn.commit()?;  // atomic CAS; retries internally on conflict
 - `db.create_tree::<K, V>(name, order)` — creates a named tree
 - `db.open_tree::<K, V>(name)` — opens an existing tree
 - `db.tree::<K, V>(name, order)` — open-or-create
+- `db.rename_tree(old, new)` — rename a tree (recorded in manifest)
+- `db.drop_tree(name)` — remove a tree from the catalog
+- `db.list_trees()` — returns all tree names
+- `db.close()` — checkpoints the freelist and drops the database
+- `db.format_version()` — on-disk format version from the superblock
 
 ### `Tree<K, V>`
 
 - `tree.put(&key, &value)` — insert or replace
 - `tree.get(&key)` — lookup, returns `Option<V>`
+- `tree.contains_key(&key)` — check existence without decoding the value
 - `tree.delete(&key)` — remove
 - `tree.txn()` — start a batched `WriteTxn`
 - `tree.range(&start, &end)` — forward range scan `[start, end)`
 - `tree.range_from(&start)` — forward range scan from `start` to end of tree
 - `tree.len()` / `tree.is_empty()`
+- `tree.height()` — current tree height (1 = single leaf)
 
 ### `WriteTxn<K, V>`
 
@@ -145,8 +154,8 @@ retries (up to a configurable limit). Readers never block writers.
 
 Each commit follows a strict sequence:
 
-1. **CAS publish** — the new metadata pointer becomes visible to in-process readers
-   immediately (atomic swap, no disk I/O).
+. **CAS publish** — the new metadata pointer becomes visible to in-process readers
+mmediately (atomic swap, no disk I/O).
 2. **Write metadata page** — the new `(root_id, height, size, txn_id)` is written to the
    inactive A/B metadata slot via positional `write_all_at()` (kernel page cache, not yet
    durable).
@@ -235,15 +244,17 @@ For a detailed description of the architecture, design decisions, and trade-offs
 src/
   api.rs, api/                  # Db, Tree<K,V>, WriteTxn, ApiError
   codec.rs, codec/              # KeyCodec/ValueCodec traits, bincode codecs, kv (API codecs)
-  database.rs, database/        # Database, catalog, manifest, metadata, superblock
+  database.rs, database/        # Database, catalog, manifest (reader/writer), metadata, superblock
   bplustree/                    # BPlusTree core: search, insert, delete, commit, transaction
-  storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage, EpochManager
+  storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage,
+                                #   EpochManager, MetadataManager, page cache
   page.rs, page/                # Slotted page layouts (leaf, internal)
   keyfmt.rs, keyfmt/            # Key encoding formats (raw, prefix-compressed)
   layout.rs                     # PAGE_SIZE constant
 examples/
   bytes_api.rs                  # Vec<u8> key/value CRUD
   typed_api.rs                  # u64/String with batched transaction
+  concurrent_web_store.rs       # Multi-threaded HTTP fetch + concurrent tree writes
   example.rs                    # async HTTP fetch + store
 benches/
   bench_insert.rs               # Criterion benchmarks
@@ -258,7 +269,9 @@ pages store `(key, right_child)` with `leftmost_child` in the header.
 **Storage layer** (`storage.rs`, `storage/`): `PageStorage` trait for raw page I/O;
 `NodeStorage` trait for encoded node I/O (pluggable encoding strategy).
 `FilePageStorage` is the concrete file-backed `PageStorage`.
-`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage`.
+`PagedNodeStorage<S>` wraps any `PageStorage` into a `NodeStorage` with an
+in-memory read cache of decoded `NodeView`s. Cache correctness relies on COW
+immutability — a page ID's content never changes while the page is live.
 
 **Database layer** (`database.rs`, `database/`): `Database<S>` owns a
 `PagedNodeStorage<S>` for node encoding and an `Arc<S>` for raw metadata I/O (both
@@ -269,8 +282,9 @@ and tree lifecycle.
 delete, commit with CAS. `WriteTransaction` buffers operations for batched atomic
 commits.
 
-**API layer** (`api.rs`, `api/`): `Db` opens a `Database`, leaks it for `'static`
-lifetime, and hands out typed `Tree<K, V>` handles. Purely synchronous.
+**API layer** (`api.rs`, `api/`): `Db` wraps a `Database` in `Arc` and hands out
+typed `Tree<K, V>` handles. Storage is shared via `Arc`, so tree handles are
+independently owned and can be freely sent across threads. Purely synchronous.
 
 ---
 
@@ -358,12 +372,6 @@ guaranteeing that at least two entries always fit per page so splits produce val
   page space. Prefix compression stores the shared prefix once and only the differing
   suffix per key, with periodic restart points for random access within the block. This
   increases key density per page and reduces I/O for prefix-heavy workloads.
-
-- **Sorted batch replay for write transactions** — `WriteTxn` currently replays buffered
-  operations in insertion order. Sorting the batch by key before replay means consecutive
-  inserts land in the same (or nearby) leaves, so the already-staged COW pages are reused
-  rather than cloning a different leaf for each insert. Fewer COW copies, better cache
-  locality, and lower write amplification for large batches.
 
 - **Bulk-load path for large initial imports** — Inserting N keys one-by-one through the
   tree incurs O(height) COW copies per key. A bulk-load path sorts all keys upfront,

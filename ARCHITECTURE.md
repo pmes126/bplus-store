@@ -94,7 +94,8 @@ reclamation + regular file I/O instead of mmap.**
 │                   Metadata, Superblock          │  src/database/
 ├─────────────────────────────────────────────────┤
 │  Storage          PageStorage, NodeStorage,     │  src/storage.rs
-│                   EpochManager, MetadataManager │  src/storage/
+│                   EpochManager, MetadataManager,│  src/storage/
+│                   PageCache (in PagedNodeStorage)│
 ├─────────────────────────────────────────────────┤
 │  Page layout      LeafPage, InternalPage        │  src/page/leaf.rs
 │                   NodeView                      │  src/page/internal.rs
