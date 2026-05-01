@@ -886,9 +886,10 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.storage.read_node_view(parent_id)? else {
-                return Err(TreeError::NodeNotFound(
-                    format!("Parent node {} not found", parent_id),
-                ));
+                return Err(TreeError::NodeNotFound(format!(
+                    "Parent node {} not found",
+                    parent_id
+                )));
             };
             let NodeView::Internal { .. } = &mut node else {
                 return Err(TreeError::Invariant(
@@ -1111,9 +1112,10 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.storage.read_node_view(parent_id)? else {
-                return Err(TreeError::NodeNotFound(
-                    format!("Parent node {} not found", parent_id),
-                ));
+                return Err(TreeError::NodeNotFound(format!(
+                    "Parent node {} not found",
+                    parent_id
+                )));
             };
             {
                 let NodeView::Internal { .. } = &mut parent_node else {
