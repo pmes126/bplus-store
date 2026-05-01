@@ -763,8 +763,7 @@ where
     fn split_leaf_node(&self, mut leaf_node: NodeView) -> Result<SplitResult<NodeView>, TreeError> {
         if let NodeView::Leaf { .. } = &mut leaf_node {
             let mid = leaf_node.keys_len() / 2;
-            let split_idx = mid;
-            let right_node = leaf_node.split_off(split_idx)?;
+            let right_node = leaf_node.split_off(mid)?;
             let split_key = right_node.first_key()?;
 
             Ok(SplitResult::SplitNodes {
@@ -846,7 +845,7 @@ where
 
         while let Some((parent_id, insert_pos)) = path.pop() {
             let mut parent_node = self.storage.read_node_view(parent_id)?.ok_or_else(|| {
-                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id).to_string())
+                TreeError::NodeNotFound(format!("Parent node {} not found", parent_id))
             })?;
 
             let NodeView::Internal { .. } = parent_node else {
@@ -882,15 +881,15 @@ where
         mut path: Vec<(NodeId, usize)>,
         mut left: NodeId,
         mut right: NodeId,
-        //mut key: K,
         mut key: Vec<u8>,
         track: &mut impl TxnTracker,
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, insert_pos)) = path.pop() {
             let Some(mut node) = self.storage.read_node_view(parent_id)? else {
-                return Err(TreeError::NodeNotFound(
-                    format!("Parent node {} not found", parent_id).to_string(),
-                ));
+                return Err(TreeError::NodeNotFound(format!(
+                    "Parent node {} not found",
+                    parent_id
+                )));
             };
             let NodeView::Internal { .. } = &mut node else {
                 return Err(TreeError::Invariant(
@@ -1026,7 +1025,7 @@ where
                                 let vb = node.value_bytes_at(i)?;
                                 return Ok(Some(vb.to_vec()));
                             }
-                            Err(_i) => {
+                            Err(_) => {
                                 return Ok(None);
                             }
                         };
@@ -1113,9 +1112,10 @@ where
     ) -> Result<NodeId, TreeError> {
         while let Some((parent_id, idx)) = path.pop() {
             let Some(mut parent_node) = self.storage.read_node_view(parent_id)? else {
-                return Err(TreeError::NodeNotFound(
-                    format!("Parent node {} not found", parent_id).to_string(),
-                ));
+                return Err(TreeError::NodeNotFound(format!(
+                    "Parent node {} not found",
+                    parent_id
+                )));
             };
             {
                 let NodeView::Internal { .. } = &mut parent_node else {
@@ -1374,10 +1374,10 @@ where
                     return Ok(None);
                 }
                 // Pull the separator key from the parent down into the left sibling.
-                let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
+                let separator_key = parent_node.delete_key_at(parent_key_idx)?;
                 left_sibling.insert_separator_at(
                     node.keys_len() + 1,
-                    seperator_key.as_bytes(),
+                    separator_key.as_bytes(),
                     node.child_ptr_at(0)?,
                 )?;
                 let merged_node = self.merge_nodes_view(&mut left_sibling, node)?;
@@ -1439,10 +1439,10 @@ where
 
                 // Pull the separator key from the parent down into the left node,
                 // then absorb the right sibling's first child pointer.
-                let seperator_key = parent_node.delete_key_at(parent_key_idx)?;
+                let separator_key = parent_node.delete_key_at(parent_key_idx)?;
                 node.insert_separator_at(
                     node.keys_len(),
-                    seperator_key.as_bytes(),
+                    separator_key.as_bytes(),
                     right_sibling.child_ptr_at(0)?,
                 )?;
 
@@ -1641,17 +1641,7 @@ where
     /// Returns a copy of the current committed metadata.
     pub fn snapshot(&self) -> Metadata {
         let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-
-        Metadata {
-            root_node_id: meta.root_node_id,
-            id: meta.id,
-            height: meta.height,
-            size: meta.size,
-            checksum: meta.checksum,
-            txn_id: meta.txn_id,
-            order: meta.order,
-        }
+        unsafe { *ptr }
     }
 
     /// Returns a snapshot of the current committed tree state.
@@ -1667,30 +1657,22 @@ where
 
     /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-        meta.root_node_id
+        self.snapshot().root_node_id
     }
 
     /// Returns the current committed tree height.
     pub fn get_height(&self) -> u64 {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-        meta.height
+        self.snapshot().height
     }
 
     /// Returns the current approximate entry count.
     pub fn get_size(&self) -> u64 {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-        meta.size
+        self.snapshot().size
     }
 
     /// Returns the B+ tree order (maximum number of children per internal node).
     pub fn get_order(&self) -> u64 {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
-        meta.order
+        self.snapshot().order
     }
 
     /// Registers a node for deferred reclamation after the current epoch retires.
