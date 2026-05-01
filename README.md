@@ -43,7 +43,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-bplus_store = "0.3"
+bplus_store = "0.4"
 ```
 
 ### Build & test
