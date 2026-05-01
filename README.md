@@ -43,7 +43,7 @@ Synchronous, zero-network. **Multi-writer** with optimistic commits (CAS).
 
 ```toml
 [dependencies]
-bplus_store = "0.2"
+bplus_store = "0.3"
 ```
 
 ### Build & test
@@ -176,6 +176,15 @@ the highest `txn_id` and a valid CRC32 checksum.
   the old slot.
 - **Crash after `fdatasync()`** — both node pages and metadata are durable. Recovery
   picks the new slot.
+
+### Why no WAL?
+
+COW + A/B metadata swap provides atomic commits without a write-ahead log — old
+pages are never modified, so there is nothing to undo. The only trade-off is that
+a crash between CAS and `fdatasync` can leak pages (allocated but unreachable);
+these waste space but never cause data loss. A WAL may be added in the future
+primarily as a **replication log**, where the per-commit `fsync` is unavoidable
+anyway.
 
 ### Known side effect
 

@@ -480,6 +480,36 @@ an order of 64 and 4 KB pages, a tree of height 4 can hold tens of millions
 of entries. Three to four page copies per write is a modest price for the
 simplicity and concurrency benefits.
 
+### Dirty page optimisation (lazy COW)
+
+Within a single transaction, the same page can be modified multiple times
+(e.g. two inserts landing in the same leaf, or a split that rewrites an
+internal node that was already COW-cloned earlier in the batch). Naively,
+each modification would allocate a new page and propagate the new ID all the
+way to the root — wasting pages and I/O on intermediate states that no
+reader will ever see.
+
+The dirty page optimisation avoids this. Every page allocated during a
+transaction is added to a `dirty_pages: HashSet<NodeId>` in the
+`TransactionTracker`. When a page is about to be written:
+
+1. **`write_and_propagate`** checks `is_dirty(page_id)`. If the page is
+   dirty, it is rewritten **in place** at its existing page ID via
+   `write_node_view_at_offset` — no new allocation. Since the page ID is
+   unchanged, no parent pointer update is needed, so propagation is skipped
+   entirely.
+2. **`propagate_node_update`** applies the same check as it walks up the
+   ancestor path. When it encounters a dirty parent, it rewrites the parent
+   in place and **breaks the loop early** — all ancestors above already
+   point to this parent's (unchanged) page ID.
+
+This is safe because dirty pages belong to the current uncommitted
+transaction — no reader can reference them (the metadata pointer still
+points to the previous root). The result is that a batch of N inserts into
+the same leaf region produces far fewer page allocations than N × height,
+and the COW debris that would otherwise accumulate within the transaction is
+eliminated.
+
 ### Write path (`put_inner`)
 
 1. **Validate**: reject entries where `key_len + val_len > MAX_ENTRY_PAYLOAD` (2038 bytes).
@@ -874,12 +904,7 @@ Bulk loading is not currently implemented.
 
 Several approaches could reduce space amplification:
 
-1. **Intra-transaction page reuse.** When a COW clone supersedes a page within
-   the same uncommitted transaction, the old page could be immediately reused
-   (no reader can reference it since the transaction hasn't committed). This
-   would prevent debris accumulation during large batches.
-
-2. **Bulk loading / merge-rebuild for sorted inserts.** For an empty tree,
+1. **Bulk loading / merge-rebuild for sorted inserts.** For an empty tree,
    build leaves left-to-right, filling each to capacity, then construct
    internal nodes in a single bottom-up pass. For a populated tree, this
    becomes a merge-rebuild: scan the existing tree via `RangeIter` (already
@@ -937,16 +962,16 @@ Several approaches could reduce space amplification:
    heuristic is `batch_size > tree.len() * 0.2` — if the batch is more
    than ~20% of the existing tree, rebuild; otherwise use the normal path.
 
-3. **Online compaction.** A background process that rewrites the data file,
+2. **Online compaction.** A background process that rewrites the data file,
    discarding unreachable pages and packing live pages contiguously. This
    reclaims space from accumulated debris without changing the write path.
 
-4. **Delta encoding / WAL hybrid.** Buffer small mutations in a write-ahead
+3. **Delta encoding / WAL hybrid.** Buffer small mutations in a write-ahead
    log and apply them in bulk to pages periodically. This amortizes the
    per-page overhead across many mutations, at the cost of more complex
    recovery.
 
-5. **Page-level deduplication.** If two COW clones of the same page are
+4. **Page-level deduplication.** If two COW clones of the same page are
    identical (e.g., an internal node rewritten with the same child pointers),
    detect this and reuse the existing page. Requires content hashing.
 
@@ -1085,24 +1110,26 @@ retaining old allocations, but the current approach is simple and correct.
 
 ### Write-ahead log (WAL)
 
-The current design relies entirely on COW for crash safety — old pages are
-never modified, and the metadata pointer swap is the atomic commit point.
-This works but has a gap: if the process crashes after the CAS but before the
-metadata fsync, speculative pages are leaked (allocated but unreachable from
-any root).
+COW provides crash safety without a WAL: old pages are never modified, and
+the A/B metadata pointer swap is the atomic commit point. The only gap is
+**page leaks** — if the process crashes after the CAS but before `fdatasync`,
+newly allocated pages become unreachable from any root. These orphans waste
+space but never cause data loss, and a startup reachability scan could
+reclaim them.
 
-A WAL would close this gap by recording intended mutations before they are
-applied. On recovery, the WAL is replayed to redo or undo incomplete
-operations, ensuring no pages are leaked and every committed transaction is
-fully durable. The WAL also enables:
+A WAL is therefore **not needed for durability**, but becomes valuable for
+two other reasons:
 
-- **Group commit:** multiple concurrent transactions can batch their WAL
+- **Replication.** A commit log is exactly the stream followers need to replay.
+  The per-commit `fsync` a WAL requires is unavoidable when shipping changes
+  to replicas, so the cost is already paid. This makes WAL the natural
+  foundation for a single-leader log-shipping replication layer (see
+  [Replication](#replication) below).
+- **Leak recovery.** Recording `CommitIntent` / `CommitComplete` pairs lets
+  recovery distinguish completed commits from crashed ones and free any
+  leaked pages without a full tree scan.
+- **Group commit.** Multiple concurrent transactions can batch their WAL
   entries into a single fsync, amortizing the cost of durable writes.
-- **Undo/redo recovery:** a crash at any point in the write path can be
-  cleanly resolved without a full tree scan.
-- **Hybrid COW+WAL:** small mutations could be logged to the WAL and applied
-  to pages lazily, reducing write amplification for single-key updates while
-  preserving COW's snapshot isolation for readers.
 
 ### Compaction and space reclamation
 
@@ -1124,17 +1151,19 @@ the file without a full rewrite, similar to LSM-tree compaction levels.
 ### Replication
 
 Adding a replication layer would turn bplus_store from an embedded storage
-engine into a distributed database primitive. A minimal single-leader
-log-shipping design:
+engine into a distributed database primitive. The WAL described above is the
+natural replication log — each committed record already contains the page
+writes and metadata changes a follower needs to replay. A minimal
+single-leader log-shipping design:
 
-- The leader appends committed metadata changes (root, height, size) and
-  their associated page writes to a replication log.
-- Followers consume the log and apply page writes to their local data file,
-  then update their metadata pointer to match.
+- The leader appends committed mutations to the WAL (already `fsync`'d for
+  durability).
+- Followers tail the WAL stream, apply page writes to their local data file,
+  and update their metadata pointer to match.
 - Followers serve read-only queries from their local snapshot, providing
   read scaling and fault tolerance.
 
 This pairs naturally with the existing epoch-based concurrency model —
-followers pin their local epoch while serving reads, and the replication
-log provides the ordering guarantee that a follower's snapshot is always
-a consistent prefix of the leader's history.
+followers pin their local epoch while serving reads, and the WAL provides
+the ordering guarantee that a follower's snapshot is always a consistent
+prefix of the leader's history.
