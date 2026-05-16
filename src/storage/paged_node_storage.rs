@@ -4,10 +4,14 @@
 //! can use different codecs (e.g. prefix-compressed pages) while delegating
 //! raw page I/O to the underlying [`PageStorage`].
 //!
-//! Includes an in-memory read cache (`RwLock<HashMap>`) that eliminates
-//! repeated `pread` syscalls for hot pages. COW semantics guarantee that a
-//! page's content never changes once written, so cache entries are always
+//! Includes a bounded in-memory read cache (CLOCK-Pro via `quick_cache`) that
+//! eliminates repeated `pread` syscalls for hot pages. COW semantics guarantee
+//! that a page's content never changes once written, so cache entries are always
 //! valid until the page is freed and potentially reallocated.
+//!
+//! The cache is bounded to a configurable number of pages (default 16,384 =
+//! ~64 MB for 4 KB pages). CLOCK-Pro provides scan resistance: range scans
+//! over cold leaf pages will not evict frequently-accessed root/internal nodes.
 
 use crate::bplustree::NodeView;
 use crate::codec::bincode::NoopNodeViewCodec;
@@ -15,20 +19,26 @@ use crate::layout::PAGE_SIZE;
 use crate::storage::epoch::EpochManager;
 use crate::storage::{HasEpoch, NodeStorage, PageStorage, StorageError};
 
-use std::collections::HashMap;
+use quick_cache::sync::Cache;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+/// Default maximum number of cached pages (16,384 × 4 KB ≈ 64 MB).
+pub const DEFAULT_CACHE_CAPACITY: usize = 16_384;
 
 /// A [`NodeStorage`] that encodes node views as pages and delegates I/O to a [`PageStorage`].
 ///
-/// Maintains an in-memory cache of decoded [`NodeView`]s keyed by page ID.
+/// Maintains a bounded in-memory cache of decoded [`NodeView`]s keyed by page ID.
+/// Uses CLOCK-Pro eviction (via `quick_cache`) for scan resistance — root and
+/// upper internal nodes stay cached even under full range scans.
+///
 /// Cache correctness relies on COW: a page ID's content is immutable once
-/// written. Entries are evicted only when [`free_node`] is called (the page
-/// is reclaimed by epoch-based GC and may be reallocated).
+/// written. Entries are explicitly removed by [`free_node`] when the page is
+/// reclaimed by epoch-based GC (and may be reallocated).
 pub struct PagedNodeStorage<S: PageStorage> {
     store: Arc<S>,
     epoch_mgr: Arc<EpochManager>,
-    cache: RwLock<HashMap<u64, NodeView>>,
+    cache: Cache<u64, NodeView>,
 }
 
 impl<S: PageStorage + Send + Sync + 'static> HasEpoch for PagedNodeStorage<S> {
@@ -42,25 +52,35 @@ impl<S: PageStorage + Send + Sync + 'static> PagedNodeStorage<S> {
     ///
     /// Creates its own [`EpochManager`]. Used by standalone callers (tests,
     /// benchmarks) that don't go through [`Database`][crate::database::Database].
+    /// Uses [`DEFAULT_CACHE_CAPACITY`].
     pub fn new<P: AsRef<Path>>(storage_path: P, _manifest_path: P) -> Result<Self, std::io::Error> {
         Ok(Self {
             store: Arc::new(S::open(storage_path)?),
             epoch_mgr: Arc::new(EpochManager::new()),
-            cache: RwLock::new(HashMap::new()),
+            cache: Cache::new(DEFAULT_CACHE_CAPACITY),
         })
     }
 
     /// Wraps a shared [`PageStorage`] with a shared epoch manager.
     ///
-    /// Use this when the caller already owns the storage and epoch manager
-    /// (e.g. [`Database`][crate::database::Database]) and wants to provide a
-    /// pluggable [`NodeStorage`] over the same page file.
-    /// Wraps a shared [`PageStorage`] with a shared epoch manager.
+    /// Uses [`DEFAULT_CACHE_CAPACITY`]. For custom capacity, use [`from_parts_with_capacity`].
     pub fn from_parts(store: Arc<S>, epoch_mgr: Arc<EpochManager>) -> Self {
+        Self::from_parts_with_capacity(store, epoch_mgr, DEFAULT_CACHE_CAPACITY)
+    }
+
+    /// Wraps a shared [`PageStorage`] with a shared epoch manager and explicit cache capacity.
+    ///
+    /// `capacity` is the maximum number of pages held in the cache.
+    /// Each page is ~4 KB, so total memory ≈ `capacity × PAGE_SIZE`.
+    pub fn from_parts_with_capacity(
+        store: Arc<S>,
+        epoch_mgr: Arc<EpochManager>,
+        capacity: usize,
+    ) -> Self {
         Self {
             store,
             epoch_mgr,
-            cache: RwLock::new(HashMap::new()),
+            cache: Cache::new(capacity),
         }
     }
 
@@ -77,12 +97,9 @@ impl<S: PageStorage + Send + Sync + 'static> PagedNodeStorage<S> {
 
 impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S> {
     fn read_node_view(&self, page_id: u64) -> Result<Option<NodeView>, StorageError> {
-        // Fast path: check cache under a shared read lock.
-        {
-            let cache = self.cache.read().unwrap();
-            if let Some(&view) = cache.get(&page_id) {
-                return Ok(Some(view));
-            }
+        // Fast path: check cache (lock-free read via quick_cache).
+        if let Some(view) = self.cache.get(&page_id) {
+            return Ok(Some(view));
         }
 
         // Slow path: read from disk, decode, and populate cache.
@@ -91,8 +108,7 @@ impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S>
         let mut view = NoopNodeViewCodec::decode(&buf)?;
         view.set_page_id(page_id);
 
-        let mut cache = self.cache.write().unwrap();
-        cache.insert(page_id, view);
+        self.cache.insert(page_id, view);
 
         Ok(Some(view))
     }
@@ -104,8 +120,7 @@ impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S>
         // Populate cache with the written node (already decoded).
         let mut cached = *node_view;
         cached.set_page_id(page_id);
-        let mut cache = self.cache.write().unwrap();
-        cache.insert(page_id, cached);
+        self.cache.insert(page_id, cached);
 
         Ok(page_id)
     }
@@ -121,8 +136,7 @@ impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S>
         // Update cache entry for this page ID.
         let mut cached = *node_view;
         cached.set_page_id(page_id);
-        let mut cache = self.cache.write().unwrap();
-        cache.insert(page_id, cached);
+        self.cache.insert(page_id, cached);
 
         Ok(page_id)
     }
@@ -132,11 +146,8 @@ impl<S: PageStorage + Send + Sync + 'static> NodeStorage for PagedNodeStorage<S>
     }
 
     fn free_node(&self, id: u64) -> Result<(), StorageError> {
-        // Evict from cache before freeing — the page ID may be reallocated.
-        {
-            let mut cache = self.cache.write().unwrap();
-            cache.remove(&id);
-        }
+        // Evict from cache — the page ID may be reallocated.
+        self.cache.remove(&id);
         self.store.free_page(id).map_err(StorageError::Io)
     }
 }

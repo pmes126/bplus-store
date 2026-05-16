@@ -24,10 +24,12 @@ snapshot isolation. Where it differs:
 - **No WAL:** crash safety comes from COW page immutability + A/B metadata
   slot alternation with CRC validation. No write-ahead log to tune, compact,
   or replay.
-- **In-memory page cache:** `PagedNodeStorage` keeps decoded `NodeView`s in a
-  COW-coherent read cache. Pages are immutable while live (COW guarantee), so
-  cached entries never go stale — eviction is driven by epoch-based GC rather
-  than invalidation.
+- **Bounded page cache:** `PagedNodeStorage` keeps decoded `NodeView`s in a
+  bounded CLOCK-Pro cache (via `quick_cache`). Pages are immutable while live
+  (COW guarantee), so cached entries never go stale. The cache is bounded to a
+  configurable number of pages (default 16,384 ≈ 64 MB), and CLOCK-Pro provides
+  scan resistance — range scans over cold leaves won't evict hot root/internal
+  nodes.
 - **Epoch-based snapshot readers:** readers pin an epoch and walk a consistent
   snapshot without holding any locks. Writers retire old pages; a reclaimer
   frees them only after all pinned readers have advanced.
@@ -42,7 +44,7 @@ snapshot isolation. Where it differs:
 - Copy-on-write page mutation via `NodeView` over `[u8; 4096]` pages
 - Multiple concurrent writers (optimistic concurrency; CAS on metadata)
 - Batched write transactions (stage &rarr; commit &rarr; reclaim)
-- In-memory page cache with COW-coherent eviction via epoch GC
+- Bounded page cache (CLOCK-Pro) with COW-coherent eviction via epoch GC
 - Cursor-based range iteration (parent-stack traversal, no sibling pointers)
 - Physical fullness handling: large values trigger page splits before reaching max keys
 - Pluggable node encoding via `NodeStorage` trait; raw page I/O via `PageStorage` trait
