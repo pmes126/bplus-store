@@ -680,9 +680,14 @@ reference-counting or lifetime entanglement.
 internal nodes are accessed on every operation, while leaf pages vary with the
 key distribution. A naive LRU cache is vulnerable to **scan pollution** — a
 single full range scan evicts the hot internal nodes, degrading subsequent
-point lookups until they're re-cached. CLOCK-Pro is scan-resistant: it
-distinguishes frequently-accessed pages from one-hit pages, so a range scan
-over cold leaves won't evict the hot root path.
+point lookups until they're re-cached. CLOCK-Pro is scan-resistant because it
+distinguishes **frequency** from **recency**: a page accessed many times (high
+frequency — e.g. root/internal nodes) is protected even if it hasn't been
+touched in a few milliseconds, while a page accessed only once (low frequency
+— e.g. a leaf visited during a sequential scan) is treated as cold and
+evicted first regardless of how recently it was touched. This means a range
+scan over 10,000 cold leaves won't evict the 3–4 internal nodes that every
+point lookup depends on.
 
 **Why not the standard `lru` crate?** `LruCache::get` requires `&mut self`
 (it updates recency on every access), which would degrade `RwLock<LruCache>`
