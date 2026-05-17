@@ -62,6 +62,10 @@ harness = false
 name = "bench_epoch"
 harness = false
 
+[[bench]]
+name = "bench_contention"
+harness = false
+
 [workspace.lints.clippy]
 pedantic = "warn"
 nursery = "warn"
