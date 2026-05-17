@@ -63,8 +63,7 @@ fn bench_concurrent_readers(c: &mut Criterion) {
                             let db = Arc::clone(&db);
                             let barrier = Arc::clone(&barrier);
                             thread::spawn(move || {
-                                let tree =
-                                    db.open_tree::<u64, String>("bench").unwrap();
+                                let tree = db.open_tree::<u64, String>("bench").unwrap();
                                 barrier.wait();
                                 for i in 0..N {
                                     tree.get(&i).unwrap();

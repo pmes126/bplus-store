@@ -114,16 +114,11 @@ impl EpochManager {
     /// Collects and returns all page IDs deferred at epochs up to and including `safe_epoch`.
     pub fn reclaim(&self, safe_epoch: Epoch) -> Vec<NodeId> {
         let mut reclaimed = vec![];
-        let to_reclaim: Vec<u64> = self
-            .deferred_pages
-            .lock()
-            .unwrap()
-            .range(..=safe_epoch)
-            .map(|(e, _)| *e)
-            .collect();
+        let mut deferred = self.deferred_pages.lock().unwrap();
+        let to_reclaim: Vec<u64> = deferred.range(..=safe_epoch).map(|(e, _)| *e).collect();
 
         for epoch in to_reclaim {
-            if let Some(pages) = self.deferred_pages.lock().unwrap().remove(&epoch) {
+            if let Some(pages) = deferred.remove(&epoch) {
                 reclaimed.extend(pages);
             }
         }
