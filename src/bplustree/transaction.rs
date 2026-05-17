@@ -99,8 +99,8 @@ impl WriteTransaction {
                     match op {
                         WriteOp::Insert(k, v) => {
                             let wr = tree.put_with_root_tracked(
-                                k.clone(),
-                                v.clone(),
+                                k.as_slice(),
+                                v.as_slice(),
                                 current_root,
                                 &mut tracker,
                             )?;
