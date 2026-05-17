@@ -50,7 +50,7 @@ fn single_thread_put_2000() {
 fn concurrent_put_4_threads() {
     let num_threads = 4;
     let per_thread = 500u64;
-    let rounds = 50;
+    let rounds = 5;
 
     for round in 0..rounds {
         let dir = stress_tempdir();

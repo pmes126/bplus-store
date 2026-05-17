@@ -411,11 +411,11 @@ impl NodeView {
                     page: other_page, ..
                 },
             ) => {
-                let other_key_count = other_page.key_count();
+                let other_key_count = other_page.key_count() as usize;
                 let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
-                    let key = other_page.get_key_at(i as usize, &mut scratch)?;
-                    let child_ptr = other_page.read_child_at(i as usize + 1)?;
+                    let key = other_page.get_key_at(i, &mut scratch)?;
+                    let child_ptr = other_page.read_child_at(i + 1)?;
                     self_page.append(key, child_ptr)?;
                 }
                 Ok(())
@@ -428,10 +428,10 @@ impl NodeView {
                     page: other_page, ..
                 },
             ) => {
-                let other_key_count = other_page.key_count();
+                let other_key_count = other_page.key_count() as usize;
                 let mut scratch = ScratchBuf::new();
                 for i in 0..other_key_count {
-                    let (k, v) = other_page.get_kv_at(i as usize, &mut scratch)?;
+                    let (k, v) = other_page.get_kv_at(i, &mut scratch)?;
                     self_page.append(k, v)?;
                 }
                 Ok(())

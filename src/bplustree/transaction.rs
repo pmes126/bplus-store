@@ -80,14 +80,16 @@ impl WriteTransaction {
         S: NodeStorage + HasEpoch + Send + Sync + 'static,
         P: PageStorage + Send + Sync + 'static,
     {
+        let mut staged_nodes: Vec<u64> = Vec::new();
+        let mut reclaimed_nodes_local: Vec<u64> = Vec::new();
         for _ in 0..MAX_COMMIT_RETRIES {
             // Pin the epoch *before* reading root_id so that the pages
             // reachable from that root cannot be reclaimed while we walk them.
             // The guard is dropped before try_commit so that the commit's
             // epoch advance + reclamation pass is not blocked by our pin.
             let staged_update;
-            let mut staged_nodes: Vec<u64> = Vec::new();
-            let mut reclaimed_nodes_local: Vec<u64> = Vec::new();
+            staged_nodes.clear();
+            reclaimed_nodes_local.clear();
 
             {
                 let _guard = tree.epoch_mgr().pin();
@@ -99,8 +101,8 @@ impl WriteTransaction {
                     match op {
                         WriteOp::Insert(k, v) => {
                             let wr = tree.put_with_root_tracked(
-                                k.clone(),
-                                v.clone(),
+                                k.as_slice(),
+                                v.as_slice(),
                                 current_root,
                                 &mut tracker,
                             )?;
