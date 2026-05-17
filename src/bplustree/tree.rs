@@ -535,10 +535,11 @@ where
     /// reclaim (no reader is pinned at or before their epoch).
     pub fn reclaim_deferred(&self) -> Result<(), TreeError> {
         let safe_epoch = self.inner.epoch_mgr.oldest_active();
-        let reclaimed = self.inner.epoch_mgr.reclaim(safe_epoch);
-        for pid in reclaimed {
-            self.inner.storage.free_node(pid)?;
-        }
+        self.inner
+            .epoch_mgr
+            .reclaim(safe_epoch)
+            .into_iter()
+            .try_for_each(|pid| self.inner.storage.free_node(pid))?;
         Ok(())
     }
 }
@@ -1525,10 +1526,10 @@ where
         let _new_epoch = self.epoch_mgr.advance();
 
         let safe_epoch = self.epoch_mgr.oldest_active();
-        let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-        for pid in reclaimed {
-            self.storage.free_node(pid)?;
-        }
+        self.epoch_mgr
+            .reclaim(safe_epoch)
+            .into_iter()
+            .try_for_each(|pid| self.storage.free_node(pid))?;
 
         if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
             self.epoch_mgr.advance(); // Pin new epoch for reclamation
@@ -1603,10 +1604,10 @@ where
                 // visible.
                 self.epoch_mgr.advance();
                 let safe_epoch = self.epoch_mgr.oldest_active();
-                let reclaimed = self.epoch_mgr.reclaim(safe_epoch);
-                for nid in reclaimed {
-                    self.storage.free_node(nid)?;
-                }
+                self.epoch_mgr
+                    .reclaim(safe_epoch)
+                    .into_iter()
+                    .try_for_each(|nid| self.storage.free_node(nid))?;
                 if (self.commit_count.load(Ordering::Relaxed) as u64) % COMMIT_COUNT == 0 {
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
