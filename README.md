@@ -211,7 +211,11 @@ anyway.
 commit also flushes speculative COW pages written by other concurrent writers that have
 not yet committed. Those pages are harmless (orphaned if the writer never commits) but
 represent minor wasted I/O under concurrent write workloads. This is inherent to the
-single-file, shared page pool design and is not a correctness issue.
+single-file, shared page pool design and is not a correctness issue. A future mitigation
+would be `O_DIRECT` I/O, which bypasses the kernel page cache so each write goes straight
+to disk without accumulating dirty pages that a later `fdatasync` must flush. The
+trade-off is losing the kernel's read caching (partially compensated by the existing
+`PagedNodeStorage` CLOCK-Pro cache) and requiring sector-aligned writes.
 
 ---
 
@@ -421,6 +425,21 @@ guaranteeing that at least two entries always fit per page so splits produce val
   smaller pages reduce write amplification under update-heavy workloads. Making this
   configurable requires storing the page size in the superblock and threading it through
   the page layer.
+
+- **Deferred value compaction on delete** — The slotted leaf page currently
+  compacts the value arena on every delete. Under COW this is just in-memory
+  byte shuffling, but batched deletes pay the cost repeatedly. Deferring
+  compaction until the page needs the space (e.g. before an insert that doesn't
+  fit, or before a merge) would avoid redundant repacking within a single
+  transaction.
+
+- **RwLock-based metadata commit** — The current CAS-on-raw-pointer scheme
+  requires retiring old `Metadata` pointers into a leak list (`retired_meta`)
+  to prevent ABA. Switching the metadata slot to an `RwLock<Metadata>` eliminates
+  the pointer leak entirely: writers take an exclusive lock, readers a shared
+  lock, and there is no raw pointer to retire. The trade-off is slightly higher
+  per-operation overhead from the lock, but metadata commits are already
+  serialised by the page-level write path so contention should be negligible.
 
 - **Sharded epoch pinning** — `EpochManager::pin()`/`unpin()` currently acquire a
   central `Mutex<HashMap<ThreadId, Epoch>>` on every read operation. Under high reader

@@ -45,6 +45,7 @@ impl Db {
     /// Creates a new named tree and returns a typed handle.
     pub fn create_tree<K, V>(&self, name: &str, order: u64) -> Result<Tree<K, V>, ApiError>
     where
+        // Trait Delegation: the caller's K/V types must implement KeyCodec/ValueCodec
         K: KeyCodec,
         V: ValueCodec,
     {

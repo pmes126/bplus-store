@@ -67,6 +67,7 @@ impl ValueCodec<u64> for BeU64 {
 }
 
 impl KeyCodec<i64> for BeU64 {
+    /// XOR the sign bit so negative values sort before positives in byte order.
     fn encode_key(key: &i64, out: &mut [u8]) -> Result<usize, CodecError> {
         let size = std::mem::size_of::<i64>();
         let t = (*key as u64) ^ 0x8000_0000_0000_0000u64;
@@ -74,6 +75,7 @@ impl KeyCodec<i64> for BeU64 {
         Ok(size)
     }
 
+    /// Reverse the sign bit XOR to recover the original i64.
     fn decode_key(buf: &[u8]) -> Result<i64, CodecError> {
         let u = u64::from_be_bytes(
             buf.try_into()
@@ -96,6 +98,7 @@ impl KeyCodec<i64> for BeU64 {
 }
 
 impl ValueCodec<i64> for BeU64 {
+    /// XOR the sign bit so negative values sort before positives in byte order.
     fn encode_value(v: &i64, out: &mut [u8]) -> Result<usize, CodecError> {
         let size = std::mem::size_of::<i64>();
         let t = (*v as u64) ^ 0x8000_0000_0000_0000u64;
@@ -103,6 +106,7 @@ impl ValueCodec<i64> for BeU64 {
         Ok(size)
     }
 
+    /// Reverse the sign bit XOR to recover the original i64.
     fn decode_value(buf: &[u8]) -> Result<i64, CodecError> {
         let u = u64::from_be_bytes(
             buf.try_into()
@@ -118,6 +122,7 @@ impl ValueCodec<i64> for BeU64 {
 }
 
 impl KeyCodec<String> for Utf8 {
+    /// UTF-8 byte ordering naturally preserves codepoint (lexicographic) ordering.
     #[inline]
     fn encode_key(key: &String, buf: &mut [u8]) -> Result<usize, CodecError> {
         let size = key.len();
@@ -144,6 +149,7 @@ impl KeyCodec<String> for Utf8 {
 }
 
 impl ValueCodec<String> for Utf8 {
+    /// UTF-8 byte ordering naturally preserves codepoint (lexicographic) ordering.
     fn encode_value(v: &String, buf: &mut [u8]) -> Result<usize, CodecError> {
         let size = v.len();
         buf[..size].copy_from_slice(v.as_bytes());
