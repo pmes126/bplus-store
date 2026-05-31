@@ -1,4 +1,3 @@
-pub mod prefix;
 pub mod raw;
 
 use smallvec::SmallVec;
@@ -99,9 +98,6 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
     /// Implementations must avoid full re-encode:
     /// - Raw: just slice at the entry boundary.
     /// - Raw+Restarts: slice + keep only restart offsets on each side, shifting them relative to side.
-    /// - Prefix+Restarts: left = prefix of entries (no change); right = make entry `idx` a restart
-    ///   (re-encode *only* that first right entry), keep subsequent entry bytes as-is, and rebuild
-    ///   the right restart table relative to the new block. No need to decode all keys.
     fn split_into(&self, block: &[u8], idx: usize, left_out: &mut Vec<u8>, right_out: &mut Vec<u8>);
 }
 
@@ -110,14 +106,13 @@ pub trait KeyBlockFormat: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy)]
 pub enum KeyFormat {
     Raw(raw::RawFormat) = 0,
-    //Prefix(prefix::PrefixFormat),
+    // 1 = PrefixRestarts (unimplemented)
 }
 
 impl KeyFormat {
     pub fn as_dyn(&self) -> &dyn KeyBlockFormat {
         match self {
             KeyFormat::Raw(f) => f,
-            // KeyFormat::Prefix(f) => f,
         }
     }
     pub fn id(&self) -> u8 {
@@ -126,7 +121,7 @@ impl KeyFormat {
     pub fn from_id(id: u8) -> Option<Self> {
         match id {
             0 => Some(Self::Raw(raw::RawFormat)),
-            //1 => Some(Self::Prefix(prefix::PrefixFormat { restart_interval: 16 })),
+            // 1 => PrefixRestarts (unimplemented)
             _ => None,
         }
     }
@@ -136,13 +131,12 @@ impl KeyFormat {
 /// If you want per-page params (e.g., restart_interval), put them in the header and
 /// pass them through page → format; otherwise, fix them here.
 pub static RAW_FORMAT: raw::RawFormat = raw::RawFormat;
-//pub static PREFIX_FORMAT: prefix::PrefixFormat = prefix::PrefixFormat { restart_interval: 16 };
 
 /// Simple resolver used by pages (leaf/internal) to map header `key_format_id` to a format.
 pub fn resolve_key_format(id: u8) -> Option<&'static dyn KeyBlockFormat> {
     match id {
         0 => Some(&RAW_FORMAT),
-        //1 => Some(&PREFIX_FORMAT),
+        // 1 => PrefixRestarts (unimplemented)
         _ => None,
     }
 }

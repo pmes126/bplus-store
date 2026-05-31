@@ -73,7 +73,7 @@ impl Catalog {
 
     /// Applies a single manifest record to update the in-memory catalog state.
     pub fn replay_record(&mut self, rec: &ManifestRec) {
-        match rec.clone() {
+        match rec {
             CreateTree {
                 seq,
                 id,
@@ -89,38 +89,38 @@ impl Catalog {
                 height,
                 size,
             } => {
-                self.by_name.insert(name.clone(), id);
+                self.by_name.insert(name.clone(), *id);
                 self.metas.insert(
-                    id,
+                    *id,
                     TreeMeta {
-                        id,
+                        id: *id,
                         name: name.clone(),
-                        key_encoding,
-                        keyfmt_id: key_format,
-                        format_version: encoding_version,
-                        meta_a,
-                        meta_b,
-                        root_id,
-                        height,
-                        size,
-                        order,
-                        last_seq: seq,
+                        key_encoding: *key_encoding,
+                        keyfmt_id: *key_format,
+                        format_version: *encoding_version,
+                        meta_a: *meta_a,
+                        meta_b: *meta_b,
+                        root_id: *root_id,
+                        height: *height,
+                        size: *size,
+                        order: *order,
+                        last_seq: *seq,
                     },
                 );
                 let _key_limits = key_limits; // TODO: store and enforce key limits.
                 self.next_seq = self.next_seq.max(seq + 1);
             }
             RenameTree { seq, id, new_name } => {
-                if let Some(m) = self.metas.get_mut(&id) {
+                if let Some(m) = self.metas.get_mut(id) {
                     self.by_name.remove(&m.name);
                     m.name = new_name.clone();
-                    self.by_name.insert(new_name.clone(), id);
-                    m.last_seq = seq;
+                    self.by_name.insert(new_name.clone(), *id);
+                    m.last_seq = *seq;
                     self.next_seq = self.next_seq.max(seq + 1);
                 }
             }
             DeleteTree { seq, id } => {
-                if let Some(m) = self.metas.remove(&id) {
+                if let Some(m) = self.metas.remove(id) {
                     self.by_name.remove(&m.name);
                     self.next_seq = self.next_seq.max(seq + 1);
                 }

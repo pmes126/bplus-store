@@ -461,7 +461,7 @@ impl LeafPage {
 
         // Shift tail part
         let tail_src_start = ks + range.end;
-        //let tail_src_end   = self.keys_end();
+        //let tail_src_end = self.keys_end();
         let tail_src_end = self.slots_end(); // shift everthing in the key block + slot dir
         let tail_dst = ks + range.start;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
@@ -610,7 +610,6 @@ impl LeafPage {
         self.slot_dir_remove(idx)?;
         // Shift tail part
         let tail_src_start = ks + range.end;
-        //let tail_src_end   = self.keys_end();
         let tail_src_end = self.slots_end(); // shift everthing in the key block + slot dir
         let tail_dst = ks + range.start;
         self.buf.copy_within(tail_src_start..tail_src_end, tail_dst);
@@ -1087,32 +1086,31 @@ mod tests {
         }
     }
 
-    //#[test]
-    //fn test_compact_values() {
-    //    let mut page = make_page();
-    //    let keys = vec![b"apple", b"banana", b"cherry"];
-    //    let values = vec![b"red", b"yellow", b"dark red"];
+    #[test]
+    fn test_compact_values() {
+        let mut page = make_page();
+        let keys: Vec<&[u8]> = vec![b"apple", b"banana", b"cherry"];
+        let values: Vec<&[u8]> = vec![b"red", b"yellow", b"dark red"];
 
-    //    for (k, v) in keys.iter().zip(values.iter()) {
-    //        page.insert_encoded(k, v).unwrap();
-    //    }
+        for (k, v) in keys.iter().zip(values.iter()) {
+            page.insert_encoded(k, v).unwrap();
+        }
 
-    //    // Overwrite "banana" value to a shorter one
-    //    let (off, len) = page.alloc_value_tail(b"blue").unwrap();
-    //    page.overwrite_value_at(1, off, len).unwrap();
+        // Overwrite "banana" value to a shorter one
+        page.overwrite_value_at(1, b"blue").unwrap();
 
-    //    // Compact values
-    //    page.compact_values();
+        // Compact values
+        page.compact_values().unwrap();
 
-    //    let mut scratch = ScratchBuf::new();
-    //    for (i, k) in keys.iter().enumerate() {
-    //        let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
-    //        assert_eq!(ke, *k);
-    //        if i == 1 {
-    //            assert_eq!(ve, b"blue");
-    //        } else {
-    //            assert_eq!(ve, values[i]);
-    //        }
-    //    }
-    //}
+        let mut scratch = ScratchBuf::new();
+        for (i, k) in keys.iter().enumerate() {
+            let (ke, ve) = page.get_kv_at(i, &mut scratch).unwrap();
+            assert_eq!(ke, *k);
+            if i == 1 {
+                assert_eq!(ve, b"blue");
+            } else {
+                assert_eq!(ve, values[i]);
+            }
+        }
+    }
 }
