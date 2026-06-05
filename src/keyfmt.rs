@@ -128,8 +128,6 @@ impl KeyFormat {
 }
 
 /// Static singletons → used by pages to resolve `key_format_id`
-/// If you want per-page params (e.g., restart_interval), put them in the header and
-/// pass them through page → format; otherwise, fix them here.
 pub static RAW_FORMAT: raw::RawFormat = raw::RawFormat;
 
 /// Simple resolver used by pages (leaf/internal) to map header `key_format_id` to a format.
