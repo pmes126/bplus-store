@@ -211,11 +211,16 @@ anyway.
 commit also flushes speculative COW pages written by other concurrent writers that have
 not yet committed. Those pages are harmless (orphaned if the writer never commits) but
 represent minor wasted I/O under concurrent write workloads. This is inherent to the
-single-file, shared page pool design and is not a correctness issue. A future mitigation
-would be `O_DIRECT` I/O, which bypasses the kernel page cache so each write goes straight
-to disk without accumulating dirty pages that a later `fdatasync` must flush. The
-trade-off is losing the kernel's read caching (partially compensated by the existing
-`PagedNodeStorage` CLOCK-Pro cache) and requiring sector-aligned writes.
+single-file, shared page pool design and is not a correctness issue.
+
+`O_DIRECT` I/O (which bypasses the kernel page cache) is worth considering **only for
+RAM-constrained deployments**: its real benefit is removing the *double-caching* of pages
+held in both the `PagedNodeStorage` CLOCK-Pro cache and the kernel page cache, freeing that
+memory for the engine's own cache. It is **not a general optimisation** — it does not make
+I/O faster, it forfeits kernel read-ahead (so sequential scans would need application-level
+prefetch), it requires sector-aligned buffers, and it offers little when the working set
+already fits the existing cache. Durability still depends on `fdatasync` regardless. For
+this embedded, single-process engine it is generally not worthwhile.
 
 ---
 

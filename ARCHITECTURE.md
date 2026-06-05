@@ -709,6 +709,17 @@ nodes (roughly `N / fan_out`) guarantees that only leaf-level misses hit disk.
 The default (16,384 pages = 64 MB) covers trees up to ~1M entries at typical
 fan-out.
 
+**Double-caching and `O_DIRECT`:** because I/O uses buffered `pread`/`pwrite`,
+hot pages are cached twice — here *and* in the kernel page cache. `O_DIRECT`
+(which bypasses the kernel cache) is relevant **only for RAM-constrained
+deployments**: it removes that duplication and hands the reclaimed memory to
+this cache. It is **not a general optimisation** — it does not make I/O faster,
+it forfeits kernel read-ahead (sequential scans would need their own prefetch),
+and it requires sector-aligned buffers. It is only worthwhile when memory is
+scarce *and* the working set exceeds this cache; for the typical embedded,
+single-process use case it is not worth the complexity. Durability continues to
+rely on `fdatasync` either way.
+
 ---
 
 ## Key encoding
