@@ -1586,6 +1586,10 @@ where
                     self.meta_b
                 };
 
+                // Flush Pages first for durability! Metadata must not be visible until the new
+                // tree state is durable.
+                self.storage.flush()?;
+                // Write the new metadata to the page storage, making it visible to future readers.
                 let res = MetadataManager::commit_metadata_with_object(
                     &*self.page_storage,
                     slot,
