@@ -1770,7 +1770,9 @@ mod tests {
         assert_eq!(hgt, 3);
         assert_eq!(sz, 10);
 
-        assert_eq!(h.storage.flush_count(), 1);
+        // Two flushes per commit: data pages first (durability ordering), then the
+        // metadata page (the commit point).
+        assert_eq!(h.storage.flush_count(), 2);
     }
 
     // commit should fail if the base version is not the current committed version

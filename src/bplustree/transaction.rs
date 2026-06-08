@@ -251,10 +251,12 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CommitError::Metadata(_)));
 
-        // No publish, no flush, no epoch advance
+        // No durable publish, no epoch advance. The data-page flush happens *before*
+        // the metadata write (durability ordering), so by the time the metadata write
+        // fails one flush has already occurred — those pages are harmless orphans.
         let m = h.tree.metadata();
         assert_eq!(m.root_node_id, 0);
-        assert_eq!(h.storage.flush_count(), 0);
+        assert_eq!(h.storage.flush_count(), 1);
     }
 
     #[test]
