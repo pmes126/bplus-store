@@ -52,7 +52,7 @@ impl WriteTransaction {
     {
         Self {
             tree_base_version: BaseVersion {
-                committed_ptr: tree.get_metadata_ptr(),
+                base_word: tree.base_word(),
             },
             initial_root_id: tree.get_root_id(),
             changes: Vec::new(),
@@ -171,7 +171,7 @@ impl WriteTransaction {
                 }
                 self.reclaimed_nodes.clear();
                 self.tree_base_version = BaseVersion {
-                    committed_ptr: tree.get_metadata_ptr(),
+                    base_word: tree.base_word(),
                 };
                 self.initial_root_id = tree.get_root_id();
             }
@@ -198,7 +198,7 @@ mod tests {
         let storage = TestStorage::new();
         let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
 
         // Simulate another writer already published
@@ -236,7 +236,7 @@ mod tests {
         h.storage.inject_commit_failure(true);
 
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
         let err = h
             .tree
@@ -266,7 +266,7 @@ mod tests {
         h.storage.inject_flush_failure(true);
 
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
         let err = h
             .tree
@@ -296,7 +296,7 @@ mod tests {
         h.tree.get_epoch_mgr().set_reclaim_list(1, vec![10, 11, 12]);
 
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
         h.tree
             .try_commit(
@@ -317,7 +317,7 @@ mod tests {
         let storage = TestStorage::new();
         let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
         h.tree
             .try_commit(

@@ -60,7 +60,7 @@ fn insert_duplicate_key_overwrites_value() {
         .unwrap();
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -132,7 +132,7 @@ fn insert_and_search_min_max_u64_keys() {
         .unwrap();
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -160,7 +160,7 @@ fn range_scan_includes_min_key_excludes_max_key() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -201,7 +201,7 @@ fn keys_remain_sorted_after_many_splits() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -248,7 +248,7 @@ fn keys_remain_sorted_after_inserts_and_deletes() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -293,7 +293,7 @@ fn single_key_insert_search_delete() {
 
     let r = tree.insert(k(42), b"only").unwrap();
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -309,7 +309,7 @@ fn single_key_insert_search_delete() {
 
     let d = tree.delete_with_root(&k(42), tree.get_root_id()).unwrap();
     let base2 = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base2,
@@ -357,7 +357,7 @@ fn entry_at_max_payload_is_accepted() {
         .put(key.clone(), value.clone())
         .expect("insert should succeed");
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -399,7 +399,7 @@ fn large_values_trigger_physical_split_before_max_keys() {
 
     // Commit the final state.
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
