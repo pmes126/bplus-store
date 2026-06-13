@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use portable_atomic::AtomicU128;
 
 use crate::api::{KeyEncodingId, TreeId};
 use crate::bplustree::NodeView;
 use crate::bplustree::node_view::NodeViewError;
+use crate::bplustree::packed_meta::PackedMeta;
 use crate::database::metadata::Metadata;
 use crate::keyfmt::KeyFormat;
 use crate::page::PageError;
@@ -155,45 +157,35 @@ pub struct StagedMetadata {
     pub size: u64,
 }
 
-/// Holds a raw pointer to the committed metadata used as the compare-exchange base.
-pub struct BaseVersion {
-    /// Raw pointer to the committed [`Metadata`] at transaction start.
-    pub committed_ptr: *const Metadata,
-}
-
-/// Wrapper around a raw `*mut Metadata` that is safe to send across threads.
+/// Holds the packed committed-metadata word used as the compare-exchange base.
 ///
-/// These pointers are retired metadata boxes from successful CAS operations.
-/// They are kept alive (not freed) to prevent the ABA problem: if the allocator
-/// reuses the address of a freed `Box<Metadata>`, a stale writer's CAS could
-/// spuriously succeed. Instead, old pointers are parked here and freed only
-/// when the `BPlusTree` is dropped.
-struct RetiredPtr(*mut Metadata);
-
-// SAFETY: The pointer points to a heap-allocated Metadata that is no longer
-// accessed through the AtomicPtr. Only Drop reads it, and BPlusTree is not
-// Clone, so there is exactly one owner.
-unsafe impl Send for RetiredPtr {}
+/// This is the `(root_node_id, height, txn_id)` publish word captured at transaction
+/// start. The monotonic `txn_id` makes the commit CAS ABA-safe by construction.
+pub struct BaseVersion {
+    /// Packed publish word ([`PackedMeta`]) at transaction start.
+    pub base_word: u128,
+}
 
 /// B+ tree with generic storage backends for nodes and pages.
 ///
 /// # Memory ordering
 ///
-/// The concurrency model uses a single atomic pointer (`committed`) as the
-/// publish point for new tree roots.  Ordering contracts:
+/// The concurrency model uses a single 128-bit atomic (`committed`) holding the packed
+/// `(root_node_id, height, txn_id)` publish word ([`PackedMeta`]) as the publish point
+/// for new tree roots.  Ordering contracts:
 ///
-/// - **`committed`** (`AtomicPtr<Metadata>`): writers publish via `compare_exchange`
-///   with `SeqCst` success ordering, ensuring a total order across all CAS
-///   operations.  Readers load with `Acquire` so that all COW page writes
-///   performed before the pointer was published are visible.  Rollback stores
-///   (on metadata-write failure) use `Release` to pair with readers' `Acquire`.
+/// - **`committed`** (`AtomicU128`): writers publish via `compare_exchange` with `SeqCst`
+///   success ordering, ensuring a total order across all CAS operations.  The monotonic
+///   `txn_id` packed into the word makes the CAS ABA-safe by construction.  Readers load
+///   with `Acquire` so that all COW page writes performed before the word was published
+///   are visible.  Rollback stores (on metadata-write failure) use `Release` to pair with
+///   readers' `Acquire`.
 ///
 /// - **`commit_count`** (`AtomicUsize`): heuristic trigger for epoch advancement.
 ///   Uses `Relaxed` — no other memory location depends on its value.
 ///
-/// - **`txn_id`** (`AtomicU64`): only used by the single-threaded debug `commit()`
-///   path.  The production path (`try_commit`) reads the transaction ID from the
-///   `Metadata` struct behind the atomic pointer instead.
+/// - **`size`** (`AtomicU64`): approximate entry count, published after durability with
+///   `Release`/read with `Acquire`; eventually-consistent with the root swap.
 pub struct BPlusTree<S, P>
 where
     S: NodeStorage + Send + Sync + 'static,
@@ -214,31 +206,14 @@ where
     min_internal_keys: usize,
     min_leaf_keys: usize,
     commit_count: AtomicUsize,
-    committed: AtomicPtr<Metadata>,
-    /// Retired metadata pointers from successful CAS commits, kept alive to
-    /// prevent ABA on the `committed` AtomicPtr. Freed in `Drop`.
-    retired_meta: Mutex<Vec<RetiredPtr>>,
-}
-
-impl<S, P> Drop for BPlusTree<S, P>
-where
-    S: NodeStorage + Send + Sync + 'static,
-    P: PageStorage + Send + Sync + 'static,
-{
-    fn drop(&mut self) {
-        let ptr = self.committed.load(Ordering::Acquire);
-        if !ptr.is_null() {
-            unsafe {
-                drop(Box::from_raw(ptr));
-            }
-        }
-        // Free all retired metadata pointers.
-        for rp in self.retired_meta.lock().unwrap().drain(..) {
-            unsafe {
-                drop(Box::from_raw(rp.0));
-            }
-        }
-    }
+    /// Packed `(root_node_id, height, txn_id)` publish word ([`PackedMeta`]).
+    /// The monotonic `txn_id` makes the commit CAS ABA-safe by construction.
+    committed: AtomicU128,
+    /// Branching factor / order — constant for the life of the tree.
+    order: u64,
+    /// Approximate entry count. Published after durability; eventually-consistent
+    /// with respect to the root swap (the field is documented approximate).
+    size: AtomicU64,
 }
 
 /// Default [`TxnTracker`] implementation that accumulates node accounting in memory.
@@ -428,9 +403,9 @@ where
         self.inner.try_commit(version, new_metadata)
     }
 
-    /// Returns a raw pointer to the committed metadata.
-    pub fn get_metadata_ptr(&self) -> *const Metadata {
-        self.inner.committed.load(Ordering::SeqCst)
+    /// Returns the committed publish word, for use as a compare-exchange base.
+    pub fn base_word(&self) -> u128 {
+        self.inner.base_word()
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -504,8 +479,8 @@ where
     }
 
     #[cfg(test)]
-    pub fn get_metadata(&self) -> &Metadata {
-        unsafe { &*self.inner.committed.load(Ordering::Acquire) }
+    pub fn get_metadata(&self) -> Metadata {
+        self.inner.metadata()
     }
 
     /// Returns a forward range iterator scanning `[start, end)`.
@@ -566,7 +541,7 @@ where
     ) -> BPlusTree<S, P> {
         let id = meta.id;
         let order = meta.order;
-        let md_ptr = Box::into_raw(Box::new(meta));
+        let word = PackedMeta::new(meta.root_node_id, meta.height, meta.txn_id).to_raw();
         Self {
             id,
             storage,
@@ -581,8 +556,9 @@ where
             min_internal_keys: (order as usize).div_ceil(2) - 1,
             min_leaf_keys: (order as usize - 1).div_ceil(2),
             commit_count: AtomicUsize::new(0),
-            committed: AtomicPtr::new(md_ptr),
-            retired_meta: Mutex::new(Vec::new()),
+            committed: AtomicU128::new(word),
+            order,
+            size: AtomicU64::new(meta.size),
         }
     }
 
@@ -1494,8 +1470,8 @@ where
     /// prevent accidental use in production code.
     #[cfg(test)]
     pub fn commit(&self, new_root_id: NodeId, _height: u64, _size: u64) -> Result<(), TreeError> {
-        let current_meta = unsafe { &*self.committed.load(Ordering::Acquire) };
-        let new_txn_id = current_meta.txn_id + 1;
+        let current = self.snapshot();
+        let new_txn_id = current.txn_id() + 1;
         // Write to whichever of the two metadata slots this transaction maps to.
         let target_slot = if new_txn_id % 2 == 0 {
             self.meta_a
@@ -1514,12 +1490,11 @@ where
             self.get_size(),
         )?;
 
-        let current_ptr = self.committed.load(Ordering::Acquire);
-        let current = unsafe { &mut *current_ptr };
         self.storage.flush()?;
 
-        current.root_node_id = new_root_id;
-        current.txn_id = new_txn_id;
+        // Publish the new root word (single-threaded test path; height unchanged).
+        let new_word = PackedMeta::new(new_root_id, current.height(), new_txn_id);
+        self.committed.store(new_word.to_raw(), Ordering::Release);
 
         self.commit_count.fetch_add(1, Ordering::Relaxed);
 
@@ -1553,37 +1528,40 @@ where
             injected?; // returns early if the failpoint was enabled
         }
 
-        let expected = base_version.committed_ptr;
-        let current_ptr = self.committed.load(Ordering::Acquire);
-        let current = unsafe { &*current_ptr };
-        // The txn_id stored in committed metadata is the authoritative sequence number.
-        let new_txn_id = current.txn_id + 1;
-        let metadata = Metadata {
-            root_node_id: new_meta.root_id,
-            id: self.id,
-            height: new_meta.height,
-            size: new_meta.size,
-            txn_id: new_txn_id,
-            checksum: 0,
-            order: current.order,
-        };
+        // The base word captured at transaction start is the compare-exchange expected
+        // value. Its monotonic `txn_id` is the authoritative sequence number — on a
+        // successful CAS the base equals the live word, so the new id is base.txn + 1.
+        let expected = base_version.base_word;
+        let base = PackedMeta::from_raw(expected);
+        let new_txn_id = base.txn_id() + 1;
+        let new_word = PackedMeta::new(new_meta.root_id, new_meta.height, new_txn_id);
 
-        let boxed = Box::new(metadata);
-        let new_ptr = Box::into_raw(boxed);
         let result = self.committed.compare_exchange(
-            expected as *mut Metadata,
-            new_ptr,
+            expected,
+            new_word.to_raw(),
             Ordering::SeqCst,
             Ordering::Relaxed,
         );
 
         match result {
-            // CAS succeeded; write metadata to the double-buffered slot.
-            Ok(old_ptr) => {
+            // CAS succeeded; the new root word is published. Make it durable.
+            Ok(_) => {
                 let slot = if new_txn_id % 2 == 0 {
                     self.meta_a
                 } else {
                     self.meta_b
+                };
+
+                // Reconstruct the full on-disk metadata record (checksum is filled in by
+                // the metadata manager on write).
+                let metadata = Metadata {
+                    root_node_id: new_meta.root_id,
+                    id: self.id,
+                    txn_id: new_txn_id,
+                    height: new_meta.height,
+                    order: self.order,
+                    size: new_meta.size,
+                    checksum: 0,
                 };
 
                 // Flush Pages first for durability! Metadata must not be visible until the new
@@ -1596,14 +1574,13 @@ where
                     &metadata,
                 );
                 if let Err(e) = res {
-                    // Metadata write failed; restore the previous pointer.
-                    unsafe {
-                        drop(Box::from_raw(new_ptr));
-                    }
-                    self.committed.store(current_ptr, Ordering::Release);
+                    // Metadata write failed; roll the publish word back to the base.
+                    self.committed.store(expected, Ordering::Release);
                     return Err(CommitError::Metadata(e));
                 }
                 self.storage.flush()?;
+                // Publish the approximate entry count after durability.
+                self.size.store(new_meta.size, Ordering::Release);
                 // Reclamation of old nodes is deferred until after the new metadata is durable and
                 // visible.
                 self.epoch_mgr.advance();
@@ -1616,68 +1593,73 @@ where
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
 
-                // Retire the old pointer instead of freeing it to prevent ABA:
-                // the allocator could reuse the address for a future Box<Metadata>,
-                // causing a stale writer's CAS to spuriously succeed.
-                self.retired_meta.lock().unwrap().push(RetiredPtr(old_ptr));
-
                 Ok(())
             }
             Err(_) => {
-                // CAS lost the race; discard the speculative metadata.
-                unsafe {
-                    drop(Box::from_raw(new_ptr));
-                }
+                // CAS lost the race; the caller must rebase.
                 Err(CommitError::RebaseRequired)
             }
         }
     }
 
-    /// Returns a reference to the current committed metadata.
-    pub fn metadata(&self) -> &Metadata {
-        unsafe { &*self.committed.load(Ordering::Acquire) }
+    /// Returns a snapshot of the current committed publish state (root, height, txn).
+    #[inline]
+    fn snapshot(&self) -> PackedMeta {
+        PackedMeta::from_raw(self.committed.load(Ordering::Acquire))
     }
 
-    /// Returns a raw pointer to the current committed metadata.
-    pub fn metadata_ptr(&self) -> *const Metadata {
-        unsafe { &*self.committed.load(Ordering::Acquire) }
+    /// Returns the raw committed publish word, for use as a compare-exchange base.
+    pub fn base_word(&self) -> u128 {
+        self.committed.load(Ordering::Acquire)
+    }
+
+    /// Reconstructs a full [`Metadata`] from the publish word plus the out-of-word
+    /// fields (`id`, `order`, `size`). `checksum` is recomputed when written to disk.
+    fn reconstruct(&self, p: PackedMeta) -> Metadata {
+        Metadata {
+            root_node_id: p.root_node_id(),
+            id: self.id,
+            txn_id: p.txn_id(),
+            height: p.height(),
+            order: self.order,
+            size: self.size.load(Ordering::Acquire),
+            checksum: 0,
+        }
     }
 
     /// Returns a copy of the current committed metadata.
-    pub fn snapshot(&self) -> Metadata {
-        let ptr = self.committed.load(Ordering::Acquire);
-        unsafe { *ptr }
+    pub fn metadata(&self) -> Metadata {
+        self.reconstruct(self.snapshot())
     }
 
     /// Returns a snapshot of the current committed tree state.
     pub fn get_snapshot(&self) -> MetadataSnapshot {
-        let ptr = self.committed.load(Ordering::Acquire);
-        let meta = unsafe { &*ptr };
+        let p = self.snapshot();
         MetadataSnapshot {
-            root_id: meta.root_node_id,
-            height: meta.height,
-            size: meta.size,
+            root_id: p.root_node_id(),
+            height: p.height(),
+            size: self.size.load(Ordering::Acquire),
         }
     }
 
     /// Returns the current committed root node ID.
     pub fn get_root_id(&self) -> NodeId {
-        self.snapshot().root_node_id
+        self.snapshot().root_node_id()
     }
 
     /// Returns the current committed tree height.
     pub fn get_height(&self) -> u64 {
-        self.snapshot().height
+        self.snapshot().height()
     }
 
     /// Returns the current approximate entry count.
     pub fn get_size(&self) -> u64 {
-        self.snapshot().size
+        self.size.load(Ordering::Acquire)
     }
 
     /// Returns the B+ tree order (maximum number of children per internal node).
     pub fn get_order(&self) -> u64 {
-        self.snapshot().order
+        self.order
     }
 
     /// Registers a node for deferred reclamation after the current epoch retires.
@@ -1695,14 +1677,10 @@ where
     #[cfg(any(test, feature = "testing"))]
     /// Force-publishes the given metadata without a CAS; for testing only.
     pub fn test_force_publish(&self, metadata: &Metadata) {
-        let old_ptr = self
-            .committed
-            .swap(Box::into_raw(Box::new(*metadata)), Ordering::SeqCst);
-        if !old_ptr.is_null() {
-            unsafe {
-                drop(Box::from_raw(old_ptr));
-            }
-        }
+        let word =
+            PackedMeta::new(metadata.root_node_id, metadata.height, metadata.txn_id).to_raw();
+        self.committed.swap(word, Ordering::SeqCst);
+        self.size.store(metadata.size, Ordering::Release);
     }
 
     #[cfg(any(test, feature = "testing"))]
@@ -1717,6 +1695,17 @@ mod tests {
     use super::*;
     use crate::tests::common::{test_storage::TestStorage, test_tree};
 
+    /// The publish word must be a true lock-free atomic on supported targets; a
+    /// lock-based `portable-atomic` fallback would serialize commits and is a
+    /// performance regression we want to catch.
+    #[test]
+    fn committed_atomic_is_lock_free() {
+        assert!(
+            AtomicU128::is_lock_free(),
+            "AtomicU128 is NOT lock-free on this target — commits would serialize"
+        );
+    }
+
     #[test]
     fn commit_happy_path() {
         let storage = TestStorage::new();
@@ -1724,7 +1713,7 @@ mod tests {
         let tree = test_harness.tree;
 
         let base = BaseVersion {
-            committed_ptr: tree.metadata_ptr(),
+            base_word: tree.base_word(),
         };
         let staged = StagedMetadata {
             root_id: 42,
@@ -1747,7 +1736,7 @@ mod tests {
         let storage = TestStorage::new(); // Reset the test storage state
         let h = test_tree::<TestStorage>(storage, 128);
         let base = BaseVersion {
-            committed_ptr: h.tree.metadata_ptr(),
+            base_word: h.tree.base_word(),
         };
 
         let staged = StagedMetadata {
@@ -1784,7 +1773,7 @@ mod tests {
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
-            committed_ptr: tree.metadata_ptr(),
+            base_word: tree.base_word(),
         };
         let staged = StagedMetadata {
             root_id: 42,
@@ -1807,7 +1796,7 @@ mod tests {
         for i in 0..5 {
             loop {
                 let base = BaseVersion {
-                    committed_ptr: h.tree.metadata_ptr(),
+                    base_word: h.tree.base_word(),
                 };
                 if h.tree
                     .try_commit(
@@ -1836,7 +1825,7 @@ mod tests {
         let h = test_tree::<TestStorage>(storage, 128);
         for i in 0..6 {
             let base = BaseVersion {
-                committed_ptr: h.tree.metadata_ptr(),
+                base_word: h.tree.base_word(),
             };
             h.tree
                 .try_commit(
@@ -1862,7 +1851,7 @@ mod tests {
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
-            committed_ptr: tree.metadata_ptr(),
+            base_word: tree.base_word(),
         };
         let staged = StagedMetadata {
             root_id: 42,
@@ -1889,7 +1878,7 @@ mod tests {
         let tree = test_harness.tree;
         let _mocks = test_harness.storage;
         let base = BaseVersion {
-            committed_ptr: tree.metadata_ptr(),
+            base_word: tree.base_word(),
         };
         let staged = StagedMetadata {
             root_id: 42,

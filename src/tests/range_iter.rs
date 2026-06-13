@@ -41,7 +41,7 @@ fn populate_and_commit(
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -269,7 +269,7 @@ fn range_string_keys() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -312,7 +312,7 @@ fn range_yields_correct_order_after_inserts_and_deletes() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -362,7 +362,7 @@ fn range_iter_respects_snapshot_isolation() {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,

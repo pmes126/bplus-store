@@ -36,7 +36,7 @@ fn commit_persists_and_survives_reopen() {
     let tree = make_tree(&dir, 16).expect("create tree");
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata_ptr(),
+        base_word: tree.base_word(),
     };
     let staged = StagedMetadata {
         root_id: 42,
@@ -66,7 +66,7 @@ fn commit_and_load_tree() -> Result<()> {
     let iterations = order * 10;
     let tree = make_tree(&dir, order).expect("create tree");
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     let mut root_id = tree.get_root_id();
 
@@ -120,7 +120,7 @@ fn write_and_read_value() -> Result<(), anyhow::Error> {
     assert!(res.is_ok(), "Insert should succeed");
     let root_id = res.unwrap().new_root_id;
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -203,7 +203,7 @@ fn write_and_read_string_as_key() -> Result<(), anyhow::Error> {
     assert!(res.is_ok(), "Insert should succeed");
     let root_id = res.unwrap().new_root_id;
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -308,7 +308,7 @@ fn write_and_delete_values() -> Result<(), anyhow::Error> {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -368,7 +368,7 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id;
         tree.try_commit(
             &BaseVersion {
-                committed_ptr: tree.get_metadata(),
+                base_word: tree.base_word(),
             },
             StagedMetadata {
                 root_id,
@@ -391,7 +391,7 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id;
         tree.try_commit(
             &BaseVersion {
-                committed_ptr: tree.get_metadata(),
+                base_word: tree.base_word(),
             },
             StagedMetadata {
                 root_id,
@@ -413,7 +413,7 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id;
         tree.try_commit(
             &BaseVersion {
-                committed_ptr: tree.get_metadata(),
+                base_word: tree.base_word(),
             },
             StagedMetadata {
                 root_id,
@@ -427,7 +427,7 @@ fn test_height_increase_decrease() -> Result<(), anyhow::Error> {
         root_id = res.new_root_id;
         tree.try_commit(
             &BaseVersion {
-                committed_ptr: tree.get_metadata(),
+                base_word: tree.base_word(),
             },
             StagedMetadata {
                 root_id,
@@ -458,7 +458,7 @@ fn insert_duplicate_keys_should_overwrite_value() {
     root_id = res.new_root_id;
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -493,7 +493,7 @@ fn range_search_test() {
     }
 
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -555,7 +555,7 @@ fn commits_toggle_metadata_slots_and_increment_txn() {
     for i in 0..order - 1 {
         loop {
             let base = BaseVersion {
-                committed_ptr: tree.get_metadata_ptr(),
+                base_word: tree.base_word(),
             };
             let staged = StagedMetadata {
                 root_id: 100 + i,
@@ -608,7 +608,7 @@ fn concurrent_writers_retry_until_success() {
                     };
                     loop {
                         let base = BaseVersion {
-                            committed_ptr: t.get_metadata_ptr(),
+                            base_word: t.base_word(),
                         };
                         match t.try_commit(&base, staged.clone()) {
                             Ok(()) => {
@@ -650,7 +650,7 @@ fn contains_key_hit_and_miss() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -686,7 +686,7 @@ fn contains_key_after_delete() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -704,7 +704,7 @@ fn contains_key_after_delete() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -748,7 +748,7 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -774,7 +774,7 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -796,7 +796,7 @@ fn cache_returns_fresh_data_after_reclaim_and_reuse() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -843,7 +843,7 @@ fn cache_concurrent_read_write() -> Result<()> {
         root_id = res.new_root_id;
     }
     let base = BaseVersion {
-        committed_ptr: tree.get_metadata(),
+        base_word: tree.base_word(),
     };
     tree.try_commit(
         &base,
@@ -894,7 +894,7 @@ fn cache_concurrent_read_write() -> Result<()> {
         let res = tree.insert_with_root(k(i), format!("upd_{i}").into_bytes(), root_id)?;
         root_id = res.new_root_id;
         let base = BaseVersion {
-            committed_ptr: tree.get_metadata(),
+            base_word: tree.base_word(),
         };
         tree.try_commit(
             &base,
