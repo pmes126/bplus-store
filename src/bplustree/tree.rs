@@ -160,9 +160,7 @@ pub struct StagedMetadata {
 /// Holds the packed committed-metadata word used as the compare-exchange base.
 ///
 /// This is the `(root_node_id, height, txn_id)` publish word captured at transaction
-/// start. The monotonic `txn_id` makes the commit CAS ABA-safe by construction, so the
-/// base no longer needs to keep a heap `Metadata` alive (see
-/// `docs/design/inline-metadata-cas.md`).
+/// start. The monotonic `txn_id` makes the commit CAS ABA-safe by construction.
 pub struct BaseVersion {
     /// Packed publish word ([`PackedMeta`]) at transaction start.
     pub base_word: u128,
@@ -209,8 +207,7 @@ where
     min_leaf_keys: usize,
     commit_count: AtomicUsize,
     /// Packed `(root_node_id, height, txn_id)` publish word ([`PackedMeta`]).
-    /// The monotonic `txn_id` makes the commit CAS ABA-safe by construction, so there
-    /// is no heap `Metadata` to retire or reclaim.
+    /// The monotonic `txn_id` makes the commit CAS ABA-safe by construction.
     committed: AtomicU128,
     /// Branching factor / order — constant for the life of the tree.
     order: u64,
@@ -218,9 +215,6 @@ where
     /// with respect to the root swap (the field is documented approximate).
     size: AtomicU64,
 }
-
-// The publish point is now an inline `AtomicU128` (no heap `Metadata`), so there is
-// nothing to free on drop and no custom `Drop` impl is required.
 
 /// Default [`TxnTracker`] implementation that accumulates node accounting in memory.
 #[derive(Default)]
@@ -1599,12 +1593,10 @@ where
                     self.epoch_mgr.advance(); // Pin new epoch for reclamation
                 }
 
-                // No retired pointer: the txn_id stamp makes the CAS ABA-safe by
-                // construction, and there is no heap metadata to reclaim.
                 Ok(())
             }
             Err(_) => {
-                // CAS lost the race; the caller must rebase. Nothing to free.
+                // CAS lost the race; the caller must rebase.
                 Err(CommitError::RebaseRequired)
             }
         }

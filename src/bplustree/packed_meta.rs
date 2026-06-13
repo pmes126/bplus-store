@@ -1,8 +1,8 @@
 //! Inline-packed metadata publish word for the lock-free commit path.
 //!
 //! The committed tree state that must be published *atomically* on every commit is
-//! just `(root_node_id, height, txn_id)`. Those fit in a single 128-bit word, which
-//! lets the publish point be an `AtomicU128` instead of an `AtomicPtr<Metadata>`:
+//! just `(root_node_id, height, txn_id)`. Those fit in a single 128-bit word held in an
+//! `AtomicU128`:
 //!
 //! - readers do one atomic load and unpack — no pointer, no dereference, no reclamation;
 //! - writers `compare_exchange` the word, and the monotonic `txn_id` makes the CAS
