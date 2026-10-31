@@ -90,7 +90,7 @@ reclamation + regular file I/O instead of mmap.**
 │                   search, insert, delete,       │
 │                   split, merge, commit          │
 ├─────────────────────────────────────────────────┤
-│  Database         Catalog, ManifestLog,         │  src/database.rs
+│  Database         Catalog, ManifestWriter,      │  src/database.rs
 │                   Metadata, Superblock          │  src/database/
 ├─────────────────────────────────────────────────┤
 │  Storage          PageStorage, NodeStorage,     │  src/storage.rs
