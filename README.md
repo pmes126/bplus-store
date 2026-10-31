@@ -31,8 +31,9 @@ snapshot isolation. Where it differs:
   scan resistance — range scans over cold leaves won't evict hot root/internal
   nodes.
 - **Epoch-based snapshot readers:** readers pin an epoch and walk a consistent
-  snapshot without holding any locks. Writers retire old pages; a reclaimer
-  frees them only after all pinned readers have advanced.
+  snapshot without blocking writers — the tree walk itself is lock-free, though the
+  pin/unpin bracket currently takes a central mutex (see Roadmap). Writers retire
+  old pages; a reclaimer frees them only after all pinned readers have advanced.
 - **Layered storage traits:** `PageStorage` (raw page I/O) and `NodeStorage`
   (encoded node I/O) are separate traits, making the node encoding strategy
   pluggable without touching the page layer.
@@ -186,7 +187,8 @@ covered in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Readers pin an **epoch** while walking a snapshot; writers tag retired pages with the current
 epoch at commit; a reclaimer frees a page only once every reader older than its retire-epoch
-has unpinned. No locks on the read path, no use-after-free. Pin/GC details in
+has unpinned. The tree walk is lock-free and never sees a use-after-free; the pin/unpin
+bracket itself takes a central mutex today (see Roadmap). Pin/GC details in
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
@@ -236,7 +238,7 @@ src/
   storage.rs, storage/          # PageStorage, NodeStorage, FilePageStorage, PagedNodeStorage,
                                 #   EpochManager, MetadataManager, page cache
   page.rs, page/                # Slotted page layouts (leaf, internal)
-  keyfmt.rs, keyfmt/            # Key encoding formats (raw, prefix-compressed)
+  keyfmt.rs, keyfmt/            # Key encoding formats (raw; prefix-compressed is planned)
   layout.rs                     # PAGE_SIZE constant
 examples/
   bytes_api.rs                  # Vec<u8> key/value CRUD
@@ -340,12 +342,13 @@ The core choices — explained in depth in [ARCHITECTURE.md](ARCHITECTURE.md):
   fit, or before a merge) would avoid redundant repacking within a single
   transaction.
 
-- **Node merge / rebalancing on delete** — Deletes currently remove entries and compact
-  within a leaf, but underfull nodes are not merged with (or rebalanced against) a sibling.
-  Under delete-heavy workloads this leaves the tree with underfilled pages — extra height
-  and wasted space — and deviates from the classic B+tree minimum-occupancy invariant.
-  Implementing merge-on-underflow (borrow from a sibling, or merge two underfull nodes and
-  drop the separator key from the parent) restores occupancy and keeps the tree compact.
+- **Merge for variable-size entries** — Delete already rebalances: underflow borrows from a
+  sibling, then merges, propagating a parent underflow up the tree and collapsing a
+  single-child root. What remains is the variable-size case — with variable-length keys and
+  values the combined *physical* size of two underfull nodes can exceed a page even when their
+  key counts are within bounds, so merge declines and the node is accepted underfull. The tree
+  stays correct, but delete-heavy workloads can leave some space amplification. Splitting
+  entries across pages (or overflow pages, above) would close this.
 
 - **Sharded epoch pinning** — `EpochManager::pin()`/`unpin()` currently acquire a
   central `Mutex<HashMap<ThreadId, Epoch>>` on every read operation. Under high reader

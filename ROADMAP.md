@@ -18,13 +18,21 @@ on-disk format we promise not to break within the 1.x line.
   freelist once no reader is pinned at/below the retire epoch.
 - **Intra-page value compaction** (`LeafPage::compact_values`) reclaims dead
   value-arena space after deletes.
+- **Delete rebalances the tree.** Underflow is resolved by borrowing from the
+  left or right sibling, then by merging with a sibling; a parent that underflows
+  as a result propagates the fix up the tree, and a root left with a single child
+  is collapsed with a height decrement. (`handle_underflow`,
+  `src/bplustree/tree.rs:1084`)
 
 ## Known limitations (tracked TODOs)
 
-- [ ] **B+tree delete does not merge underfull nodes.** After deletions, leaves
-  and internal nodes can stay below the minimum fill; they are never coalesced.
-  → space amplification under delete-heavy workloads and a deviation from B+tree
-  invariants. (`src/bplustree/tree.rs:1450`, `:1458`)
+- [ ] **Merge can decline when entries are variable-size.** Underflow is normally
+  resolved (see above), but with variable-length keys and values the combined
+  *physical* size of two underfull nodes can exceed a page even when their key
+  counts are within bounds. In that case the node is accepted underfull rather
+  than violating a page invariant: the tree stays correct, but can be slightly
+  unbalanced, with some space amplification under delete-heavy workloads.
+  (`handle_underflow`, `src/bplustree/tree.rs:1148`)
 - [ ] **Corrupt-metadata recovery is not implemented.** Recovery from a torn or
   corrupt metadata page has no path yet; the corresponding test is a stub.
   (`src/tests/tree_ops.rs:585`)
