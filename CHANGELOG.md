@@ -15,6 +15,10 @@ path to a stable 1.0.0.
   `CASPtrPlusGeneration`, not yet in `main`).
 - `ROADMAP.md` documenting known limitations and the path to 1.0.
 
+## [0.7.2] - 2026-11-1
+### Fixed
+- Corrected stale entries in the documentation.
+
 ## [0.7.1] - 2026-07-14
 ### Changed
 - Tightened README and relevant documentation.
